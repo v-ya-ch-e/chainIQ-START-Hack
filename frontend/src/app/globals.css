@@ -127,10 +127,36 @@
   html {
     @apply font-sans antialiased;
   }
+  button,
+  [role="button"],
+  [role="menuitem"],
+  [role="option"],
+  [role="checkbox"],
+  [role="tab"],
+  [role="combobox"],
+  a[href],
+  select,
+  label:has(input, [role="checkbox"]) {
+    cursor: pointer;
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+  .animate-fade-in-up {
+    animation: fade-in-up 0.4s ease-out both;
   }
 }

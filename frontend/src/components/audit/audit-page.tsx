@@ -23,13 +23,15 @@ const kindTone: Record<string, "info" | "success" | "warning" | "destructive" | 
 export function AuditPage({ summary, feed }: AuditPageProps) {
   return (
     <div className="space-y-8">
-      <SectionHeading
-        eyebrow="Audit"
-        title="Activity feed"
-        description="Chronological trace of every audit event across all sourcing cases."
-      />
+      <div className="animate-fade-in-up">
+        <SectionHeading
+          eyebrow="Audit"
+          title="Activity feed"
+          description="Chronological trace of every audit event across all sourcing cases."
+        />
+      </div>
 
-      <section className="grid gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-4">
+      <section className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-4" style={{ animationDelay: "80ms" }}>
         {summary.map((item) => (
           <Card key={item.label}>
             <CardContent className="space-y-1.5 px-4 py-3">
@@ -47,7 +49,7 @@ export function AuditPage({ summary, feed }: AuditPageProps) {
         ))}
       </section>
 
-      <Card>
+      <Card className="animate-fade-in-up" style={{ animationDelay: "160ms" }}>
         <CardHeader>
           <CardTitle>Recent activity</CardTitle>
         </CardHeader>

@@ -10,6 +10,7 @@ import {
 } from "lucide-react"
 
 import { AppNavigation } from "@/components/app-shell/nav-links"
+import { PageTransition } from "@/components/shared/page-transition"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   DropdownMenu,
@@ -29,7 +30,6 @@ import {
   SidebarMenu,
   SidebarMenuItem,
   SidebarProvider,
-  SidebarRail,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
 
@@ -58,12 +58,17 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
               alt="ChainIQ"
               width={473}
               height={187}
-              className="h-6 w-auto shrink-0 group-data-[collapsible=icon]:hidden"
+              className="h-8 w-auto shrink-0 group-data-[collapsible=icon]:hidden"
               priority
             />
-            <div className="hidden size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-xs font-bold text-primary-foreground group-data-[collapsible=icon]:flex">
-              C
-            </div>
+            <Image
+              src="/chainiq_logo.svg"
+              alt="ChainIQ"
+              width={473}
+              height={187}
+              className="hidden h-5 w-auto shrink-0 group-data-[collapsible=icon]:block"
+              priority
+            />
           </div>
         </SidebarHeader>
 
@@ -119,7 +124,6 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
           </SidebarMenu>
         </SidebarFooter>
 
-        <SidebarRail />
       </Sidebar>
 
       <SidebarInset className="min-h-0 overflow-hidden">
@@ -133,7 +137,7 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="@container/main flex flex-col gap-2">
             <div className="flex min-w-0 flex-col gap-4 p-4 md:gap-6 md:p-6">
-              {children}
+              <PageTransition>{children}</PageTransition>
             </div>
           </div>
         </div>

@@ -67,13 +67,15 @@ export function InboxPage({ cases }: InboxPageProps) {
 
   return (
     <div className="space-y-6">
-      <SectionHeading
-        eyebrow="Inbox"
-        title="Case triage queue"
-        description="Search, filter, and drill into individual sourcing cases."
-      />
+      <div className="animate-fade-in-up">
+        <SectionHeading
+          eyebrow="Inbox"
+          title="Case triage queue"
+          description="Search, filter, and drill into individual sourcing cases."
+        />
+      </div>
 
-      <Card>
+      <Card className="animate-fade-in-up" style={{ animationDelay: "80ms" }}>
         <CardHeader className="border-b pb-4">
           <CardTitle className="sr-only">Filters</CardTitle>
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center">

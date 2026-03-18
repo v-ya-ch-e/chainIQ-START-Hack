@@ -24,13 +24,15 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
 
   return (
     <div className="space-y-6">
-      <SectionHeading
-        eyebrow="Escalation queue"
-        title={`${openCount} open human-review actions`}
-        description="Operational queue for blocked or conditionally proceedable cases."
-      />
+      <div className="animate-fade-in-up">
+        <SectionHeading
+          eyebrow="Escalation queue"
+          title={`${openCount} open human-review actions`}
+          description="Operational queue for blocked or conditionally proceedable cases."
+        />
+      </div>
 
-      <div className="grid gap-3 @xl/main:grid-cols-3">
+      <div className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-3" style={{ animationDelay: "80ms" }}>
         <QueueMetric
           label="Open escalations"
           value={openCount.toString()}
@@ -48,7 +50,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
         />
       </div>
 
-      <Card>
+      <Card className="animate-fade-in-up" style={{ animationDelay: "160ms" }}>
         <CardHeader>
           <CardTitle>All escalations</CardTitle>
         </CardHeader>

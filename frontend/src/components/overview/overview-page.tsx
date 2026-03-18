@@ -22,13 +22,15 @@ export function OverviewPage({ metrics, cases }: OverviewPageProps) {
 
   return (
     <div className="space-y-8">
-      <SectionHeading
-        eyebrow="Overview"
-        title="Sourcing Decision Cockpit"
-        description="Operational summary across all sourcing cases. Drill into the Inbox for triage or Escalations for blocked cases."
-      />
+      <div className="animate-fade-in-up">
+        <SectionHeading
+          eyebrow="Overview"
+          title="Sourcing Decision Cockpit"
+          description="Operational summary across all sourcing cases. Drill into the Inbox for triage or Escalations for blocked cases."
+        />
+      </div>
 
-      <section className="grid gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-4">
+      <section className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-4" style={{ animationDelay: "80ms" }}>
         {metrics.map((metric) => (
           <MetricCard
             key={metric.label}
@@ -40,7 +42,7 @@ export function OverviewPage({ metrics, cases }: OverviewPageProps) {
         ))}
       </section>
 
-      <section className="grid gap-6 @3xl/main:grid-cols-2">
+      <section className="animate-fade-in-up grid gap-6 @3xl/main:grid-cols-2" style={{ animationDelay: "160ms" }}>
         <Card>
           <CardHeader>
             <CardTitle>Blocked cases</CardTitle>

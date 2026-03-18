@@ -36,7 +36,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
   return (
     <div className="space-y-6">
       {/* Page header */}
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      <div className="animate-fade-in-up flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="space-y-2">
           <div className="flex flex-wrap items-center gap-1.5">
             <StatusBadge
@@ -86,7 +86,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
       </div>
 
       {/* Primary summary strip */}
-      <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+      <section className="animate-fade-in-up grid gap-4 xl:grid-cols-[1.2fr_0.8fr]" style={{ animationDelay: "80ms" }}>
         <Card className="border-primary/20 bg-primary/[0.03]">
           <CardHeader className="pb-2">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -200,7 +200,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
       </section>
 
       {/* Tabs */}
-      <Tabs defaultValue="overview" className="space-y-4">
+      <Tabs defaultValue="overview" className="animate-fade-in-up space-y-4" style={{ animationDelay: "160ms" }}>
         <TabsList
           variant="line"
           className="w-full justify-start rounded-none border-b p-0"
