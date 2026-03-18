@@ -364,8 +364,8 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
         "category_l1": cat.category_l1 if cat else None,
         "category_l2": cat.category_l2 if cat else None,
         "currency": req.currency,
-        "budget_amount": str(req.budget_amount) if req.budget_amount else None,
-        "quantity": str(req.quantity) if req.quantity else None,
+        "budget_amount": str(req.budget_amount) if req.budget_amount is not None else None,
+        "quantity": str(req.quantity) if req.quantity is not None else None,
         "country": req.country,
         "delivery_countries": delivery_codes,
         "scenario_tags": [t.tag for t in req.scenario_tags],
@@ -438,8 +438,8 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
 
     # Pricing for compliant suppliers
     pricing = []
-    quantity = int(req.quantity) if req.quantity else None
-    if cat and quantity and compliant:
+    quantity = int(req.quantity) if req.quantity is not None else None
+    if cat and quantity is not None and compliant:
         for sup in compliant:
             pts = (
                 db.query(PricingTier)
@@ -525,7 +525,7 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
 
     # Approval tier
     approval = None
-    if req.budget_amount:
+    if req.budget_amount is not None:
         t = (
             db.query(ApprovalThreshold)
             .options(

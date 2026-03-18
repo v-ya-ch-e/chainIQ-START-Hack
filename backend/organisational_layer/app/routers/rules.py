@@ -1,8 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.models.policies import CategoryRule, EscalationRule, GeographyRule
+from app.models.policies import (
+    CategoryRule,
+    EscalationRule,
+    GeographyRule,
+    GeographyRuleCountry,
+)
 from app.schemas.policies import (
     CategoryRuleOut,
     EscalationRuleOut,
@@ -45,7 +51,17 @@ def list_geography_rules(
         joinedload(GeographyRule.applies_to_categories),
     )
     if country:
-        q = q.filter(GeographyRule.country == country)
+        region_rule_ids = (
+            db.query(GeographyRuleCountry.rule_id)
+            .filter(GeographyRuleCountry.country_code == country)
+            .subquery()
+        )
+        q = q.filter(
+            or_(
+                GeographyRule.country == country,
+                GeographyRule.rule_id.in_(db.query(region_rule_ids)),
+            )
+        )
     return q.order_by(GeographyRule.rule_id).all()
 
 
