@@ -1,0 +1,23 @@
+# Virtual enviroments
+venv/
+.venv/
+ENV/
+env/
+
+# Environment secrets
+.env
+
+# Cashe
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# JetBrains stuff
+.idea/
+
+# OS Files
+.DS_Store
+thumbs.db
+
+# Logs and temproraries
+*.log
