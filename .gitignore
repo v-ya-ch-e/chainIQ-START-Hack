@@ -41,3 +41,39 @@ yarn-error.log*
 
 # testing
 coverage/
+=======
+# Virtual enviroments
+venv/
+.venv/
+ENV/
+env/
+
+# Environment secrets
+.env
+
+# Cashe
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# JetBrains stuff
+.idea/
+
+# OS Files
+.DS_Store
+thumbs.db
+
+# Logs and temproraries
+*.log
+
+# Private keys
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.p8
+*.p12
+*.p8
+*.p12
+*.p8
