@@ -20,13 +20,16 @@ uvicorn app.main:app --reload --port 8000
 
 Swagger UI: http://localhost:8000/docs
 
-## Docker
+## Docker (both services together)
 
 ```bash
-cd backend/organisational_layer
-cp .env.example .env   # fill in credentials
+cd backend
+cp organisational_layer/.env.example organisational_layer/.env   # fill in DB credentials
+cp logical_layer/.env.example logical_layer/.env                 # default is fine for Docker
 docker compose up --build
 ```
+
+> **Note:** `docker-compose.yml` has moved to `backend/` level to orchestrate both services. The old `organisational_layer/docker-compose.yml` has been removed.
 
 ## Key files
 
@@ -45,7 +48,6 @@ docker compose up --build
 | `app/routers/rules.py` | Read endpoints for category, geography, and escalation rules |
 | `app/routers/analytics.py` | Domain-specific analytics: compliant suppliers, pricing lookup, approval tiers, restriction/preferred checks, applicable rules, request overview, spend aggregations, supplier win rates |
 | `Dockerfile` | Python 3.14-slim container, installs deps, runs uvicorn |
-| `docker-compose.yml` | Single service with health check, connects to external RDS |
 | `requirements.txt` | fastapi, uvicorn, sqlalchemy, pymysql, pydantic-settings, python-dotenv, cryptography |
 | `.env.example` | Template for DB connection env vars |
 
@@ -75,4 +77,8 @@ docker compose up --build
 
 - **Python 3.14** / FastAPI / SQLAlchemy 2.0 / PyMySQL
 - **MySQL 8** on AWS RDS (database created by `database_init/migrate.py`)
-- Docker / docker-compose for deployment
+- Docker / docker-compose for deployment (unified compose at `backend/docker-compose.yml`)
+
+## Deployment
+
+See `backend/DEPLOYMENT.md` for full deployment guide.
