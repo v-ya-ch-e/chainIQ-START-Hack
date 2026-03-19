@@ -1,11 +1,13 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { Play, Upload, Send, Bot, User, Check, FileText, MessageSquare, ClipboardCheck, AlertCircle, X, Loader2 } from "lucide-react"
+import { useEffect, useId, useRef, useState } from "react"
+import { Play, Upload, Check, FileText, MessageSquare, ClipboardCheck, AlertCircle, X, Loader2 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { useChat } from "@ai-sdk/react"
 import { useChatRuntime } from "@assistant-ui/react-ai-sdk"
 import { AssistantRuntimeProvider } from "@assistant-ui/react"
 import { Thread } from "@/components/assistant-ui/thread"
+import type { UploadHookControl } from "@better-upload/client"
 import { useUploadFile } from "@better-upload/client"
 import { UploadDropzone } from "@/components/ui/upload-dropzone"
 
@@ -56,6 +58,25 @@ export interface IntakeWizardDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
+type CategoryRow = {
+  id: number
+  category_l1: string
+  category_l2: string
+}
+
+type RequestListResponse = {
+  items: Array<{ request_id: string }>
+}
+
+type ChatMessageLike = {
+  role?: string
+  content?: string
+}
+
+type ParsedRequestLike = {
+  [K in keyof RequestFormState]?: unknown
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function nowIsoWithoutMs() {
@@ -94,7 +115,28 @@ function defaultFormState(suggestedId: string): RequestFormState {
   }
 }
 
-const client = chainIqApi as any
+const REQUIRED_FIELDS: { key: keyof RequestFormState; label: string }[] = [
+  { key: "title", label: "Title" },
+  { key: "business_unit", label: "Business Unit" },
+  { key: "country", label: "Country" },
+  { key: "budget_amount", label: "Budget Amount" },
+  { key: "quantity", label: "Quantity" },
+  { key: "required_by_date", label: "Required By Date" },
+]
+
+const REQUIRED_FIELD_KEY_SET = new Set<keyof RequestFormState>(REQUIRED_FIELDS.map((field) => field.key))
+
+function getMissingRequiredFields(form: RequestFormState) {
+  return REQUIRED_FIELDS.filter((field) => form[field.key].trim() === "")
+}
+
+function asString(value: unknown, fallback = ""): string {
+  if (typeof value === "string") return value
+  if (value === null || value === undefined) return fallback
+  return String(value)
+}
+
+const client = chainIqApi
 
 // ─── Step Indicator ───────────────────────────────────────────────────────────
 
@@ -104,7 +146,15 @@ const STEPS = [
   { id: 3, label: "Confirm", icon: ClipboardCheck },
 ] as const
 
-function StepIndicator({ current, onNavigate }: { current: 1 | 2 | 3; onNavigate: (step: 1 | 2 | 3) => void }) {
+function StepIndicator({
+  current,
+  onNavigate,
+  disabled,
+}: {
+  current: 1 | 2 | 3
+  onNavigate: (step: 1 | 2 | 3) => void
+  disabled?: boolean
+}) {
   return (
     <div className="flex items-center justify-center gap-1" role="navigation" aria-label="Wizard steps">
       {STEPS.map((s, idx) => {
@@ -116,13 +166,14 @@ function StepIndicator({ current, onNavigate }: { current: 1 | 2 | 3; onNavigate
           <div key={s.id} className="flex items-center">
             <button
               type="button"
-              onClick={() => isCompleted && onNavigate(s.id as 1 | 2 | 3)}
-              disabled={!isCompleted}
+              onClick={() => isCompleted && !disabled && onNavigate(s.id as 1 | 2 | 3)}
+              disabled={!isCompleted || disabled}
               className={cn(
                 "group flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-all duration-200",
                 isCurrent && "bg-primary text-primary-foreground shadow-sm shadow-primary/25",
                 isCompleted && "cursor-pointer text-primary hover:bg-primary/10",
                 !isCurrent && !isCompleted && "cursor-default text-muted-foreground",
+                disabled && "cursor-not-allowed opacity-60",
               )}
             >
               <span className={cn(
@@ -151,15 +202,15 @@ function StepIndicator({ current, onNavigate }: { current: 1 | 2 | 3; onNavigate
 // ─── Live Form Summary (Step 2 right panel) ──────────────────────────────────
 
 const SUMMARY_FIELDS: { key: keyof RequestFormState; label: string; required?: boolean }[] = [
-  { key: "title", label: "Title", required: true },
-  { key: "business_unit", label: "Business Unit", required: true },
-  { key: "country", label: "Country", required: true },
+  { key: "title", label: "Title", required: REQUIRED_FIELD_KEY_SET.has("title") },
+  { key: "business_unit", label: "Business Unit", required: REQUIRED_FIELD_KEY_SET.has("business_unit") },
+  { key: "country", label: "Country", required: REQUIRED_FIELD_KEY_SET.has("country") },
   { key: "category_l1", label: "Category L1" },
   { key: "category_l2", label: "Category L2" },
-  { key: "budget_amount", label: "Budget", required: true },
+  { key: "budget_amount", label: "Budget", required: REQUIRED_FIELD_KEY_SET.has("budget_amount") },
   { key: "currency", label: "Currency" },
-  { key: "quantity", label: "Quantity", required: true },
-  { key: "required_by_date", label: "Required By", required: true },
+  { key: "quantity", label: "Quantity", required: REQUIRED_FIELD_KEY_SET.has("quantity") },
+  { key: "required_by_date", label: "Required By", required: REQUIRED_FIELD_KEY_SET.has("required_by_date") },
   { key: "preferred_supplier_mentioned", label: "Preferred Supplier" },
   { key: "delivery_countries", label: "Delivery Countries" },
 ]
@@ -191,19 +242,21 @@ function LiveFormSummary({ form }: { form: RequestFormState }) {
         {SUMMARY_FIELDS.map((field) => {
           const val = form[field.key]
           const isEmpty = typeof val === "string" ? val.trim() === "" : !val
+          const requiredMissing = Boolean(field.required && isEmpty)
+          const optionalEmpty = Boolean(!field.required && isEmpty)
 
           return (
             <div
               key={field.key}
               className={cn(
                 "flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                isEmpty ? "bg-amber-500/5" : "bg-muted/50",
+                requiredMissing ? "bg-amber-500/5" : "bg-muted/50",
               )}
             >
               <div className="flex items-center gap-2 min-w-0">
                 <div className={cn(
                   "size-1.5 rounded-full shrink-0",
-                  isEmpty ? "bg-amber-500" : "bg-emerald-500",
+                  requiredMissing ? "bg-amber-500" : optionalEmpty ? "bg-muted-foreground/40" : "bg-emerald-500",
                 )} />
                 <span className={cn(
                   "truncate",
@@ -213,9 +266,13 @@ function LiveFormSummary({ form }: { form: RequestFormState }) {
                   {field.required && <span className="text-destructive ml-0.5">*</span>}
                 </span>
               </div>
-              {isEmpty ? (
+              {requiredMissing ? (
                 <span className="shrink-0 rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-                  Missing
+                  Required
+                </span>
+              ) : optionalEmpty ? (
+                <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Optional
                 </span>
               ) : (
                 <span className="truncate max-w-[45%] text-right text-muted-foreground text-xs">
@@ -245,26 +302,39 @@ function FormSection({ title, children }: { title: string; children: React.React
   )
 }
 
-function InputField({ label, value, onChange, type = "text", required, placeholder }: {
-  label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; placeholder?: string
+function InputField({ label, value, onChange, type = "text", required, placeholder, errorText }: {
+  label: string; value: string; onChange: (v: string) => void; type?: string; required?: boolean; placeholder?: string; errorText?: string
 }) {
+  const inputId = useId()
+  const errorId = `${inputId}-error`
   const isEmpty = value.trim() === ""
+  const hasError = Boolean(errorText)
   return (
     <div className="space-y-1.5">
-      <label className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+      <label htmlFor={inputId} className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
         {label}
-        {required && isEmpty && <span className="text-destructive">*</span>}
+        {required && <span className="text-destructive">*</span>}
       </label>
       <Input
+        id={inputId}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder || label}
+        required={required}
+        aria-invalid={hasError}
+        aria-describedby={hasError ? errorId : undefined}
         className={cn(
           "h-9 transition-colors",
           required && isEmpty && "border-amber-500/40 focus-visible:ring-amber-500/30",
+          hasError && "border-destructive/50 focus-visible:ring-destructive/30",
         )}
       />
+      {hasError ? (
+        <p id={errorId} className="text-xs text-destructive">
+          {errorText}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -300,41 +370,59 @@ function SwitchField({ label, checked, onCheckedChange, description }: {
 // ─── Main Wizard ─────────────────────────────────────────────────────────────
 
 export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogProps) {
+  const router = useRouter()
   const [step, setStep] = useState<1 | 2 | 3>(1)
   const [inputText, setInputText] = useState("")
-  const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [isParsing, setIsParsing] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitMode, setSubmitMode] = useState<"trigger" | "draft" | null>(null)
+  const [submitAttempted, setSubmitAttempted] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const [categories, setCategories] = useState<any[]>([])
+  const [categories, setCategories] = useState<CategoryRow[]>([])
   const [suggestedId, setSuggestedId] = useState("REQ-000001")
   const [form, setForm] = useState<RequestFormState>(() => defaultFormState("REQ-000001"))
 
   const chatBottomRef = useRef<HTMLDivElement>(null)
-  const chat = (useChat as any)({
+  const chat = useChat({
     api: "/api/chat/intake",
     body: { formState: form },
   })
   const runtime = useChatRuntime(chat)
   const { messages } = chat
+  const isSubmitting = submitMode !== null
+  const missingRequiredFields = getMissingRequiredFields(form)
+  const missingRequiredFieldKeys = new Set(missingRequiredFields.map((field) => field.key))
+  const canSubmit = missingRequiredFields.length === 0
 
   // Watch for JSON blocks in chat to update form live
   useEffect(() => {
     if (messages.length === 0) return
-    const lastMessage = (messages as any[])[messages.length - 1]
+    const lastMessage = messages[messages.length - 1] as ChatMessageLike | undefined
     if (lastMessage?.role === "assistant") {
       const jsonMatch = lastMessage.content?.match(/```json\n([\s\S]*?)\n```/)
       if (jsonMatch && jsonMatch[1]) {
         try {
-          const parsedUpdates = JSON.parse(jsonMatch[1])
+          const parsedUpdates = JSON.parse(jsonMatch[1]) as ParsedRequestLike
           setForm((prev) => {
             const updated = { ...prev }
             let hasChanges = false
             for (const [k, v] of Object.entries(parsedUpdates)) {
-              if (k in updated && updated[k as keyof RequestFormState] !== v) {
-                ;(updated as any)[k] = v
-                hasChanges = true
+              if (k in updated) {
+                const key = k as keyof RequestFormState
+                const current = updated[key]
+                if (typeof current === "boolean") {
+                  const normalized = Boolean(v)
+                  if (current !== normalized) {
+                    updated[key] = normalized as RequestFormState[keyof RequestFormState]
+                    hasChanges = true
+                  }
+                } else {
+                  const normalized = asString(v)
+                  if (current !== normalized) {
+                    updated[key] = normalized as RequestFormState[keyof RequestFormState]
+                    hasChanges = true
+                  }
+                }
               }
             }
             return hasChanges ? updated : prev
@@ -355,11 +443,11 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
         const [categoryRows, requestRows] = await Promise.all([
           client.categories.list(),
           client.requests.list({ limit: 200, skip: 0 }),
-        ])
+        ]) as [CategoryRow[], RequestListResponse]
         if (!active) return
 
         setCategories(categoryRows)
-        const requestIds = requestRows.items.map((entry: any) => entry.request_id)
+        const requestIds = requestRows.items.map((entry) => entry.request_id)
         const highest = requestIds.reduce((acc: number, requestId: string) => {
           const match = requestId.match(/^REQ-(\d+)$/)
           if (!match) return acc
@@ -379,41 +467,42 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
       void loadBootstrapData()
       setStep(1)
       setError(null)
+      setSubmitAttempted(false)
     }
     return () => { active = false }
   }, [open])
 
-  function mapParsedToForm(parsed: Record<string, any>) {
-    const categoryL1 = String(parsed.category_l1 || "")
-    const categoryL2 = String(parsed.category_l2 || "")
+  function mapParsedToForm(parsed: ParsedRequestLike) {
+    const categoryL1 = asString(parsed.category_l1)
+    const categoryL2 = asString(parsed.category_l2)
     const matchedCategory = categories.find(
       (entry) => entry.category_l1 === categoryL1 && entry.category_l2 === categoryL2,
     )
 
     setForm({
-      request_id: parsed.request_id || suggestedId,
-      created_at: parsed.created_at || nowIsoWithoutMs(),
-      request_channel: parsed.request_channel || "portal",
-      request_language: parsed.request_language || "en",
-      business_unit: parsed.business_unit || "",
-      country: parsed.country || "",
-      site: parsed.site || "",
-      requester_id: parsed.requester_id || "",
-      requester_role: parsed.requester_role || "",
-      submitted_for_id: parsed.submitted_for_id || "",
+      request_id: asString(parsed.request_id, suggestedId),
+      created_at: asString(parsed.created_at, nowIsoWithoutMs()),
+      request_channel: asString(parsed.request_channel, "portal"),
+      request_language: asString(parsed.request_language, "en"),
+      business_unit: asString(parsed.business_unit),
+      country: asString(parsed.country),
+      site: asString(parsed.site),
+      requester_id: asString(parsed.requester_id),
+      requester_role: asString(parsed.requester_role),
+      submitted_for_id: asString(parsed.submitted_for_id),
       category_id: matchedCategory ? String(matchedCategory.id) : "",
       category_l1: categoryL1,
       category_l2: categoryL2,
-      title: parsed.title || "",
-      request_text: parsed.request_text || inputText,
-      currency: parsed.currency || "EUR",
-      budget_amount: parsed.budget_amount ? String(parsed.budget_amount) : "",
-      quantity: parsed.quantity ? String(parsed.quantity) : "",
-      unit_of_measure: parsed.unit_of_measure || "unit",
-      required_by_date: parsed.required_by_date ? String(parsed.required_by_date).slice(0, 10) : "",
-      preferred_supplier_mentioned: parsed.preferred_supplier_mentioned || "",
-      incumbent_supplier: parsed.incumbent_supplier || "",
-      contract_type_requested: parsed.contract_type_requested || "purchase",
+      title: asString(parsed.title),
+      request_text: asString(parsed.request_text, inputText),
+      currency: asString(parsed.currency, "EUR"),
+      budget_amount: parsed.budget_amount ? asString(parsed.budget_amount) : "",
+      quantity: parsed.quantity ? asString(parsed.quantity) : "",
+      unit_of_measure: asString(parsed.unit_of_measure, "unit"),
+      required_by_date: parsed.required_by_date ? asString(parsed.required_by_date).slice(0, 10) : "",
+      preferred_supplier_mentioned: asString(parsed.preferred_supplier_mentioned),
+      incumbent_supplier: asString(parsed.incumbent_supplier),
+      contract_type_requested: asString(parsed.contract_type_requested, "purchase"),
       data_residency_constraint: Boolean(parsed.data_residency_constraint),
       esg_requirement: Boolean(parsed.esg_requirement),
       delivery_countries: Array.isArray(parsed.delivery_countries) ? parsed.delivery_countries.join(",") : "",
@@ -442,7 +531,6 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
   async function handleParseFile(file: File) {
     setIsParsing(true)
     setError(null)
-    setUploadFile(file)
     try {
       const payload = await client.parse.parseFile(file)
       mapParsedToForm(payload.request)
@@ -456,14 +544,24 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
 
   const { control: uploadControl } = useUploadFile({
     route: "inbox",
-  } as any)
+  } as { route: string })
 
   function updateField(key: keyof RequestFormState, value: string | boolean) {
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
-  async function createAndTrigger() {
-    setIsSubmitting(true)
+  async function submitRequest(triggerPipeline: boolean) {
+    if (triggerPipeline) {
+      const missing = getMissingRequiredFields(form)
+      if (missing.length > 0) {
+        setSubmitAttempted(true)
+        setError("Complete all required fields before submitting.")
+        return
+      }
+    }
+
+    setSubmitMode(triggerPipeline ? "trigger" : "draft")
+    setSubmitAttempted(triggerPipeline)
     setError(null)
     try {
       const requestPayload = {
@@ -477,17 +575,26 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
       }
       
       const createdReq = await client.requests.create(requestPayload)
-      await client.pipeline.process({ request_id: createdReq.request_id })
+      if (triggerPipeline) {
+        await client.pipeline.process({ request_id: createdReq.request_id })
+      }
       onOpenChange(false)
+      router.refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : "Submit failed")
     } finally {
-      setIsSubmitting(false)
+      setSubmitMode(null)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (isSubmitting) return
+        onOpenChange(nextOpen)
+      }}
+    >
       <DialogContent className="max-w-5xl max-h-[90vh] overflow-hidden flex flex-col p-0 gap-0">
         {/* ── Header ── */}
         <div className="px-6 pt-6 pb-4 border-b space-y-4">
@@ -495,11 +602,11 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
             <DialogTitle className="text-xl">New Purchase Request</DialogTitle>
             <DialogDescription>
               {step === 1 && "Parse unstructured text or files to extract request details automatically."}
-              {step === 2 && "Chat with the AI to fill in any missing required fields."}
-              {step === 3 && "Review all extracted fields, make edits, and submit."}
+              {step === 2 && "Chat with AI to refine extracted details before final review."}
+              {step === 3 && "Review, complete required fields, and submit your request."}
             </DialogDescription>
           </DialogHeader>
-          <StepIndicator current={step} onNavigate={setStep} />
+          <StepIndicator current={step} onNavigate={setStep} disabled={isSubmitting} />
         </div>
 
         {/* ── Error Banner ── */}
@@ -548,7 +655,7 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
                       placeholder="e.g. &quot;We need 500 ergonomic office chairs for our Munich office by Q2 2026. Budget is around €150,000. Please check Dell and Steelcase...&quot;"
                       className="min-h-[200px] resize-none flex-1 text-sm"
                     />
-                    <Button onClick={handleParseText} disabled={isParsing || !inputText.trim()} className="w-full">
+                    <Button onClick={handleParseText} disabled={isParsing || isSubmitting || !inputText.trim()} className="w-full">
                       <Play className="mr-2 size-4" />
                       Parse Text
                     </Button>
@@ -569,10 +676,11 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
                     </div>
                     <div className="flex-1 flex items-center justify-center min-h-[200px]">
                       <UploadDropzone
-                        control={uploadControl as unknown as any}
+                        control={uploadControl as UploadHookControl<true>}
                         accept="application/pdf,image/*"
                         description="Supported formats: PDF and image files."
                         uploadOverride={(files) => {
+                          if (isSubmitting) return
                           if (files.length > 0) {
                             handleParseFile(files[0])
                           }
@@ -587,6 +695,7 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
                 <button
                   type="button"
                   onClick={() => setStep(2)}
+                  disabled={isSubmitting}
                   className="text-sm text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4 decoration-muted-foreground/40"
                 >
                   Or skip directly to AI chat →
@@ -615,11 +724,11 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
                   </CardContent>
                 </Card>
                 <div className="flex justify-between items-center">
-                  <Button variant="ghost" size="sm" onClick={() => setStep(1)}>
+                  <Button variant="ghost" size="sm" onClick={() => setStep(1)} disabled={isSubmitting}>
                     ← Back
                   </Button>
-                  <Button onClick={() => setStep(3)} size="sm">
-                    Review & Edit →
+                  <Button onClick={() => setStep(3)} size="sm" disabled={isSubmitting}>
+                    Continue to Review →
                   </Button>
                 </div>
               </div>
@@ -632,7 +741,13 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
               <FormSection title="Identity">
                 <div className="grid gap-4 md:grid-cols-2">
                   <InputField label="Request ID" value={form.request_id} onChange={(v) => updateField("request_id", v)} />
-                  <InputField label="Title" value={form.title} onChange={(v) => updateField("title", v)} required />
+                  <InputField
+                    label="Title"
+                    value={form.title}
+                    onChange={(v) => updateField("title", v)}
+                    required
+                    errorText={submitAttempted && missingRequiredFieldKeys.has("title") ? "Title is required." : undefined}
+                  />
                 </div>
                 <Textarea
                   value={form.request_text}
@@ -644,8 +759,20 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
 
               <FormSection title="Organization">
                 <div className="grid gap-4 md:grid-cols-3">
-                  <InputField label="Business Unit" value={form.business_unit} onChange={(v) => updateField("business_unit", v)} required />
-                  <InputField label="Country" value={form.country} onChange={(v) => updateField("country", v)} required />
+                  <InputField
+                    label="Business Unit"
+                    value={form.business_unit}
+                    onChange={(v) => updateField("business_unit", v)}
+                    required
+                    errorText={submitAttempted && missingRequiredFieldKeys.has("business_unit") ? "Business Unit is required." : undefined}
+                  />
+                  <InputField
+                    label="Country"
+                    value={form.country}
+                    onChange={(v) => updateField("country", v)}
+                    required
+                    errorText={submitAttempted && missingRequiredFieldKeys.has("country") ? "Country is required." : undefined}
+                  />
                   <InputField label="Site" value={form.site} onChange={(v) => updateField("site", v)} />
                   <InputField label="Requester ID" value={form.requester_id} onChange={(v) => updateField("requester_id", v)} />
                   <InputField label="Requester Role" value={form.requester_role} onChange={(v) => updateField("requester_role", v)} />
@@ -663,11 +790,32 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
 
               <FormSection title="Specifications">
                 <div className="grid gap-4 md:grid-cols-3">
-                  <InputField label="Budget Amount" value={form.budget_amount} onChange={(v) => updateField("budget_amount", v)} required placeholder="e.g. 50000" />
+                  <InputField
+                    label="Budget Amount"
+                    value={form.budget_amount}
+                    onChange={(v) => updateField("budget_amount", v)}
+                    required
+                    placeholder="e.g. 50000"
+                    errorText={submitAttempted && missingRequiredFieldKeys.has("budget_amount") ? "Budget Amount is required." : undefined}
+                  />
                   <InputField label="Currency" value={form.currency} onChange={(v) => updateField("currency", v)} />
-                  <InputField label="Quantity" value={form.quantity} onChange={(v) => updateField("quantity", v)} required placeholder="e.g. 100" />
+                  <InputField
+                    label="Quantity"
+                    value={form.quantity}
+                    onChange={(v) => updateField("quantity", v)}
+                    required
+                    placeholder="e.g. 100"
+                    errorText={submitAttempted && missingRequiredFieldKeys.has("quantity") ? "Quantity is required." : undefined}
+                  />
                   <InputField label="Unit of Measure" value={form.unit_of_measure} onChange={(v) => updateField("unit_of_measure", v)} />
-                  <InputField label="Required By Date" type="date" value={form.required_by_date} onChange={(v) => updateField("required_by_date", v)} required />
+                  <InputField
+                    label="Required By Date"
+                    type="date"
+                    value={form.required_by_date}
+                    onChange={(v) => updateField("required_by_date", v)}
+                    required
+                    errorText={submitAttempted && missingRequiredFieldKeys.has("required_by_date") ? "Required By Date is required." : undefined}
+                  />
                 </div>
               </FormSection>
 
@@ -693,19 +841,54 @@ export function IntakeWizardDialog({ open, onOpenChange }: IntakeWizardDialogPro
               </FormSection>
 
               <div className="flex justify-between items-center border-t pt-5">
-                <Button variant="ghost" onClick={() => setStep(2)}>
+                <Button variant="ghost" onClick={() => setStep(2)} disabled={isSubmitting}>
                   ← Back to Chat
                 </Button>
-                <Button onClick={createAndTrigger} disabled={isSubmitting} size="lg" className="min-w-[180px]">
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="mr-2 size-4 animate-spin" />
-                      Submitting...
-                    </>
+                <div className="flex flex-col items-end gap-2">
+                  {missingRequiredFields.length > 0 ? (
+                    <p className="text-xs text-amber-700 dark:text-amber-400">
+                      {missingRequiredFields.length} required {missingRequiredFields.length === 1 ? "field is" : "fields are"} missing:{" "}
+                      {missingRequiredFields.map((field) => field.label).join(", ")}.
+                    </p>
                   ) : (
-                    "Submit Request"
+                    <p className="text-xs text-emerald-700 dark:text-emerald-400">
+                      All required fields are complete.
+                    </p>
                   )}
-                </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => submitRequest(false)}
+                      disabled={isSubmitting}
+                      size="lg"
+                      className="min-w-[160px]"
+                    >
+                      {submitMode === "draft" ? (
+                        <>
+                          <Loader2 className="mr-2 size-4 animate-spin" />
+                          Saving...
+                        </>
+                      ) : (
+                        "Save as Draft"
+                      )}
+                    </Button>
+                    <Button
+                      onClick={() => submitRequest(true)}
+                      disabled={isSubmitting || !canSubmit}
+                      size="lg"
+                      className="min-w-[200px]"
+                    >
+                      {submitMode === "trigger" ? (
+                        <>
+                          <Loader2 className="mr-2 size-4 animate-spin" />
+                          Submitting...
+                        </>
+                      ) : (
+                        "Submit & Trigger"
+                      )}
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
