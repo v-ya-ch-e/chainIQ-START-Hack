@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.clients.organisational import org_client
-from app.routers import processing, scripts
+from app.routers import pipeline, processing, scripts
 
 
 @asynccontextmanager
@@ -34,6 +34,7 @@ app.add_middleware(
 
 app.include_router(processing.router)
 app.include_router(scripts.router)
+app.include_router(pipeline.router)
 
 
 @app.get("/health", tags=["Health"])

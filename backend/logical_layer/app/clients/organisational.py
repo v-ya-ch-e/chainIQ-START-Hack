@@ -175,5 +175,17 @@ class OrganisationalClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_escalations_by_request(self, request_id: str) -> list[dict[str, Any]]:
+        r = await self.client.get(f"/api/escalations/by-request/{request_id}")
+        if r.status_code == 404:
+            return []
+        r.raise_for_status()
+        return r.json()
+
+    async def get_supplier_win_rates(self) -> list[dict[str, Any]]:
+        r = await self.client.get("/api/analytics/supplier-win-rates")
+        r.raise_for_status()
+        return r.json()
+
 
 org_client = OrganisationalClient()

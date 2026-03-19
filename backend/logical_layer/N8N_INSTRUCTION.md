@@ -6,29 +6,55 @@ Swagger UI with interactive docs is available at `http://localhost:8080/docs`.
 
 ## Pipeline Overview
 
-The typical n8n workflow calls three endpoints in sequence:
+The n8n workflow calls endpoints in sequence with **two branching points**:
 
 ```
-1. Validate   ──→  POST /api/validate-request
-2. Filter     ──→  POST /api/filter-suppliers
-3. Rank       ──→  POST /api/rank-suppliers
+1. Fetch request    ──→  GET  Org Layer /api/requests/{id}  (or POST /api/fetch-request)
+2. Validate         ──→  POST /api/validate-request
+3. Branch: valid / invalid
+   ├─ Invalid       ──→  POST /api/format-invalid-response  ──→  Respond to Webhook
+   └─ Valid          ──→  continue
+4. Filter           ──→  POST /api/filter-suppliers
+5. Check compliance ──→  POST /api/check-compliance
+6. Branch: compliant / non-compliant
+   ├─ Compliant     ──→  POST /api/rank-suppliers  ──→  Ranked companies
+   └─ Non-compliant ──→  Excluded suppliers
+7. Merge ranked + excluded
+8. Evaluate policy  ──→  POST /api/evaluate-policy
+9. Check escalations──→  POST /api/check-escalations
+10. Recommend       ──→  POST /api/generate-recommendation
+11. Assemble        ──→  POST /api/assemble-output
+12. Respond / Save
 ```
 
-Each step is independent -- you can use them individually or chain them together. The output of step 2 feeds into step 3.
-
-There is also a stub endpoint `POST /api/processRequest` reserved for the future full pipeline.
+There is also a convenience endpoint `POST /api/processRequest` that runs all steps internally and returns the final output in a single call.
 
 ---
 
 ## Endpoints
 
-### 1. POST /api/validate-request
+### 1. POST /api/fetch-request
+
+Proxy endpoint that fetches the full purchase request from the Organisational Layer.
+
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/fetch-request` |
+| Body Content Type | JSON |
+| Body | `{ "request_id": "REQ-000004" }` |
+
+**Response:** The full purchase request object (same structure as `examples/example_request.json`).
+
+Alternatively, n8n can call the Organisational Layer directly: `GET http://organisational-layer:8000/api/requests/REQ-000004`.
+
+---
+
+### 2. POST /api/validate-request
 
 Validates a purchase request for completeness and internal consistency. Runs deterministic field checks and uses Claude (Anthropic LLM) to detect contradictions between the free-text `request_text` and the structured fields.
-
-#### Input
-
-Send the **full purchase request object** as the JSON body. All fields are accepted. The more fields you provide, the better the validation.
 
 **n8n HTTP Request node configuration:**
 
@@ -72,7 +98,7 @@ Send the **full purchase request object** as the JSON body. All fields are accep
 }
 ```
 
-#### Output
+**Response:**
 
 ```json
 {
@@ -97,72 +123,82 @@ Send the **full purchase request object** as the JSON body. All fields are accep
 }
 ```
 
-**Output fields:**
+**n8n branching:** Check `{{ $json.completeness }}`. If `false` and any issue has `type == "missing_required"`, route to the invalid request path.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `completeness` | boolean | `true` if zero issues found, `false` otherwise |
-| `issues` | array | List of validation issues (see below) |
-| `request_interpretation` | object | Structured interpretation of all key request fields |
-
-**Each issue object:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `field` | string or null | The structured field name this issue relates to |
-| `type` | string | One of: `missing_required`, `missing_optional`, `missing_info`, `contradictory` |
-| `message` | string | Human-readable explanation of the issue |
-
-**Issue types explained:**
-
-| Type | Source | Meaning |
-|------|--------|---------|
-| `missing_required` | Deterministic | A required field (request_id, created_at, category_l1, etc.) is missing or null |
-| `missing_optional` | Deterministic | A completeness field (quantity, budget_amount, required_by_date, etc.) is missing or null |
-| `missing_info` | LLM | The request_text mentions information that has no corresponding structured field |
-| `contradictory` | LLM | The request_text clearly contradicts a structured field value |
-
-**`request_interpretation` fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `category_l1` | string or null | Level-1 category |
-| `category_l2` | string or null | Level-2 category |
-| `quantity` | number or null | Requested quantity |
-| `unit_of_measure` | string or null | Unit of measure |
-| `budget_amount` | number or null | Budget amount |
-| `currency` | string or null | Currency code |
-| `delivery_country` | string or null | Primary delivery country (first from delivery_countries, or fallback to country) |
-| `required_by_date` | string or null | Deadline date (YYYY-MM-DD) |
-| `days_until_required` | integer or null | Days from created_at to required_by_date |
-| `data_residency_required` | boolean | Whether data residency is required |
-| `esg_requirement` | boolean | Whether ESG compliance is required |
-| `preferred_supplier_stated` | string or null | Supplier the requester prefers |
-| `incumbent_supplier` | string or null | Current/existing supplier |
-| `requester_instruction` | string or null | Explicit instruction extracted from request_text by LLM (e.g. "must use Dell, no exception") |
-
-#### n8n usage notes
-
-- Use the `request_interpretation` output to feed into subsequent steps (filter + rank).
-- Check `completeness` to decide whether to proceed or route to a human review step.
-- The `requester_instruction` field is useful for escalation logic downstream.
-
-#### Error responses
-
-| Status | Meaning |
-|--------|---------|
-| 400 | Invalid input (missing or malformed fields) |
-| 502 | Anthropic API error (LLM unavailable or returned an error) |
+**Error responses:** `400` if invalid input. `502` if Anthropic API error.
 
 ---
 
-### 2. POST /api/filter-suppliers
+### 3. POST /api/format-invalid-response (Invalid Request Branch)
+
+Formats a structured response for requests that fail validation. Uses Claude LLM to generate human-readable summaries and enriched issue descriptions.
+
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/format-invalid-response` |
+| Body Content Type | JSON |
+| Body | See below |
+
+**Request body:**
+
+```json
+{
+  "request_data": { ... full request object ... },
+  "validation": {
+    "completeness": false,
+    "issues": [ ... from validate-request ... ]
+  },
+  "request_interpretation": { ... from validate-request ... }
+}
+```
+
+**Response:**
+
+```json
+{
+  "request_id": "REQ-000004",
+  "processed_at": "2026-03-14T18:02:11Z",
+  "status": "invalid",
+  "validation": {
+    "completeness": "fail",
+    "issues_detected": [
+      {
+        "issue_id": "V-001",
+        "severity": "critical",
+        "type": "missing_required",
+        "description": "Required field 'category_l1' is missing.",
+        "action_required": "Provide the product category."
+      }
+    ]
+  },
+  "request_interpretation": { ... },
+  "escalations": [
+    {
+      "escalation_id": "ESC-001",
+      "rule": "ER-001",
+      "trigger": "Missing required information prevents autonomous processing.",
+      "escalate_to": "Requester Clarification",
+      "blocking": true
+    }
+  ],
+  "recommendation": {
+    "status": "cannot_proceed",
+    "reason": "Request has missing required fields that must be resolved."
+  },
+  "summary": "Human-readable summary of validation failures"
+}
+```
+
+**n8n usage:** Send this response to the Respond to Webhook node.
+
+---
+
+### 4. POST /api/filter-suppliers
 
 Filters all suppliers to only those serving the same product category as the purchase request.
-
-#### Input
-
-Send a JSON object with at least `category_l1` and `category_l2`. Extra fields are accepted and ignored.
 
 **n8n HTTP Request node configuration:**
 
@@ -173,7 +209,7 @@ Send a JSON object with at least `category_l1` and `category_l2`. Extra fields a
 | Body Content Type | JSON |
 | Body | `{ "category_l1": "...", "category_l2": "..." }` |
 
-**Example request body (minimal):**
+**Request body (use values from validate step):**
 
 ```json
 {
@@ -182,18 +218,7 @@ Send a JSON object with at least `category_l1` and `category_l2`. Extra fields a
 }
 ```
 
-You can also pass the full request object -- only `category_l1` and `category_l2` are used:
-
-```json
-{
-  "category_l1": "IT",
-  "category_l2": "Docking Stations",
-  "quantity": 240,
-  "currency": "EUR"
-}
-```
-
-#### Output
+**Response:**
 
 ```json
 {
@@ -219,53 +244,79 @@ You can also pass the full request object -- only `category_l1` and `category_l2
 }
 ```
 
-**Output fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `suppliers` | array | Matching supplier-category rows |
-| `category_l1` | string | The L1 category that was searched |
-| `category_l2` | string | The L2 category that was searched |
-| `count` | integer | Number of matching suppliers |
-
-**Each supplier object:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | integer | Primary key in the database |
-| `supplier_id` | string | Supplier ID (e.g. `SUP-0001`) |
-| `category_id` | integer | FK to the categories table |
-| `pricing_model` | string or null | e.g. `tiered`, `per_unit` |
-| `quality_score` | integer | 0-100, higher is better |
-| `risk_score` | integer | 0-100, lower is better |
-| `esg_score` | integer | 0-100, higher is better |
-| `preferred_supplier` | boolean | Whether this supplier is preferred for this category |
-| `is_restricted` | boolean | Restriction hint (cross-reference with policy for actual restrictions) |
-| `restriction_reason` | string or null | Reason if restricted |
-| `data_residency_supported` | boolean | Whether supplier supports in-country data residency |
-| `notes` | string or null | Additional notes |
-
-#### n8n usage notes
-
-- The `suppliers` array from this response is passed directly into the rank-suppliers endpoint.
-- You need `category_l1` and `category_l2` from either the original request or from the validate-request `request_interpretation` output.
-
-#### Error responses
-
-| Status | Meaning |
-|--------|---------|
-| 400 | Category not found, or category_l1/category_l2 missing |
-| 502 | Organisational Layer API unreachable |
+**Error responses:** `400` if category not found. `502` if Org Layer unreachable.
 
 ---
 
-### 3. POST /api/rank-suppliers
+### 5. POST /api/check-compliance
+
+Checks each supplier against compliance rules (restrictions, delivery coverage, data residency). Returns suppliers split into compliant and non-compliant lists.
+
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/check-compliance` |
+| Body Content Type | JSON |
+| Body | See below |
+
+**Request body:**
+
+```json
+{
+  "request_data": {
+    "category_l1": "IT",
+    "category_l2": "Docking Stations",
+    "delivery_countries": ["DE"],
+    "country": "DE",
+    "currency": "EUR",
+    "budget_amount": 25199.55,
+    "data_residency_constraint": false
+  },
+  "suppliers": [ ... from filter-suppliers ... ]
+}
+```
+
+For `request_data`, use the original request object or build it from the validate step's `request_interpretation`. For `suppliers`, pass the `suppliers` array from the filter step.
+
+**Response:**
+
+```json
+{
+  "compliant": [
+    {
+      "supplier_id": "SUP-0001",
+      "quality_score": 88,
+      "risk_score": 15,
+      "compliance_notes": "Passes all compliance checks",
+      ...
+    }
+  ],
+  "non_compliant": [
+    {
+      "supplier_id": "SUP-0008",
+      "quality_score": 70,
+      "risk_score": 34,
+      "exclusion_reason": "Restricted: Restricted above EUR 75,000",
+      ...
+    }
+  ],
+  "total_checked": 5,
+  "compliant_count": 4,
+  "non_compliant_count": 1
+}
+```
+
+**n8n branching:** Split on the `compliant` and `non_compliant` arrays. Route `compliant` to the rank step and `non_compliant` to the excluded path.
+
+**Error responses:** `400` if missing category fields. `502` if Org Layer unreachable.
+
+---
+
+### 6. POST /api/rank-suppliers
 
 Ranks suppliers by computing a "true cost" -- the effective price adjusted for quality, risk, and optionally ESG. Lower true cost = better deal.
-
-#### Input
-
-Send a JSON object with two top-level keys: `request` (the purchase request data) and `suppliers` (the supplier array from the filter step).
 
 **n8n HTTP Request node configuration:**
 
@@ -276,7 +327,7 @@ Send a JSON object with two top-level keys: `request` (the purchase request data
 | Body Content Type | JSON |
 | Body | `{ "request": {...}, "suppliers": [...] }` |
 
-**Example request body:**
+**Request body:**
 
 ```json
 {
@@ -288,213 +339,416 @@ Send a JSON object with two top-level keys: `request` (the purchase request data
     "delivery_countries": ["DE"],
     "country": "DE"
   },
-  "suppliers": [
-    {
-      "supplier_id": "SUP-0001",
-      "quality_score": 88,
-      "risk_score": 15,
-      "esg_score": 82,
-      "preferred_supplier": true,
-      "is_restricted": false
-    }
-  ]
+  "suppliers": [ ... compliant suppliers from check-compliance ... ]
 }
 ```
 
-**Required fields in `request`:**
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `category_l1` | Yes | Level-1 category |
-| `category_l2` | Yes | Level-2 category |
-| `quantity` | No | If null, pricing is skipped and suppliers are sorted by quality_score descending |
-| `esg_requirement` | No | Default false. If true, ESG score is factored into ranking |
-| `delivery_countries` | No | Used to determine pricing region. Falls back to `country` |
-| `country` | No | Fallback if delivery_countries is empty |
-
-**Required fields in each `suppliers` entry:**
-
-| Field | Required | Description |
-|-------|----------|-------------|
-| `supplier_id` | Yes | Supplier ID |
-| `quality_score` | Yes | 0-100 |
-| `risk_score` | Yes | 0-100 |
-| `esg_score` | Yes | 0-100 |
-
-#### Output
+**Response:**
 
 ```json
 {
   "ranked": [
     {
       "rank": 1,
-      "supplier_id": "SUP-0001",
-      "true_cost": 28750.42,
-      "overpayment": 3550.87,
-      "quality_score": 88,
-      "risk_score": 15,
-      "esg_score": 82,
-      "total_price": 25199.55,
-      "unit_price": 104.998,
+      "supplier_id": "SUP-0007",
+      "true_cost": 43551.22,
+      "overpayment": 7839.22,
+      "quality_score": 82,
+      "risk_score": 19,
+      "esg_score": 72,
+      "total_price": 35712.00,
+      "unit_price": 148.80,
       "currency": "EUR",
-      "standard_lead_time_days": 14,
-      "expedited_lead_time_days": 7,
+      "standard_lead_time_days": 26,
+      "expedited_lead_time_days": 18,
       "preferred_supplier": true,
       "is_restricted": false
     }
   ],
   "category_l1": "IT",
   "category_l2": "Docking Stations",
-  "count": 1
+  "count": 3
 }
 ```
 
-**Output fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `ranked` | array | Suppliers sorted by true_cost ascending (best first) |
-| `category_l1` | string | The L1 category |
-| `category_l2` | string | The L2 category |
-| `count` | integer | Number of ranked suppliers |
-
-**Each ranked supplier object:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `rank` | integer | Position (1 = best deal) |
-| `supplier_id` | string | Supplier ID |
-| `true_cost` | number or null | Effective price adjusted for quality/risk/ESG. Null if quantity is null |
-| `overpayment` | number or null | Hidden cost: `true_cost - total_price`. Null if quantity is null |
-| `quality_score` | integer | Raw quality score (0-100) |
-| `risk_score` | integer | Raw risk score (0-100, lower is better) |
-| `esg_score` | integer | Raw ESG score (0-100) |
-| `total_price` | number or null | Total order cost from pricing lookup. Null if quantity is null |
-| `unit_price` | number or null | Per-unit price. Null if quantity is null |
-| `currency` | string or null | Pricing currency (EUR, CHF, USD) |
-| `standard_lead_time_days` | integer or null | Standard delivery lead time in days |
-| `expedited_lead_time_days` | integer or null | Expedited delivery lead time in days |
-| `preferred_supplier` | boolean | Whether preferred for this category |
-| `is_restricted` | boolean | Restriction hint flag |
-
-#### Scoring formula
+**Scoring formula:**
 
 ```
 true_cost = total_price / (quality_score / 100) / ((100 - risk_score) / 100)
 ```
 
-When `esg_requirement` is true:
+When `esg_requirement` is true: `/ (esg_score / 100)`.
 
-```
-true_cost = total_price / (quality_score / 100) / ((100 - risk_score) / 100) / (esg_score / 100)
-```
-
-The `overpayment` field shows how much extra you effectively pay due to quality and risk gaps.
-
-#### n8n usage notes
-
-- Pass the entire `suppliers` array from the filter-suppliers response as-is into the `suppliers` field.
-- For `request`, you can use the `request_interpretation` from validate-request, or the original request object. Just make sure `category_l1` and `category_l2` are present.
-- If `quantity` is null, no pricing lookup is performed. Suppliers are ranked by `quality_score` descending instead.
-- Suppliers with no matching pricing tier are excluded from results.
-
-#### Error responses
-
-| Status | Meaning |
-|--------|---------|
-| 400 | Required fields missing (category_l1, category_l2, or supplier fields) |
-| 502 | Organisational Layer API unreachable |
+**Error responses:** `400` if missing required fields. `502` if Org Layer unreachable.
 
 ---
 
-### 4. POST /api/processRequest (stub)
+### 7. POST /api/evaluate-policy
 
-Placeholder for the future full pipeline. Currently returns a stub response.
+Evaluates procurement policies: approval threshold, preferred supplier analysis, restriction checks, and applicable rules.
 
-#### Input
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/evaluate-policy` |
+| Body Content Type | JSON |
+| Body | See below |
+
+**Request body:**
 
 ```json
 {
-  "request_id": "REQ-000004"
+  "request_data": { ... full request object ... },
+  "ranked_suppliers": [ ... from rank-suppliers ... ],
+  "non_compliant_suppliers": [ ... from check-compliance non_compliant ... ]
 }
 ```
 
-#### Output
+**Response:**
+
+```json
+{
+  "approval_threshold": {
+    "rule_applied": "AT-002",
+    "basis": "Contract value of EUR 25199.55 falls in threshold AT-002...",
+    "quotes_required": 2,
+    "approvers": ["business", "procurement"],
+    "deviation_approval": "Procurement Manager",
+    "note": null
+  },
+  "preferred_supplier": {
+    "supplier": "Dell Enterprise Europe",
+    "status": "eligible",
+    "is_preferred": true,
+    "covers_delivery_country": true,
+    "is_restricted": false,
+    "policy_note": "..."
+  },
+  "restricted_suppliers": {
+    "SUP-0008_Computacenter_Devices": {
+      "restricted": false,
+      "note": "No restriction for IT/Docking Stations in DE."
+    }
+  },
+  "category_rules_applied": [],
+  "geography_rules_applied": []
+}
+```
+
+**Error responses:** `400` if missing fields. `502` if Org Layer unreachable.
+
+---
+
+### 8. POST /api/check-escalations
+
+Fetches computed escalations from the Organisational Layer's escalation engine (ER-001 through ER-008 + AT threshold conflict detection).
+
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/check-escalations` |
+| Body Content Type | JSON |
+| Body | `{ "request_id": "REQ-000004" }` |
+
+**Response:**
 
 ```json
 {
   "request_id": "REQ-000004",
-  "status": "not_implemented",
-  "message": "Full processing pipeline is not yet implemented. Use /api/filter-suppliers and /api/rank-suppliers for individual steps."
+  "escalations": [
+    {
+      "escalation_id": "ESC-001",
+      "rule": "ER-001",
+      "rule_label": "Missing Required Information",
+      "trigger": "Budget is insufficient...",
+      "escalate_to": "Requester Clarification",
+      "blocking": true,
+      "status": "open"
+    }
+  ],
+  "has_blocking": true,
+  "count": 3
 }
 ```
+
+**Error responses:** `502` if Org Layer unreachable.
 
 ---
 
-### 5. GET /health
+### 9. POST /api/generate-recommendation
 
-Liveness check. No input required.
+Generates a procurement recommendation based on escalations, ranked suppliers, and validation results. Uses Claude LLM for human-readable reasoning.
 
-#### Output
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/generate-recommendation` |
+| Body Content Type | JSON |
+| Body | See below |
+
+**Request body:**
 
 ```json
 {
-  "status": "ok"
+  "escalations": [ ... from check-escalations ... ],
+  "ranked_suppliers": [ ... from rank-suppliers ... ],
+  "validation": { ... from validate-request ... },
+  "request_interpretation": { ... from validate-request ... }
 }
 ```
+
+**Response:**
+
+```json
+{
+  "status": "cannot_proceed",
+  "reason": "Three blocking issues prevent autonomous award: insufficient budget, policy conflict with requester's single-supplier instruction, and infeasible delivery timeline.",
+  "preferred_supplier_if_resolved": "Bechtle Workplace Solutions",
+  "preferred_supplier_rationale": "Bechtle is the incumbent and lowest-cost option at EUR 35,712.",
+  "minimum_budget_required": 35712.00,
+  "minimum_budget_currency": "EUR"
+}
+```
+
+**Status values:**
+
+| Status | Meaning |
+|--------|---------|
+| `proceed` | No escalations; autonomous award is possible |
+| `proceed_with_conditions` | Non-blocking escalations exist; can proceed with oversight |
+| `cannot_proceed` | Blocking escalations; human resolution required |
+
+**Error responses:** `502` if LLM error.
+
+---
+
+### 10. POST /api/assemble-output
+
+Assembles all pipeline step outputs into the final format matching `example_output.json`. Uses Claude LLM to enrich validation issues and supplier recommendation notes.
+
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/assemble-output` |
+| Body Content Type | JSON |
+| Body | See below |
+
+**Request body:**
+
+```json
+{
+  "request_id": "REQ-000004",
+  "request_data": { ... full request object ... },
+  "validation": { ... from validate-request ... },
+  "request_interpretation": { ... from validate-request ... },
+  "ranked_suppliers": [ ... from rank-suppliers ... ],
+  "non_compliant_suppliers": [ ... from check-compliance non_compliant ... ],
+  "policy_evaluation": { ... from evaluate-policy ... },
+  "escalations": [ ... from check-escalations ... ],
+  "recommendation": { ... from generate-recommendation ... },
+  "historical_awards": [ ... optional ... ]
+}
+```
+
+**Response:** The complete pipeline output with all 8 sections:
+
+```json
+{
+  "request_id": "REQ-000004",
+  "processed_at": "2026-03-14T18:02:11Z",
+  "request_interpretation": { ... },
+  "validation": {
+    "completeness": "pass|fail",
+    "issues_detected": [ { "issue_id", "severity", "type", "description", "action_required" } ]
+  },
+  "policy_evaluation": { ... },
+  "supplier_shortlist": [ { "rank", "supplier_id", "supplier_name", ... } ],
+  "suppliers_excluded": [ { "supplier_id", "supplier_name", "reason" } ],
+  "escalations": [ { "escalation_id", "rule", "trigger", "escalate_to", "blocking" } ],
+  "recommendation": { ... },
+  "audit_trail": {
+    "policies_checked": [...],
+    "supplier_ids_evaluated": [...],
+    "pricing_tiers_applied": "...",
+    "data_sources_used": [...],
+    "historical_awards_consulted": true,
+    "historical_award_note": "..."
+  }
+}
+```
+
+**Error responses:** `502` if LLM error.
+
+---
+
+### 11. POST /api/processRequest (Full Pipeline)
+
+Convenience endpoint that runs all pipeline steps internally. Equivalent to calling steps 1-11 in sequence.
+
+**n8n HTTP Request node configuration:**
+
+| Setting | Value |
+|---------|-------|
+| Method | POST |
+| URL | `http://logical-layer:8080/api/processRequest` |
+| Body Content Type | JSON |
+| Body | `{ "request_id": "REQ-000004" }` |
+
+**Response:** Same structure as `/api/assemble-output` with an additional `status` field (`"processed"` or `"invalid"`).
+
+---
+
+### 12. GET /health
+
+Liveness check. No input required.
+
+**Response:** `{ "status": "ok" }`
 
 ---
 
 ## Chaining Steps in n8n
 
-### Recommended flow
+### Complete pipeline flow with branching
 
 ```
-┌─────────────────────┐
-│  Fetch request data  │  (from Organisational Layer or your data source)
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  POST /api/         │  Input:  full request object
-│  validate-request   │  Output: completeness, issues, request_interpretation
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  Check completeness │  Branch: if completeness == false → route to human review
-└──────────┬──────────┘
-           │ (completeness == true)
-           ▼
-┌─────────────────────┐
-│  POST /api/         │  Input:  { "category_l1": ..., "category_l2": ... }
-│  filter-suppliers   │         (from request_interpretation or original request)
-└──────────┬──────────┘  Output: { suppliers: [...], count: N }
-           │
-           ▼
-┌─────────────────────┐
-│  POST /api/         │  Input:  { "request": ..., "suppliers": <from previous step> }
-│  rank-suppliers     │  Output: { ranked: [...], count: N }
-└──────────┬──────────┘
-           │
-           ▼
-┌─────────────────────┐
-│  Process results    │  Use ranked suppliers for decision-making,
-│  (your logic)       │  escalation, or award recommendation
-└─────────────────────┘
+┌──────────────────────────┐
+│  GET Org Layer           │  Fetch request data
+│  /api/requests/{id}      │  (or POST /api/fetch-request)
+└────────────┬─────────────┘
+             │ request_data
+             ▼
+┌──────────────────────────┐
+│  POST /api/              │  Input:  full request object
+│  validate-request        │  Output: completeness, issues, request_interpretation
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│  Branch: completeness?   │
+│  Has missing_required?   │
+└──┬───────────────────┬───┘
+   │ Invalid           │ Valid
+   ▼                   ▼
+┌──────────────────┐  ┌──────────────────────────┐
+│ POST /api/       │  │  POST /api/              │
+│ format-invalid-  │  │  filter-suppliers        │
+│ response         │  │  Input: category_l1, l2  │
+└────────┬─────────┘  └────────────┬─────────────┘
+         │                         │ suppliers[]
+         ▼                         ▼
+┌──────────────────┐  ┌──────────────────────────┐
+│ Respond to       │  │  POST /api/              │
+│ Webhook          │  │  check-compliance        │
+└──────────────────┘  │  Input: request_data,    │
+                      │         suppliers         │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │  Branch: compliant?      │
+                      └──┬───────────────────┬───┘
+                         │ Non-compliant     │ Compliant
+                         ▼                   ▼
+                      ┌──────────────┐  ┌──────────────────────────┐
+                      │ Collect      │  │  POST /api/              │
+                      │ excluded     │  │  rank-suppliers          │
+                      │ suppliers    │  │  Input: request,         │
+                      └──────┬───────┘  │         compliant suppl. │
+                             │          └────────────┬─────────────┘
+                             │                       │ ranked[]
+                             ▼                       ▼
+                      ┌──────────────────────────────────┐
+                      │           Merge                   │
+                      └────────────────┬─────────────────┘
+                                       │
+                                       ▼
+                      ┌──────────────────────────┐
+                      │  POST /api/              │
+                      │  evaluate-policy         │
+                      │  Input: request_data,    │
+                      │    ranked, non_compliant │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │  POST /api/              │
+                      │  check-escalations       │
+                      │  Input: request_id       │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │  POST /api/              │
+                      │  generate-recommendation │
+                      │  Input: escalations,     │
+                      │    ranked, validation    │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │  POST /api/              │
+                      │  assemble-output         │
+                      │  Input: all step outputs │
+                      └────────────┬─────────────┘
+                                   │
+                                   ▼
+                      ┌──────────────────────────┐
+                      │  Respond / Save          │
+                      └──────────────────────────┘
 ```
 
 ### Mapping data between steps
 
-**Validate -> Filter:**
+**Fetch → Validate:**
+- Pass the full request object from the Org Layer as the body to validate-request.
+
+**Validate → Branch:**
+- Check `{{ $json.completeness }}` and whether any issue has `type == "missing_required"`.
+- If invalid: route to `format-invalid-response` with the request data, validation result, and interpretation.
+
+**Validate → Filter:**
 - Use `{{ $json.request_interpretation.category_l1 }}` and `{{ $json.request_interpretation.category_l2 }}` from the validate output as input to filter.
 
-**Filter -> Rank:**
-- Pass the `suppliers` array from the filter output directly into the rank input's `suppliers` field: `{{ $json.suppliers }}`
-- For the `request` field, use either the original request object or build it from the validate output's `request_interpretation`.
+**Filter → Check Compliance:**
+- Pass the original request object (or build from interpretation) as `request_data`.
+- Pass `{{ $json.suppliers }}` from filter output as `suppliers`.
 
-**Key fields to carry forward from validate:**
+**Check Compliance → Branch:**
+- Split on `compliant` and `non_compliant` arrays.
+
+**Compliant → Rank:**
+- Pass the `compliant` array as `suppliers` in the rank input.
+- For `request`, use the original request object or build from interpretation (need category_l1, category_l2, quantity, esg_requirement, delivery_countries).
+
+**Merge → Evaluate Policy:**
+- Pass original request as `request_data`.
+- Pass ranked suppliers as `ranked_suppliers`.
+- Pass non-compliant suppliers as `non_compliant_suppliers`.
+
+**Evaluate Policy → Check Escalations:**
+- Pass `{ "request_id": "REQ-000004" }`.
+
+**Check Escalations → Generate Recommendation:**
+- Pass `escalations` from check-escalations.
+- Pass `ranked` array from rank-suppliers as `ranked_suppliers`.
+- Pass `validation` and `request_interpretation` from validate step.
+
+**Generate Recommendation → Assemble Output:**
+- Combine all outputs: request_id, request_data, validation, interpretation, ranked_suppliers, non_compliant_suppliers, policy_evaluation, escalations, recommendation.
+
+### Key fields to carry forward from validate
+
 - `request_interpretation.quantity` -- needed for pricing in rank
 - `request_interpretation.esg_requirement` -- determines whether ESG factors into ranking
 - `request_interpretation.delivery_country` -- determines pricing region
 - `request_interpretation.requester_instruction` -- useful for downstream escalation logic
+- `request_interpretation.currency` -- needed for approval tier lookup
+- `request_interpretation.budget_amount` -- needed for budget sufficiency checks

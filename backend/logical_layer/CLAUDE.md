@@ -6,7 +6,7 @@
 
 # **SERVICE OVERVIEW**
 
-Procurement decision engine (Logical Layer) for the ChainIQ platform. Provides HTTP API endpoints that n8n workflows call to validate purchase requests, filter suppliers by product category, and rank them by true cost. The full end-to-end processing pipeline (`/api/processRequest`) is a stub — individual steps are exposed as separate endpoints so n8n can orchestrate them.
+Procurement decision engine (Logical Layer) for the ChainIQ platform. Provides HTTP API endpoints that n8n workflows call to validate purchase requests, filter suppliers by product category, check compliance rules, rank suppliers by true cost, evaluate procurement policies, check escalations, generate recommendations, and assemble auditable pipeline output. The full end-to-end processing pipeline is available both as individual endpoints (for n8n orchestration) and as a single convenience endpoint (`/api/processRequest`).
 
 ## How to run
 
@@ -21,7 +21,7 @@ uvicorn app.main:app --reload --port 8080
 Swagger UI: http://localhost:8080/docs
 
 **Requires the Organisational Layer to be running** (default: port 8000).
-**Requires `ANTHROPIC_API_KEY` to be set** for the `/api/validate-request` endpoint.
+**Requires `ANTHROPIC_API_KEY` to be set** for endpoints that use Claude LLM (validate-request, format-invalid-response, generate-recommendation, assemble-output).
 
 ## Docker (both services together)
 
@@ -38,15 +38,24 @@ docker compose up --build
 |------|---------|
 | `app/main.py` | FastAPI app entry point, CORS, router registration, `/health` endpoint |
 | `app/config.py` | Pydantic Settings — reads `ORGANISATIONAL_LAYER_URL` from env |
-| `app/clients/organisational.py` | Async HTTP client wrapping Organisational Layer API calls (for future pipeline use) |
-| `app/routers/processing.py` | `POST /api/processRequest` — stub endpoint (not yet implemented) |
+| `app/clients/organisational.py` | Async HTTP client wrapping all Org Layer API calls (requests, analytics, escalations, awards) |
+| `app/routers/processing.py` | `POST /api/processRequest` — full pipeline endpoint |
 | `app/routers/scripts.py` | `POST /api/filter-suppliers`, `/api/rank-suppliers`, `/api/validate-request` — script-backed endpoints |
-| `app/schemas/processing.py` | Pydantic models for the processRequest stub |
+| `app/routers/pipeline.py` | `POST /api/fetch-request`, `/api/check-compliance`, `/api/evaluate-policy`, `/api/check-escalations`, `/api/generate-recommendation`, `/api/assemble-output`, `/api/format-invalid-response` — pipeline step endpoints |
+| `app/schemas/processing.py` | Pydantic models for the processRequest endpoint |
 | `app/schemas/scripts.py` | Pydantic models for the filter, rank, and validate endpoints |
-| `scripts/filterCompaniesByProduct.py` | Standalone script: filters suppliers by product category via Organisational Layer API |
-| `scripts/rankCompanies.py` | Standalone script: ranks suppliers by true cost (price adjusted for quality/risk/ESG) |
-| `scripts/validateRequest.py` | Standalone script: validates purchase request completeness and consistency using deterministic checks + Anthropic LLM |
+| `app/schemas/pipeline.py` | Pydantic models for all pipeline step endpoints |
+| `scripts/validateRequest.py` | Validates purchase request completeness and consistency using deterministic checks + Anthropic LLM |
+| `scripts/filterCompaniesByProduct.py` | Filters suppliers by product category via Organisational Layer API |
+| `scripts/rankCompanies.py` | Ranks suppliers by true cost (price adjusted for quality/risk/ESG) |
+| `scripts/checkCompliance.py` | Checks each supplier against compliance rules (restrictions, delivery coverage, data residency) |
+| `scripts/evaluatePolicy.py` | Evaluates procurement policies (approval tier, preferred supplier, applicable rules) |
+| `scripts/checkEscalations.py` | Fetches computed escalations from the Org Layer |
+| `scripts/generateRecommendation.py` | Generates recommendation status and reasoning using deterministic logic + Claude LLM |
+| `scripts/assembleOutput.py` | Assembles all step outputs into final pipeline output with LLM-enriched descriptions |
+| `scripts/formatInvalidResponse.py` | Formats structured response for invalid requests with LLM-generated summaries |
 | `scripts/SCRIPTS_DOCUMENTATION.md` | Detailed documentation for all scripts |
+| `N8N_INSTRUCTION.md` | Complete n8n integration guide with endpoint docs and pipeline flow |
 | `Dockerfile` | Python 3.14-slim container, copies `app/` and `scripts/`, runs uvicorn on port 8080 |
 | `requirements.txt` | fastapi, uvicorn, httpx, pydantic-settings, python-dotenv, anthropic |
 | `.env.example` | Template: `ORGANISATIONAL_LAYER_URL`, `ANTHROPIC_API_KEY` |
@@ -59,114 +68,86 @@ docker compose up --build
 | `POST` | `/api/validate-request` | Active | Validate request completeness and consistency (uses Anthropic LLM) |
 | `POST` | `/api/filter-suppliers` | Active | Filter suppliers by product category |
 | `POST` | `/api/rank-suppliers` | Active | Rank suppliers by true cost |
-| `POST` | `/api/processRequest` | Stub | Full pipeline (not yet implemented) |
-
-### POST /api/validate-request
-
-Accepts a full purchase request, runs deterministic checks for required/optional fields, then uses the Anthropic API to detect contradictions between the free-text `request_text` and structured fields. Returns validation issues and a structured interpretation.
-
-**Request body:** A full purchase request JSON object (same structure as `examples/example_request.json`).
-
-**Response:**
-```json
-{
-  "completeness": false,
-  "issues": [
-    {
-      "field": "quantity",
-      "type": "missing_optional",
-      "message": "Field 'quantity' is missing or null — request is incomplete."
-    }
-  ],
-  "request_interpretation": {
-    "category_l1": "IT",
-    "category_l2": "Hardware",
-    "quantity": null,
-    "budget_amount": 50000,
-    "currency": "EUR",
-    "delivery_country": "DE",
-    "requester_instruction": "must use Dell"
-  }
-}
-```
-
-### POST /api/filter-suppliers
-
-Accepts a purchase request with `category_l1` and `category_l2`, queries the Organisational Layer to find all suppliers serving that exact category, and returns matching supplier-category rows.
-
-**Request body:**
-```json
-{
-  "category_l1": "IT",
-  "category_l2": "Hardware"
-}
-```
-
-**Response:** `{ "suppliers": [...], "category_l1": "...", "category_l2": "...", "count": N }`
-
-### POST /api/rank-suppliers
-
-Accepts a purchase request dict and a list of supplier rows (typically from `/api/filter-suppliers`), computes a true-cost score adjusted for quality, risk, and optionally ESG, and returns suppliers ranked best-to-worst.
-
-**Request body:**
-```json
-{
-  "request": {
-    "category_l1": "IT",
-    "category_l2": "Hardware",
-    "quantity": 50,
-    "esg_requirement": false,
-    "delivery_countries": ["DE"]
-  },
-  "suppliers": [ ... ]
-}
-```
-
-**Response:** `{ "ranked": [...], "category_l1": "...", "category_l2": "...", "count": N }`
-
-### POST /api/processRequest
-
-Stub endpoint. Accepts `{"request_id": "REQ-000004"}` and returns `{"request_id": "...", "status": "not_implemented", "message": "..."}`. Will be implemented later as the full procurement decision pipeline.
+| `POST` | `/api/fetch-request` | Active | Fetch request from Org Layer (proxy) |
+| `POST` | `/api/check-compliance` | Active | Check supplier compliance (restrictions, delivery, residency) |
+| `POST` | `/api/evaluate-policy` | Active | Evaluate procurement policies (approval tier, preferred, rules) |
+| `POST` | `/api/check-escalations` | Active | Fetch computed escalations for a request |
+| `POST` | `/api/generate-recommendation` | Active | Generate recommendation with LLM reasoning |
+| `POST` | `/api/assemble-output` | Active | Assemble final pipeline output with LLM enrichment |
+| `POST` | `/api/format-invalid-response` | Active | Format response for invalid requests |
+| `POST` | `/api/processRequest` | Active | Full pipeline — runs all steps and returns complete output |
 
 ## Architecture
 
 ```
 n8n workflow
   │
-  ├─ POST /api/validate-request  ──→  Logical Layer (8080)
-  │                                        │ Anthropic API
-  │                                        ▼
-  │                                  Claude (LLM)
+  ├─ POST /api/fetch-request        ──→  Logical Layer (8080)
+  │                                           │ httpx (async)
+  │                                           ▼
+  │                                     Organisational Layer (8000)
   │
-  ├─ POST /api/filter-suppliers  ──→  Logical Layer (8080)
-  │                                        │ urllib
-  │                                        ▼
-  │                                  Organisational Layer (8000)
-  │                                        │ SQL
-  │                                        ▼
-  │                                  AWS RDS MySQL
+  ├─ POST /api/validate-request     ──→  Logical Layer (8080)
+  │                                           │ Anthropic SDK
+  │                                           ▼
+  │                                     Claude (LLM)
   │
-  └─ POST /api/rank-suppliers    ──→  Logical Layer (8080)
-                                           │ urllib
-                                           ▼
-                                     Organisational Layer (8000)
+  ├─ POST /api/filter-suppliers     ──→  Logical Layer (8080)
+  │                                           │ urllib
+  │                                           ▼
+  │                                     Organisational Layer (8000)
+  │
+  ├─ POST /api/check-compliance     ──→  Logical Layer (8080)
+  │                                           │ urllib
+  │                                           ▼
+  │                                     Organisational Layer (8000)
+  │
+  ├─ POST /api/rank-suppliers       ──→  Logical Layer (8080)
+  │                                           │ urllib
+  │                                           ▼
+  │                                     Organisational Layer (8000)
+  │
+  ├─ POST /api/evaluate-policy      ──→  Logical Layer (8080)
+  │                                           │ urllib
+  │                                           ▼
+  │                                     Organisational Layer (8000)
+  │
+  ├─ POST /api/check-escalations    ──→  Logical Layer (8080)
+  │                                           │ urllib
+  │                                           ▼
+  │                                     Organisational Layer (8000)
+  │
+  ├─ POST /api/generate-recommendation ──→ Logical Layer (8080)
+  │                                           │ Anthropic SDK
+  │                                           ▼
+  │                                     Claude (LLM)
+  │
+  ├─ POST /api/assemble-output      ──→  Logical Layer (8080)
+  │                                           │ Anthropic SDK
+  │                                           ▼
+  │                                     Claude (LLM)
+  │
+  └─ POST /api/format-invalid-response ──→ Logical Layer (8080)
+                                              │ Anthropic SDK
+                                              ▼
+                                        Claude (LLM)
 ```
 
-n8n orchestrates the multi-step flow: validate the request, then filter suppliers, then rank them. The Logical Layer delegates data access to the Organisational Layer via HTTP and uses the Anthropic API for LLM-powered validation.
+n8n orchestrates the multi-step pipeline with branching on validation and compliance. The Logical Layer delegates data access to the Organisational Layer via HTTP and uses the Anthropic API for LLM-powered validation, recommendation, and enrichment.
 
 ## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORGANISATIONAL_LAYER_URL` | `http://organisational-layer:8000` (Docker) / `http://3.68.96.236:8000` (scripts standalone) | Base URL of the Organisational Layer API |
-| `ANTHROPIC_API_KEY` | *(none — required)* | API key for the Anthropic API, used by `validateRequest.py` |
+| `ANTHROPIC_API_KEY` | *(none — required)* | API key for the Anthropic API, used by validate, recommend, assemble, and format-invalid scripts |
 
 The FastAPI app reads `ORGANISATIONAL_LAYER_URL` via `app/config.py` (Pydantic Settings). The standalone scripts in `scripts/` also read this env var (falling back to the hardcoded production URL if unset). `ANTHROPIC_API_KEY` is read by the `anthropic` SDK directly from the environment.
 
 ## Tech stack
 
 - **Python 3.14** / FastAPI / httpx / Pydantic
-- **Anthropic SDK** for LLM-powered request validation (Claude claude-sonnet-4-6)
+- **Anthropic SDK** for LLM-powered validation, recommendation, and enrichment (Claude claude-sonnet-4-6)
 - Scripts use Python standard library (`urllib`, `json`, `os`, `sys`) + `anthropic` + `python-dotenv`
 - Talks to Organisational Layer via HTTP (no direct DB connection)
 - Docker / docker-compose for deployment (unified compose at `backend/docker-compose.yml`)
