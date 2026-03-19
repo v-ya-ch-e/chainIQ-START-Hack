@@ -16,7 +16,7 @@ export ORGANISATIONAL_LAYER_URL=http://localhost:8000
 ORGANISATIONAL_LAYER_URL=http://organisational-layer:8000
 ```
 
-The validate script requires the `ANTHROPIC_API_KEY` environment variable for LLM-powered checks. It also loads variables from the `.env` file in the `backend/logical_layer/` directory via `python-dotenv`.
+The create and validate scripts require the `ANTHROPIC_API_KEY` environment variable for LLM-powered processing. They load variables from the `.env` file in the `backend/logical_layer/` directory via `python-dotenv`.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -53,9 +53,14 @@ Full Swagger documentation is available at `http://localhost:8080/docs`.
 ### 2. Import as a module (for in-process Python use)
 
 ```python
+from scripts.createRequest import create_request
 from scripts.validateRequest import validate_request
 from scripts.filterCompaniesByProduct import filter_suppliers
 from scripts.rankCompanies import rank_suppliers
+
+# Step 0: create structured request from any input
+result = create_request(file_content)  # str in -> {"complete": bool, "request": dict}
+request_data = result["request"]
 
 # Step 1: validate
 validation = validate_request(request_data)  # dict in -> dict out
@@ -71,6 +76,15 @@ rank_result = rank_suppliers(request_data, filter_result["suppliers"])  # dicts 
 
 ```python
 import subprocess, json
+
+# createRequest
+proc = subprocess.run(
+    ["python3", "scripts/createRequest.py"],
+    input=file_content,
+    capture_output=True, text=True,
+)
+create_result = json.loads(proc.stdout)
+request_data = create_result["request"]
 
 # validateRequest
 proc = subprocess.run(
@@ -100,10 +114,91 @@ rank_result = json.loads(proc.stdout)
 ### 4. Original file-based CLI (still works)
 
 ```bash
+python3 scripts/createRequest.py input.txt request.json
 python3 scripts/validateRequest.py request.json validation_output.json
 python3 scripts/filterCompaniesByProduct.py request.json suppliers.json
 python3 scripts/rankCompanies.py request.json suppliers.json ranked.json
 ```
+
+---
+
+## createRequest.py
+
+Converts any file into a structured purchase request JSON matching the `examples/example_request.json` schema. Accepts both structured (JSON) and unstructured (plain text, email, memo, etc.) inputs. Both paths converge through the same schema-enforcement and field-filling pipeline.
+
+### Function API
+
+```python
+create_request(file_content: str) -> dict
+```
+
+**Input** — raw file content as a string (JSON or unstructured text).
+
+**Output:**
+```json
+{
+  "complete": false,
+  "request": {
+    "request_id": "REQ-TEST-001",
+    "created_at": "2026-03-19T06:38:35Z",
+    "request_channel": null,
+    "request_language": null,
+    "business_unit": null,
+    "country": null,
+    "site": null,
+    "requester_id": null,
+    "requester_role": null,
+    "submitted_for_id": null,
+    "category_l1": "IT",
+    "category_l2": "Monitors",
+    "title": "100 Monitors for Amsterdam Office",
+    "request_text": "Need 100 monitors for our Amsterdam office by 2026-06-01. Budget is 30000 EUR.",
+    "currency": "EUR",
+    "budget_amount": 30000,
+    "quantity": 100,
+    "unit_of_measure": "device",
+    "required_by_date": "2026-06-01",
+    "preferred_supplier_mentioned": null,
+    "incumbent_supplier": null,
+    "contract_type_requested": null,
+    "delivery_countries": ["NL"],
+    "data_residency_constraint": false,
+    "esg_requirement": false,
+    "status": "new",
+    "scenario_tags": []
+  }
+}
+```
+
+The `complete` flag is `true` only when every field in the request is non-null and non-empty.
+
+### CLI Usage
+
+| Mode | Command |
+|------|---------|
+| stdin/stdout | `cat input.txt \| python3 scripts/createRequest.py` |
+| File (stdout) | `python3 scripts/createRequest.py input.txt` |
+| File (output) | `python3 scripts/createRequest.py input.txt output.json` |
+
+### How It Works
+
+1. **File type detection** — Attempts `json.loads()` on the file content. If it succeeds and the result is a dict, the data enters the JSON path. Otherwise it enters the unstructured path.
+2. **Unstructured path** — Sends the raw content to Claude (claude-sonnet-4-6) with a system prompt containing the full target schema. The LLM extracts all available fields and returns a JSON object. This JSON then enters the same pipeline as the JSON path (steps 3-4).
+3. **Schema enforcement** (`_ensure_schema`) — Guarantees all 27 canonical fields exist. Missing string fields default to `null`, booleans to `false`, lists to `[]`, and `status` to `"new"`. If `created_at` is still null after filling, it is set to the current UTC timestamp.
+4. **Gap filling** (`_fill_from_request_text`) — Identifies fillable fields that are still `null` or empty. If a `request_text` field exists, makes a single Anthropic API call with a conservative prompt that extracts values ONLY for fields explicitly and directly stated in the text. Fields not mentioned remain `null`.
+5. **Completeness check** (`_is_complete`) — Checks every canonical field for non-null, non-empty values. Returns the `complete` boolean flag alongside the request.
+
+### Fillable Fields
+
+These are the fields that the gap-filling step attempts to extract from `request_text`:
+
+`quantity`, `budget_amount`, `currency`, `required_by_date`, `unit_of_measure`, `category_l1`, `category_l2`, `preferred_supplier_mentioned`, `delivery_countries`, `data_residency_constraint`, `esg_requirement`, `contract_type_requested`, `title`
+
+### Dependencies
+
+- `anthropic` — Anthropic Python SDK
+- `python-dotenv` — Loads `.env` file for API key
+- Requires `ANTHROPIC_API_KEY` environment variable
 
 ---
 
