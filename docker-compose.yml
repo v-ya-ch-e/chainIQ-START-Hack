@@ -20,36 +20,8 @@ services:
       timeout: 5s
       retries: 25
       start_period: 15s
-    restart: unless-stopped
-
-  backend:
-    build:
-      context: ./backend/organisational_layer
-      dockerfile: Dockerfile
-      target: runtime
-    environment:
-      DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: ${MYSQL_USER:-chainiq}
-      DB_PASSWORD: ${MYSQL_PASSWORD:-chainiq}
-      DB_NAME: ${MYSQL_DATABASE:-chainiq}
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
-    depends_on:
-      mysql:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
+    networks:
+      - chainiq
     restart: unless-stopped
 
   frontend:
@@ -58,14 +30,13 @@ services:
       dockerfile: Dockerfile
       target: runner
     environment:
-      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://backend:8000}
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://organisational-layer:8000}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       NODE_ENV: production
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
-    depends_on:
-      backend:
-        condition: service_healthy
+    networks:
+      - chainiq
     restart: unless-stopped
 
   migrator:
@@ -84,8 +55,15 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+    networks:
+      - chainiq
     profiles: ["tools"]
     restart: "no"
 
 volumes:
   mysql_data:
+
+networks:
+  chainiq:
+    name: chainiq-network
+    external: true

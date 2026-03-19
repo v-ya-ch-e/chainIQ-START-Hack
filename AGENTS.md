@@ -69,33 +69,43 @@ The judges value **correct uncertainty handling** over confident wrong answers. 
 
 ## Current Full-Stack Wiring (Implemented)
 
-- Frontend and backend are now integrated and run together via Docker Compose.
-- Compose services:
-  - `frontend` (Next.js)
-  - `backend` (FastAPI)
-  - `mysql` (MySQL 8.4)
+- The project uses **two independent Docker Compose stacks** on a shared network (`chainiq-network`).
+- Backend stack (`backend/docker-compose.yml`):
+  - `organisational-layer` (FastAPI, port 8000) — CRUD + analytics API
+  - `logical-layer` (FastAPI, port 8080) — Procurement decision engine
+- Frontend stack (`docker-compose.yml` at repo root):
+  - `frontend` (Next.js, port 3000)
+  - `mysql` (MySQL 8.4, port 3306) — local dev only
   - `migrator` (one-shot data bootstrap using `database_init/migrate.py`)
 - Root orchestration files:
-  - `docker-compose.yml` (production-like defaults)
-  - `docker-compose.override.yml` (development hot-reload)
-  - `.env.example` (shared env contract)
+  - `docker-compose.yml` (frontend + MySQL + migrator)
+  - `docker-compose.override.yml` (development hot-reload for frontend)
+  - `.env.example` (frontend stack env contract)
 - Container files:
   - `frontend/Dockerfile`, `frontend/.dockerignore`
   - `backend/organisational_layer/Dockerfile`, `backend/organisational_layer/.dockerignore`
+  - `backend/logical_layer/Dockerfile`
 
 ## Local Runbook
 
-1. Copy env:
+1. Create shared network (one-time):
+   - `docker network create chainiq-network`
+2. Copy env files:
    - `cp .env.example .env`
-2. Start stack (dev mode):
+   - `cp backend/organisational_layer/.env.example backend/organisational_layer/.env`
+   - `cp backend/logical_layer/.env.example backend/logical_layer/.env`
+3. Start backend stack:
+   - `cd backend && docker compose up --build -d && cd ..`
+4. Start frontend stack (dev mode):
    - `docker compose up --build`
-3. Bootstrap database (first run / after reset):
+5. Bootstrap database (first run / after reset):
    - `docker compose --profile tools run --rm migrator`
 
 Default local URLs:
 
 - Frontend: `http://localhost:3000`
-- Backend: `http://localhost:8000`
+- Organisational Layer: `http://localhost:8000`
+- Logical Layer: `http://localhost:8080`
 - MySQL: `localhost:3306`
 
 ## Integration Notes
@@ -104,12 +114,8 @@ Default local URLs:
 - Frontend server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal networking.
 - Mock fixture pass-through in `frontend/src/lib/data/cases.ts` has been replaced with backend-backed async mapping logic.
 
-## AWS Deployment (No CloudFront)
+## Deployment
 
-- Dedicated AWS Compose stack: `docker-compose.aws.yml`
-- Public ingress is Nginx on port 80 using `deploy/nginx/aws.conf`
-- Environment template for AWS: `.env.aws.example`
-- Preferred DB mode is external RDS (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
-- Optional fallback profile to run local MySQL in Compose: `--profile localdb`
-- One-shot data bootstrap on AWS:
-  - `docker compose -f docker-compose.aws.yml --env-file .env.aws --profile tools run --rm migrator`
+- Full deployment guide: `DEPLOYMENT.md` (covers local dev, AWS EC2 + RDS, nginx reverse proxy)
+- Reference nginx config: `deploy/nginx/aws.conf`
+- AWS env template: `.env.aws.example`

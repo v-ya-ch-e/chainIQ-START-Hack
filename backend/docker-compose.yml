@@ -11,6 +11,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    networks:
+      - chainiq
     restart: unless-stopped
 
   logical-layer:
@@ -28,4 +30,11 @@ services:
     depends_on:
       organisational-layer:
         condition: service_healthy
+    networks:
+      - chainiq
     restart: unless-stopped
+
+networks:
+  chainiq:
+    name: chainiq-network
+    external: true
