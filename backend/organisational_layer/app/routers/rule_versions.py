@@ -5,15 +5,14 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
+from app.models.requests import Request
 from app.models.evaluations import (
     EvaluationRun,
     HardRuleCheck,
     PolicyCheck,
-    RuleChangeLog,
     RuleDefinition,
     RuleVersion,
     SupplierEvaluation,
@@ -21,6 +20,7 @@ from app.models.evaluations import (
 from app.schemas.rule_versions import (
     EvaluationDetailOut,
     EvaluationRunCreate,
+    FullEvaluationTriggerCreate,
     RuleCheckOut,
     RuleDefinitionOut,
     RuleVersionCreate,
@@ -100,60 +100,27 @@ def create_rule_version(
 ):
     """
     Add a new rule version. Sets valid_to=NOW() on the previously active version.
-    Returns the new version.
+    Returns the new version. Uses ACID transaction workflow:
+    1. INSERT new rule_version, 2. UPDATE previous valid_to, 3. INSERT rule_change_logs.
     """
-    # Ensure rule exists
+    from app.services.transaction_workflows import apply_rule_update
+
     rule = db.query(RuleDefinition).filter(RuleDefinition.rule_id == body.rule_id).first()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule definition not found")
 
-    now = datetime.utcnow()
-    old_version = _get_active_version(db, body.rule_id)
-
-    # Get next version number
-    max_ver = (
-        db.query(func.max(RuleVersion.version_num))
-        .filter(RuleVersion.rule_id == body.rule_id)
-        .scalar()
-    )
-    version_num = (max_ver or 0) + 1
-
-    # Set valid_to on previous active version
-    if old_version:
-        old_version.valid_to = now
-        old_version.changed_by = body.changed_by
-        old_version.change_reason = body.change_reason
-
-    # Create new version
-    new_version_id = str(uuid.uuid4())
-    new_version = RuleVersion(
-        version_id=new_version_id,
-        rule_id=body.rule_id,
-        version_num=version_num,
-        rule_config=body.rule_config,
-        valid_from=now,
-        valid_to=None,
-        changed_by=body.changed_by,
-        change_reason=body.change_reason,
-    )
-    db.add(new_version)
-    db.flush()  # Ensure new_version is inserted before rule_change_log (FK dependency)
-
-    # Audit log
-    rule_change_log = RuleChangeLog(
-        log_id=str(uuid.uuid4()),
-        rule_id=body.rule_id,
-        old_version_id=old_version.version_id if old_version else None,
-        new_version_id=new_version_id,
-        changed_at=now,
-        changed_by=body.changed_by or "system",
-        change_reason=body.change_reason,
-    )
-    db.add(rule_change_log)
-
-    db.commit()
-    db.refresh(new_version)
-    return new_version
+    try:
+        new_version = apply_rule_update(
+            db=db,
+            rule_id=body.rule_id,
+            rule_config=body.rule_config,
+            changed_by=body.changed_by or "system",
+            change_reason=body.change_reason,
+        )
+        return new_version
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/versions/active/{rule_id}", response_model=RuleVersionOut)
@@ -277,6 +244,44 @@ def get_evaluation_detail(
     )
 
 
+@router.post("/evaluations/full", response_model=dict)
+def create_full_evaluation_trigger(
+    body: FullEvaluationTriggerCreate,
+    db: Session = Depends(get_db),
+):
+    """
+    Full evaluation trigger with ACID workflow:
+    1. INSERT evaluation_runs, 2. INSERT hard_rule_checks + policy_checks,
+    3. INSERT escalations + supplier_evaluations, 4. INSERT escalation_logs + evaluation_run_logs,
+    5. UPDATE evaluation_runs status.
+    """
+    from app.services.transaction_workflows import run_evaluation_trigger
+
+    req = db.query(Request).filter(Request.request_id == body.request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    try:
+        run_evaluation_trigger(
+            db=db,
+            run_id=body.run_id,
+            request_id=body.request_id,
+            triggered_by=body.triggered_by,
+            agent_version=body.agent_version,
+            hard_rule_checks=[h.model_dump() for h in body.hard_rule_checks],
+            policy_checks=[p.model_dump() for p in body.policy_checks],
+            supplier_evaluations=[s.model_dump() for s in body.supplier_evaluations],
+            escalations=[e.model_dump() for e in body.escalations],
+            output_snapshot=body.output_snapshot,
+            parent_run_id=body.parent_run_id,
+            trigger_reason=body.trigger_reason,
+        )
+        return {"run_id": body.run_id, "status": "created"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/evaluations", response_model=dict)
 def create_evaluation_run(
     body: EvaluationRunCreate,
@@ -287,8 +292,6 @@ def create_evaluation_run(
     Each check must include rule_id and version_id for traceability.
     Called by logical layer after processing a request.
     """
-    from app.models.requests import Request
-
     req = db.query(Request).filter(Request.request_id == body.request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")

@@ -162,3 +162,76 @@ class RuleChangeLog(Base):
     changed_by = Column(String(100), nullable=False)
     change_reason = Column(Text, nullable=True)
     affected_runs = Column(JSON, nullable=True)
+
+
+class Escalation(Base):
+    """Escalation entity from an evaluation run. Operational record."""
+
+    __tablename__ = "escalations"
+
+    escalation_id = Column(String(36), primary_key=True)
+    run_id = Column(String(36), ForeignKey("evaluation_runs.run_id"), nullable=False)
+    rule_id = Column(String(10), ForeignKey("rule_definitions.rule_id"), nullable=False)
+    version_id = Column(String(36), ForeignKey("rule_versions.version_id"), nullable=False)
+    trigger_table = Column(String(30), nullable=False)
+    trigger_check_id = Column(String(36), nullable=False)
+    escalation_target = Column(String(100), nullable=False)
+    escalation_reason = Column(Text, nullable=False)
+    event_type = Column(String(50), nullable=False)
+    event_dispatched_at = Column(DateTime, nullable=True)
+    event_payload = Column(JSON, nullable=True)
+    event_status = Column(String(20), nullable=False, default="pending")
+    status = Column(String(20), nullable=False, default="open")
+    resolved_by = Column(String(100), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolution_note = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
+
+class EscalationLog(Base):
+    """Audit trail for changes to escalations."""
+
+    __tablename__ = "escalation_logs"
+
+    log_id = Column(String(36), primary_key=True)
+    escalation_id = Column(String(36), ForeignKey("escalations.escalation_id"), nullable=False)
+    changed_at = Column(DateTime, nullable=False)
+    changed_by = Column(String(100), nullable=False)
+    change_type = Column(String(30), nullable=False)
+    field_changed = Column(String(50), nullable=True)
+    old_value = Column(JSON, nullable=True)
+    new_value = Column(JSON, nullable=True)
+    note = Column(Text, nullable=True)
+
+
+class PolicyChangeLog(Base):
+    """Audit trail for policy-related changes (e.g. when user changes escalation)."""
+
+    __tablename__ = "policy_change_logs"
+
+    log_id = Column(String(36), primary_key=True)
+    escalation_id = Column(String(36), ForeignKey("escalations.escalation_id"), nullable=False)
+    changed_at = Column(DateTime, nullable=False)
+    changed_by = Column(String(100), nullable=False)
+    change_type = Column(String(30), nullable=False)
+    policy_rule_id = Column(String(10), nullable=True)
+    old_value = Column(JSON, nullable=True)
+    new_value = Column(JSON, nullable=True)
+    note = Column(Text, nullable=True)
+
+
+class EvaluationRunLog(Base):
+    """Audit trail for evaluation run status/outcome changes."""
+
+    __tablename__ = "evaluation_run_logs"
+
+    log_id = Column(String(36), primary_key=True)
+    run_id = Column(String(36), ForeignKey("evaluation_runs.run_id"), nullable=False)
+    changed_at = Column(DateTime, nullable=False)
+    changed_by = Column(String(100), nullable=False)
+    change_type = Column(String(30), nullable=False)
+    old_status = Column(String(20), nullable=True)
+    new_status = Column(String(20), nullable=True)
+    old_outcome = Column(String(20), nullable=True)
+    new_outcome = Column(String(20), nullable=True)
+    note = Column(Text, nullable=True)

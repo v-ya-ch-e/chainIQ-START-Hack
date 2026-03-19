@@ -126,6 +126,21 @@ class SupplierEvaluationCreate(BaseModel):
     pricing_snapshot: dict[str, Any] | None = None
 
 
+class EscalationCreate(BaseModel):
+    """Escalation entity for evaluation trigger workflow."""
+
+    escalation_id: str | None = None
+    rule_id: str
+    version_id: str
+    escalation_target: str
+    escalation_reason: str
+    trigger_table: str = "policy_checks"
+    trigger_check_id: str = ""
+    event_type: str = "escalation"
+    event_status: str = "pending"
+    status: str = "open"
+
+
 class EvaluationRunCreate(BaseModel):
     """Create an evaluation run with checks. Used by logical layer after processing."""
 
@@ -141,3 +156,9 @@ class EvaluationRunCreate(BaseModel):
     hard_rule_checks: list[HardRuleCheckCreate] = []
     policy_checks: list[PolicyCheckCreate] = []
     supplier_evaluations: list[SupplierEvaluationCreate] = []
+
+
+class FullEvaluationTriggerCreate(EvaluationRunCreate):
+    """Full evaluation trigger with escalations. Uses ACID workflow with audit trail."""
+
+    escalations: list[EscalationCreate] = []

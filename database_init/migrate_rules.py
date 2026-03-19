@@ -220,6 +220,74 @@ def run_migrations():
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
     """)
 
+    # V4/V7: escalations (operational entity from evaluation runs) + escalation_logs (audit trail)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS escalations (
+          escalation_id       CHAR(36)     NOT NULL,
+          run_id              CHAR(36)     NOT NULL,
+          rule_id             VARCHAR(10)  NOT NULL,
+          version_id          CHAR(36)     NOT NULL,
+          trigger_table       VARCHAR(30)  NOT NULL,
+          trigger_check_id    CHAR(36)     NOT NULL,
+          escalation_target   VARCHAR(100) NOT NULL,
+          escalation_reason   TEXT         NOT NULL,
+          event_type          VARCHAR(50)  NOT NULL,
+          event_dispatched_at DATETIME     NULL,
+          event_payload        JSON         NULL,
+          event_status        VARCHAR(20)  NOT NULL DEFAULT 'pending',
+          status              VARCHAR(20)  NOT NULL DEFAULT 'open',
+          resolved_by         VARCHAR(100) NULL,
+          resolved_at         DATETIME     NULL,
+          resolution_note     TEXT         NULL,
+          created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (escalation_id),
+          INDEX idx_esc_run_rule     (run_id, rule_id),
+          INDEX idx_esc_status       (status),
+          CONSTRAINT fk_esc_run     FOREIGN KEY (run_id)      REFERENCES evaluation_runs(run_id),
+          CONSTRAINT fk_esc_rule    FOREIGN KEY (rule_id)     REFERENCES rule_definitions(rule_id),
+          CONSTRAINT fk_esc_version FOREIGN KEY (version_id)  REFERENCES rule_versions(version_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS escalation_logs (
+          log_id         CHAR(36)     NOT NULL,
+          escalation_id  CHAR(36)     NOT NULL,
+          changed_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          changed_by     VARCHAR(100) NOT NULL,
+          change_type    VARCHAR(30)  NOT NULL,
+          field_changed  VARCHAR(50)  NULL,
+          old_value      JSON         NULL,
+          new_value      JSON         NULL,
+          note           TEXT         NULL,
+          PRIMARY KEY (log_id),
+          INDEX idx_elog_escalation (escalation_id),
+          INDEX idx_elog_changed_at (changed_at),
+          CONSTRAINT fk_elog_escalation FOREIGN KEY (escalation_id)
+            REFERENCES escalations(escalation_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
+    # policy_change_logs: audit trail for policy-related changes (e.g. when user changes escalation)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS policy_change_logs (
+          log_id         CHAR(36)     NOT NULL,
+          escalation_id  CHAR(36)     NOT NULL,
+          changed_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          changed_by     VARCHAR(100) NOT NULL,
+          change_type    VARCHAR(30)  NOT NULL,
+          policy_rule_id VARCHAR(10)  NULL,
+          old_value      JSON         NULL,
+          new_value      JSON         NULL,
+          note           TEXT         NULL,
+          PRIMARY KEY (log_id),
+          INDEX idx_pcl_esc (escalation_id),
+          INDEX idx_pcl_time (changed_at),
+          CONSTRAINT fk_pcl_esc FOREIGN KEY (escalation_id)
+            REFERENCES escalations(escalation_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+    """)
+
     conn.commit()
 
     # Seed rule_definitions (V6)
