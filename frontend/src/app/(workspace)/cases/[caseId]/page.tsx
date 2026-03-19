@@ -8,10 +8,10 @@ export default async function Page({
   searchParams,
 }: {
   params: Promise<{ caseId: string }>
-  searchParams: Promise<{ tab?: string }>
+  searchParams: Promise<{ tab?: string; created?: string }>
 }) {
   const { caseId } = await params
-  const { tab } = await searchParams
+  const { tab, created } = await searchParams
   const data = await getCaseDetail(caseId)
 
   if (!data) {
@@ -28,6 +28,7 @@ export default async function Page({
       key={`${data.id}-${initialTab ?? "overview"}`}
       data={data}
       initialTab={initialTab}
+      createdFromIntake={created === "1"}
     />
   )
 }

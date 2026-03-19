@@ -92,6 +92,7 @@ async def generate_recommendation(
         reason = ""
         rationale: str | None = None
         llm_used = False
+        llm_fallback = False
 
         if llm_client:
             llm_used = True
@@ -109,6 +110,7 @@ async def generate_recommendation(
                 reason = llm_result.reason
                 rationale = llm_result.preferred_supplier_rationale
             else:
+                llm_fallback = True
                 pipeline_logger.audit(
                     "general", "warn", STEP_NAME,
                     "LLM call failed for recommendation. Using deterministic fallback.",
@@ -139,6 +141,8 @@ async def generate_recommendation(
             minimum_budget_required=minimum_budget,
             minimum_budget_currency=currency if minimum_budget else None,
             confidence_score=confidence,
+            llm_used=llm_used,
+            llm_fallback=llm_fallback,
         )
 
         pipeline_logger.audit(
@@ -165,7 +169,12 @@ async def generate_recommendation(
             )
 
         ctx.output_summary = {"status": status, "confidence": confidence}
-        ctx.metadata = {"status": status, "confidence": confidence}
+        ctx.metadata = {
+            "status": status,
+            "confidence": confidence,
+            "llm_used": llm_used,
+            "llm_fallback": llm_fallback,
+        }
 
         return result
 

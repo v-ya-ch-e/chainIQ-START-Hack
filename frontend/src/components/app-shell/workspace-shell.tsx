@@ -4,39 +4,20 @@ import type { ReactNode } from "react"
 import Image from "next/image"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import {
-  ChevronsUpDown,
-  ChevronRight,
-  LogOut,
-  Settings,
-  User,
-} from "lucide-react"
+import { ChevronRight } from "lucide-react"
 
 import { AppNavigation } from "@/components/app-shell/nav-links"
+import { NavUser } from "@/components/app-shell/nav-user"
 import { PageTransition } from "@/components/shared/page-transition"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
   SidebarInset,
-  SidebarMenu,
-  SidebarMenuItem,
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
-import { buttonVariants } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
 
 interface WorkspaceShellProps {
   children: ReactNode
@@ -93,56 +74,13 @@ export function WorkspaceShell({
         </SidebarContent>
 
         <SidebarFooter>
-          <SidebarMenu>
-            <SidebarMenuItem>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  className={cn(
-                    buttonVariants({ variant: "ghost", size: "lg" }),
-                    "w-full justify-start gap-2 rounded-lg px-2 text-left ring-sidebar-ring hover:bg-sidebar-accent focus-visible:ring-2",
-                  )}
-                >
-                  <Avatar className="size-8 rounded-lg">
-                    <AvatarFallback className="rounded-lg text-xs">
-                      MA
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
-                    <span className="truncate font-medium">Max Analyst</span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      Procurement Analyst
-                    </span>
-                  </div>
-                  <ChevronsUpDown className="ml-auto size-4 group-data-[collapsible=icon]:hidden" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="top"
-                  align="start"
-                  sideOffset={8}
-                  className="w-56"
-                >
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel>My Account</DropdownMenuLabel>
-                    <DropdownMenuItem>
-                      <User className="size-4" />
-                      Profile
-                    </DropdownMenuItem>
-                    <DropdownMenuItem>
-                      <Settings className="size-4" />
-                      Settings
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem>
-                      <LogOut className="size-4" />
-                      Log out
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </SidebarMenuItem>
-          </SidebarMenu>
+          <NavUser
+            user={{
+              name: "Max Analyst",
+              email: "max.analyst@chainiq.com",
+              avatar: "",
+            }}
+          />
         </SidebarFooter>
 
       </Sidebar>
@@ -210,12 +148,27 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
     return [{ label: "Inbox" }]
   }
 
+  if (normalizedPath === "/intake") {
+    return [{ label: "Intake" }]
+  }
+
   if (normalizedPath === "/escalations") {
     return [{ label: "Escalations" }]
   }
 
   if (normalizedPath === "/audit") {
     return [{ label: "Audit" }]
+  }
+
+  if (normalizedPath === "/data") {
+    return [{ label: "Data" }]
+  }
+
+  if (normalizedPath === "/cases/new") {
+    return [
+      { label: "Inbox", href: "/inbox" },
+      { label: "New Case" },
+    ]
   }
 
   if (normalizedPath.startsWith("/cases/")) {

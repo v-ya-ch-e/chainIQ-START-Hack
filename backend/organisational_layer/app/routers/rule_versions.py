@@ -38,9 +38,12 @@ from app.schemas.rule_versions import (
     PolicyChangeLogOut,
     RuleChangeLogOut,
     RuleCheckOut,
+    RuleDefinitionCreate,
     RuleDefinitionOut,
+    RuleDefinitionUpdate,
     RuleVersionCreate,
     RuleVersionOut,
+    RuleVersionUpdate,
     RuleVersionWithDefinitionOut,
     SupplierRuleBreakdownOut,
 )
@@ -60,6 +63,11 @@ def _get_active_version(db: Session, rule_id: str) -> RuleVersion | None:
     )
 
 
+def _rule_exists(db: Session, rule_id: str) -> bool:
+    """Check if rule definition exists (avoids FK violation when migrate_rules not run)."""
+    return db.query(RuleDefinition).filter(RuleDefinition.rule_id == rule_id).first() is not None
+
+
 @router.get("/definitions", response_model=list[RuleDefinitionOut])
 def list_rule_definitions(db: Session = Depends(get_db)):
     """List all rule definitions (HR-*, PC-*, ER-*)."""
@@ -73,6 +81,54 @@ def get_rule_definition(rule_id: str, db: Session = Depends(get_db)):
     if not r:
         raise HTTPException(status_code=404, detail="Rule definition not found")
     return r
+
+
+@router.post("/definitions", response_model=RuleDefinitionOut, status_code=201)
+def create_rule_definition(body: RuleDefinitionCreate, db: Session = Depends(get_db)):
+    """Create a new rule definition."""
+    existing = db.query(RuleDefinition).filter(RuleDefinition.rule_id == body.rule_id).first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Rule definition {body.rule_id} already exists")
+    rule = RuleDefinition(
+        rule_id=body.rule_id,
+        rule_type=body.rule_type,
+        rule_name=body.rule_name,
+        is_skippable=body.is_skippable,
+        source=body.source,
+        active=True,
+        created_at=datetime.utcnow(),
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.patch("/definitions/{rule_id}", response_model=RuleDefinitionOut)
+def update_rule_definition(
+    rule_id: str,
+    body: RuleDefinitionUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update mutable fields on a rule definition (rule_name, is_skippable, active)."""
+    rule = db.query(RuleDefinition).filter(RuleDefinition.rule_id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule definition not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(rule, field, value)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.delete("/definitions/{rule_id}", status_code=204)
+def delete_rule_definition(rule_id: str, db: Session = Depends(get_db)):
+    """Soft-delete a rule definition by setting active=False."""
+    rule = db.query(RuleDefinition).filter(RuleDefinition.rule_id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule definition not found")
+    rule.active = False
+    db.commit()
 
 
 @router.get("/versions", response_model=list[RuleVersionWithDefinitionOut])
@@ -148,6 +204,50 @@ def get_active_version(rule_id: str, db: Session = Depends(get_db)):
             status_code=404,
             detail=f"No active version found for rule {rule_id}",
         )
+    return v
+
+
+@router.get("/versions/{version_id}", response_model=RuleVersionWithDefinitionOut)
+def get_rule_version(version_id: str, db: Session = Depends(get_db)):
+    """Get a single rule version by its UUID, including parent definition metadata."""
+    row = (
+        db.query(RuleVersion)
+        .join(RuleDefinition, RuleVersion.rule_id == RuleDefinition.rule_id)
+        .add_columns(RuleDefinition.rule_name, RuleDefinition.rule_type)
+        .filter(RuleVersion.version_id == version_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Rule version not found")
+    v, rule_name, rule_type = row
+    return RuleVersionWithDefinitionOut(
+        version_id=v.version_id,
+        rule_id=v.rule_id,
+        version_num=v.version_num,
+        rule_config=v.rule_config,
+        valid_from=v.valid_from,
+        valid_to=v.valid_to,
+        changed_by=v.changed_by,
+        change_reason=v.change_reason,
+        rule_name=rule_name,
+        rule_type=rule_type,
+    )
+
+
+@router.patch("/versions/{version_id}", response_model=RuleVersionOut)
+def update_rule_version_metadata(
+    version_id: str,
+    body: RuleVersionUpdate,
+    db: Session = Depends(get_db),
+):
+    """Update metadata on a rule version (changed_by, change_reason). Config is immutable."""
+    v = db.query(RuleVersion).filter(RuleVersion.version_id == version_id).first()
+    if not v:
+        raise HTTPException(status_code=404, detail="Rule version not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(v, field, value)
+    db.commit()
+    db.refresh(v)
     return v
 
 
@@ -547,10 +647,12 @@ def create_evaluation_from_pipeline(
     for e in suppliers_excluded:
         sid = e.get("supplier_id", "")
         reason = (e.get("reason", "") or "").lower()
+        excl_rule = "PC-004" if "restricted" in reason else "HR-003"
+        exclusion_rule_id = excl_rule if _rule_exists(db, excl_rule) else None
         supplier_evaluations.append({
             "supplier_id": sid,
             "excluded": True,
-            "exclusion_rule_id": "PC-004" if "restricted" in reason else "HR-003",
+            "exclusion_rule_id": exclusion_rule_id,
             "exclusion_reason": e.get("reason", ""),
             "hard_checks_total": 0,
             "hard_checks_passed": 0,
@@ -567,6 +669,8 @@ def create_evaluation_from_pipeline(
         rule = esc.get("rule", "ER-001")
         v = _get_active_version(db, rule)
         version_id = v.version_id if v else (pc001 or "")
+        if not version_id:
+            continue  # Skip if rule_versions not seeded (migrate_rules.py required)
         escalations.append({
             "escalation_id": esc.get("escalation_id", f"ESC-{j+1:03d}"),
             "rule_id": rule,
@@ -999,3 +1103,12 @@ def list_rule_change_logs(
         q = q.filter(RuleChangeLog.rule_id == rule_id)
     rows = q.order_by(RuleChangeLog.changed_at.desc()).all()
     return [RuleChangeLogOut.model_validate(r) for r in rows]
+
+
+@router.get("/logs/rule-change/{log_id}", response_model=RuleChangeLogOut)
+def get_rule_change_log(log_id: str, db: Session = Depends(get_db)):
+    """Get a single rule change log entry by UUID."""
+    row = db.query(RuleChangeLog).filter(RuleChangeLog.log_id == log_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rule change log not found")
+    return RuleChangeLogOut.model_validate(row)

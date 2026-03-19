@@ -1,4 +1,4 @@
-"""Pipeline status, result, and audit read endpoints."""
+"""Pipeline status, result, audit read, and report endpoints."""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from app.clients.organisational import OrganisationalClient
 from app.dependencies import get_org_client, get_pipeline_runner
 from app.pipeline.runner import PipelineRunner
+from app.reports.audit_report import generate_audit_report
 
 logger = logging.getLogger(__name__)
 
@@ -32,20 +34,24 @@ async def get_pipeline_status(
         raise HTTPException(status_code=404, detail="No pipeline runs found")
 
     latest = runs[0] if isinstance(runs, list) else runs
-    if isinstance(runs, list) and runs:
-        latest = runs[0]
-
-    cached = runner.get_cached_result(request_id)
 
     response: dict = {
         "request_id": request_id,
         "latest_run": latest,
     }
 
+    cached = runner.get_cached_result(request_id)
     if cached:
         response["recommendation_status"] = cached.recommendation.status
         response["escalation_count"] = len(cached.escalations)
         response["confidence_score"] = cached.recommendation.confidence_score
+    else:
+        persisted = await org.get_latest_pipeline_result(request_id)
+        if persisted:
+            summary = persisted.get("summary") or {}
+            response["recommendation_status"] = persisted.get("recommendation_status")
+            response["escalation_count"] = summary.get("escalation_count", 0)
+            response["confidence_score"] = summary.get("confidence_score", 0)
 
     return response
 
@@ -53,16 +59,26 @@ async def get_pipeline_status(
 @router.get("/result/{request_id}")
 async def get_pipeline_result(
     request_id: str,
+    org: OrganisationalClient = Depends(get_org_client),
     runner: PipelineRunner = Depends(get_pipeline_runner),
 ):
-    """Get the full pipeline result from the latest successful run."""
+    """Get the full pipeline result from the latest successful run.
+
+    Checks in-memory cache first, then falls back to the org layer's
+    persisted pipeline results.
+    """
     cached = runner.get_cached_result(request_id)
-    if not cached:
-        raise HTTPException(
-            status_code=404,
-            detail="No pipeline result found. Process the request first.",
-        )
-    return cached.model_dump()
+    if cached:
+        return cached.model_dump()
+
+    persisted = await org.get_latest_pipeline_result(request_id)
+    if persisted and persisted.get("output"):
+        return persisted["output"]
+
+    raise HTTPException(
+        status_code=404,
+        detail="No pipeline result found. Process the request first.",
+    )
 
 
 @router.get("/runs")
@@ -92,6 +108,52 @@ async def get_run(
         return await org.get_run(run_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Org Layer unreachable: {exc}")
+
+
+@router.get("/report/{request_id}")
+async def get_audit_report(
+    request_id: str,
+    org: OrganisationalClient = Depends(get_org_client),
+    runner: PipelineRunner = Depends(get_pipeline_runner),
+):
+    """Generate a PDF audit report for a processed request.
+
+    Aggregates the pipeline result, audit logs, and audit summary into
+    a downloadable PDF document.
+    """
+    cached = runner.get_cached_result(request_id)
+    if cached:
+        pipeline_result = cached.model_dump()
+    else:
+        persisted = await org.get_latest_pipeline_result(request_id)
+        if persisted and persisted.get("output"):
+            pipeline_result = persisted["output"]
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail="No pipeline result found. Process the request first.",
+            )
+
+    audit_logs: list[dict] = []
+    audit_summary: dict | None = None
+    try:
+        audit_resp = await org.get_audit_by_request(request_id, limit=500)
+        audit_logs = audit_resp.get("items", []) if isinstance(audit_resp, dict) else []
+    except Exception as exc:
+        logger.warning("Could not fetch audit logs for report: %s", exc)
+    try:
+        audit_summary = await org.get_audit_summary(request_id)
+    except Exception as exc:
+        logger.warning("Could not fetch audit summary for report: %s", exc)
+
+    pdf_buffer = generate_audit_report(pipeline_result, audit_logs, audit_summary)
+
+    filename = f"{request_id}-audit-report.pdf"
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/audit/{request_id}")

@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { ArrowRight, Search } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
@@ -35,6 +35,7 @@ import {
 import { formatDateTime } from "@/lib/data/formatters"
 import type { QueueEscalationItem } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
+import { chainIqApi } from "@/lib/api/client"
 
 interface EscalationsPageProps {
   items: QueueEscalationItem[]
@@ -47,6 +48,11 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
   const [blockingFilter, setBlockingFilter] = useState("all")
   const [selectedEscalationId, setSelectedEscalationId] = useState<string | null>(null)
   const [isReviewOpen, setIsReviewOpen] = useState(false)
+  const [ruleDetails, setRuleDetails] = useState<Record<string, unknown> | null>(null)
+  const [auditSummary, setAuditSummary] = useState<Record<string, unknown> | null>(null)
+  const [pipelineStatus, setPipelineStatus] = useState<Record<string, unknown> | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -85,6 +91,45 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
     setSelectedEscalationId(item.escalationId)
     setIsReviewOpen(true)
   }
+
+  useEffect(() => {
+    let active = true
+    async function hydrateReviewState() {
+      if (!selectedItem || !isReviewOpen) {
+        return
+      }
+      try {
+        setReviewLoading(true)
+        setReviewError(null)
+        const [rule, summary, status] = await Promise.all([
+          chainIqApi.rules.escalationById(selectedItem.ruleId),
+          chainIqApi.pipeline
+            .auditSummary(selectedItem.caseId)
+            .catch(() => null),
+          chainIqApi.pipeline.status(selectedItem.caseId).catch(() => null),
+        ])
+        if (!active) return
+        setRuleDetails((rule as unknown as Record<string, unknown>) ?? null)
+        setAuditSummary((summary as unknown as Record<string, unknown>) ?? null)
+        setPipelineStatus((status as Record<string, unknown>) ?? null)
+      } catch (error) {
+        if (!active) return
+        setReviewError(
+          error instanceof Error
+            ? error.message
+            : "Failed to load related escalation context.",
+        )
+      } finally {
+        if (active) {
+          setReviewLoading(false)
+        }
+      }
+    }
+    hydrateReviewState()
+    return () => {
+      active = false
+    }
+  }, [isReviewOpen, selectedItem])
 
   return (
     <>
@@ -328,6 +373,48 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                   <DetailRow
                     label="Last updated"
                     value={formatDateTime(selectedItem.lastUpdated)}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-lg border p-3">
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Related rule and runtime context
+                </p>
+                {reviewLoading ? (
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Loading additional context...
+                  </p>
+                ) : null}
+                {reviewError ? (
+                  <p className="mt-2 text-sm text-rose-700">{reviewError}</p>
+                ) : null}
+                <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+                  <DetailRow
+                    label="Rule action"
+                    value={String(ruleDetails?.action ?? "Not available")}
+                  />
+                  <DetailRow
+                    label="Rule trigger condition"
+                    value={String(
+                      ruleDetails?.trigger_condition ?? "Not available",
+                    )}
+                  />
+                  <DetailRow
+                    label="Audit entries"
+                    value={String(auditSummary?.total_entries ?? "N/A")}
+                  />
+                  <DetailRow
+                    label="Escalations in audit"
+                    value={String(auditSummary?.escalation_count ?? "N/A")}
+                  />
+                  <DetailRow
+                    label="Pipeline status"
+                    value={String(pipelineStatus?.status ?? "Unavailable")}
+                  />
+                  <DetailRow
+                    label="Pipeline run"
+                    value={String(pipelineStatus?.run_id ?? "Unavailable")}
                   />
                 </div>
               </div>

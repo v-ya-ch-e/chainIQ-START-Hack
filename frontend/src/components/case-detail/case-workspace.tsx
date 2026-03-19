@@ -1,15 +1,16 @@
 "use client"
 
-import { ArrowLeft, Download, Loader2, Play, ShieldCheck, ShoppingCart, TimerReset } from "lucide-react"
+import { Activity, ArrowLeft, Download, Loader2, Play, RefreshCw, ShieldCheck, ShoppingCart, TimerReset } from "lucide-react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useRouter } from "next/navigation"
 
 import { SectionHeading } from "@/components/shared/section-heading"
+import { JsonViewer } from "@/components/shared/json-viewer"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -18,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Separator } from "@/components/ui/separator"
 import {
   Sheet,
   SheetContent,
@@ -29,7 +31,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   formatCurrency,
   formatDate,
-  formatDateDdMmYyyy,
   formatDateTime,
   scoreTone,
   severityTone,
@@ -43,43 +44,98 @@ import type {
   SupplierRow,
 } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
+import { chainIqApi } from "@/lib/api/client"
+import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
+import {
+  classifyPipelineStatus,
+  useRequestStatusPoller,
+} from "@/lib/pipeline/request-status-poller"
 
 interface CaseWorkspaceProps {
   data: CaseDetail
   initialTab?: CaseTab
-  /** When provided, pre-select this run (e.g. from /cases/eval/[runId] page). */
+  createdFromIntake?: boolean
   initialRunId?: string
-  /** When true, show "Return to latest decision" button linking to case page. */
   showReturnToLatest?: boolean
 }
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
 
+function livePhaseLabel(phase: "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out") {
+  switch (phase) {
+    case "queued":
+      return "Queued"
+    case "running":
+      return "Running"
+    case "completed":
+      return "Completed"
+    case "failed":
+      return "Failed"
+    case "timed_out":
+      return "Timed out"
+    default:
+      return "Unknown"
+  }
+}
+
+function livePhaseTone(phase: "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out") {
+  switch (phase) {
+    case "completed":
+      return "success" as const
+    case "failed":
+    case "timed_out":
+      return "destructive" as const
+    case "running":
+      return "info" as const
+    case "queued":
+      return "warning" as const
+    default:
+      return "neutral" as const
+  }
+}
+
+function toRuleCheckResult(value: string | null | undefined): RuleCheckResult {
+  if (value === "passed" || value === "failed" || value === "warned" || value === "skipped") {
+    return value
+  }
+  return "skipped"
+}
+
 function getSupplierBreakdown(
   supplierId: string,
-  evaluationRuns: EvaluationRunDetail[],
-  selectedRun: EvaluationRunDetail | null,
+  runs: EvaluationRunDetail[],
+  preferredRun: EvaluationRunDetail | null,
 ): SupplierRuleBreakdown | null {
-  const run = selectedRun ?? evaluationRuns[0]
-  if (!run) return null
-  return run.supplierBreakdowns.find((b) => b.supplierId === supplierId) ?? null
+  if (preferredRun) {
+    const preferredMatch = preferredRun.supplierBreakdowns.find(
+      (entry) => entry.supplierId === supplierId,
+    )
+    if (preferredMatch) return preferredMatch
+  }
+
+  const fallbackRuns = runs
+    .filter((run) => (preferredRun ? run.runId !== preferredRun.runId : true))
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    )
+
+  for (const run of fallbackRuns) {
+    const match = run.supplierBreakdowns.find(
+      (entry) => entry.supplierId === supplierId,
+    )
+    if (match) return match
+  }
+
+  return null
 }
 
 function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
-  if (!breakdown) return false
-  const hasFailedHard = breakdown.hardRuleChecks.some((c) => c.result === "failed")
-  const hasFailedPolicy = breakdown.policyChecks.some((c) => c.result === "failed")
-  return !hasFailedHard && !hasFailedPolicy
-}
-
-function getRuleCounts(breakdown: SupplierRuleBreakdown | null) {
-  if (!breakdown)
-    return { hardPassed: 0, hardTotal: 0, policyPassed: 0, policyTotal: 0 }
-  const hardTotal = breakdown.hardRuleChecks.length
-  const hardPassed = breakdown.hardRuleChecks.filter((c) => c.result === "passed").length
-  const policyTotal = breakdown.policyChecks.length
-  const policyPassed = breakdown.policyChecks.filter((c) => c.result === "passed").length
-  return { hardPassed, hardTotal, policyPassed, policyTotal }
+  if (!breakdown || breakdown.excluded) return false
+  const failedHard = breakdown.hardRuleChecks.some((check) => check.result === "failed")
+  const failedPolicy = breakdown.policyChecks.some((check) => check.result === "failed")
+  return !failedHard && !failedPolicy
 }
 
 function FavoriteToggle({
@@ -149,12 +205,14 @@ function FavoriteToggle({
 export function CaseWorkspace({
   data,
   initialTab = "overview",
+  createdFromIntake = false,
   initialRunId,
   showReturnToLatest = false,
 }: CaseWorkspaceProps) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
+  const [runId, setRunId] = useState("")
   const [selectedRunId, setSelectedRunId] = useState<string | null>(
     initialRunId ?? data.evaluationRuns[0]?.runId ?? null,
   )
@@ -163,7 +221,25 @@ export function CaseWorkspace({
     supplier: SupplierRow
     breakdown: SupplierRuleBreakdown | null
   } | null>(null)
-  const [isRerunning, setIsRerunning] = useState(false)
+  const [statusResult, setStatusResult] = useState<unknown>(null)
+  const [pipelineResult, setPipelineResult] = useState<unknown>(null)
+  const [runsResult, setRunsResult] = useState<unknown>(null)
+  const [runDetailResult, setRunDetailResult] = useState<unknown>(null)
+  const [auditResult, setAuditResult] = useState<unknown>(null)
+  const [summaryResult, setSummaryResult] = useState<unknown>(null)
+  const [stepResult, setStepResult] = useState<unknown>(null)
+  const {
+    loadingAction,
+    error,
+    fallback,
+    message,
+    setMessage,
+    runAction,
+    actionLifecycleByLabel,
+    lastActionLifecycle,
+  } = usePipelineActionRunner()
+  const { requestLiveState, startPolling, patchRequestState } =
+    useRequestStatusPoller()
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const activeEscalation =
@@ -174,65 +250,30 @@ export function CaseWorkspace({
     data.evaluationRuns.find((run) => run.runId === selectedRunId) ??
     data.evaluationRuns[0] ??
     null
-
-  // On the main case details page, always keep the selected run in sync
-  // with the latest evaluation run after a re-run (router.refresh).
-  const latestRunId = data.evaluationRuns[0]?.runId ?? null
-  useEffect(() => {
-    if (!showReturnToLatest) {
-      setSelectedRunId(latestRunId)
-    }
-  }, [latestRunId, showReturnToLatest])
+  const selectedRunOrdinal = selectedRun
+    ? data.evaluationRuns.findIndex((run) => run.runId === selectedRun.runId) + 1
+    : null
   const effectiveShortlist =
     selectedRun?.supplierShortlist && selectedRun.supplierShortlist.length > 0
       ? selectedRun.supplierShortlist
       : data.supplierShortlist
   const effectiveExcluded =
-    selectedRun?.excludedSuppliersFromRun && selectedRun.excludedSuppliersFromRun.length > 0
+    selectedRun?.excludedSuppliersFromRun &&
+    selectedRun.excludedSuppliersFromRun.length > 0
       ? selectedRun.excludedSuppliersFromRun
       : data.excludedSuppliers
-  const effectiveEvaluatedCount = effectiveShortlist.length + effectiveExcluded.length
-  const effectiveLowestPrice =
-    effectiveShortlist.length > 0
-      ? Math.min(...effectiveShortlist.map((entry) => entry.totalPrice))
-      : null
-  const effectiveFastestExpedited =
-    effectiveShortlist.length > 0
-      ? Math.min(...effectiveShortlist.map((entry) => entry.expeditedLeadTimeDays))
-      : null
+  const evaluatedSuppliers = effectiveShortlist.length + effectiveExcluded.length
+  const hasShortlist = effectiveShortlist.length > 0
+  const lowestPrice = hasShortlist
+    ? Math.min(...effectiveShortlist.map((entry) => entry.totalPrice))
+    : null
+  const fastestExpeditedLeadTime = hasShortlist
+    ? Math.min(...effectiveShortlist.map((entry) => entry.expeditedLeadTimeDays))
+    : null
   const overviewRef = useRef<HTMLDivElement>(null)
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
-
-  async function handleRerun() {
-    if (isRerunning) return
-    setIsRerunning(true)
-    try {
-      const res = await fetch("/api/pipeline/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: data.id }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        const detail = err.detail
-        const msg =
-          typeof detail === "string"
-            ? detail
-            : Array.isArray(detail)
-              ? detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join("; ") || `HTTP ${res.status}`
-              : `HTTP ${res.status}`
-        throw new Error(msg)
-      }
-      router.refresh()
-    } catch (err) {
-      console.error("Re-run failed:", err)
-      alert(err instanceof Error ? err.message : "Re-run failed. Check console.")
-    } finally {
-      setIsRerunning(false)
-    }
-  }
 
   const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
     supplier: s,
@@ -276,12 +317,187 @@ export function CaseWorkspace({
     }
   }, [activeTab, data.id])
 
+  useEffect(() => {
+    if (createdFromIntake) {
+      setMessage(`Case ${data.id} created successfully.`)
+    }
+  }, [createdFromIntake, data.id, setMessage])
+
+  function handleRerun() {
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+    void runAction({
+      label: "rerun",
+      request: () =>
+        chainIqApi.pipeline.process({
+          request_id: data.id,
+        }),
+      successMessage: `Pipeline re-run started for ${data.id}.`,
+    })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "queued",
+          intervalMs: 2000,
+          timeoutMs: 45_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
+  }
+
+  function handleStatus() {
+    void runAction({
+      label: "status",
+      request: () => chainIqApi.pipeline.status(data.id),
+      onSuccess: (result) => {
+        setStatusResult(result)
+        const phase = classifyPipelineStatus(result)
+        patchRequestState(data.id, {
+          phase,
+          startedAt:
+            requestLiveState[data.id]?.startedAt ?? new Date().toISOString(),
+          lastCheckedAt: new Date().toISOString(),
+          ...(phase === "completed" || phase === "failed"
+            ? { finishedAt: new Date().toISOString() }
+            : {}),
+          statusPayload: result,
+        })
+      },
+      successMessage: `Fetched latest pipeline status for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleResult() {
+    void runAction({
+      label: "result",
+      request: () => chainIqApi.pipeline.result(data.id),
+      onSuccess: setPipelineResult,
+      successMessage: `Fetched latest pipeline result for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleRunDiagnostics() {
+    void runAction({
+      label: "runs",
+      request: () => chainIqApi.pipeline.runs({ limit: 25, skip: 0 }),
+      onSuccess: setRunsResult,
+      successMessage: "Fetched recent pipeline runs.",
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleRunDetail() {
+    if (!runId.trim()) return
+    void runAction({
+      label: "run",
+      request: () => chainIqApi.pipeline.run(runId.trim()),
+      onSuccess: setRunDetailResult,
+      successMessage: `Fetched run details for ${runId.trim()}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditTrail() {
+    void runAction({
+      label: "audit",
+      request: () => chainIqApi.pipeline.audit(data.id, { limit: 100, skip: 0 }),
+      onSuccess: setAuditResult,
+      successMessage: `Fetched audit trail for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditSummary() {
+    void runAction({
+      label: "summary",
+      request: () => chainIqApi.pipeline.auditSummary(data.id),
+      onSuccess: setSummaryResult,
+      successMessage: `Fetched audit summary for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleStep(step: "fetch" | "validate" | "filter" | "comply" | "rank" | "escalate") {
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "running",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+    void runAction({
+      label: `step:${step}`,
+      request: () => chainIqApi.pipeline.steps[step]({ request_id: data.id }),
+      onSuccess: setStepResult,
+      successMessage: `Executed ${step} step for ${data.id}.`,
+    })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "running",
+          intervalMs: 2000,
+          timeoutMs: 30_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
+  }
+
+  function handleExport() {
+    const payload = JSON.stringify(data, null, 2)
+    const blob = new Blob([payload], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${data.id}-audit-export.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setMessage(`Exported ${data.id} payload as JSON.`)
+  }
+
+  function handleEscalate() {
+    router.push(`/escalations?caseId=${data.id}`)
+  }
+
+  const requestLive = requestLiveState[data.id]
+  const activeActionLifecycle = loadingAction
+    ? actionLifecycleByLabel[loadingAction] ?? null
+    : null
+
   return (
     <div className="space-y-6">
       {/* Page header */}
       <div className="animate-fade-in-up flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-1.5 width-full">
+          <div className="flex flex-wrap items-center gap-1.5">
             <StatusBadge
               label={data.rawRequest.status.replaceAll("_", " ")}
               tone="neutral"
@@ -304,27 +520,19 @@ export function CaseWorkspace({
           <SectionHeading
             eyebrow={data.id}
             title={
-              showReturnToLatest && selectedRun
-                ? (() => {
-                    const idx = data.evaluationRuns.findIndex(
-                      (r) => r.runId === selectedRun.runId,
-                    )
-                    if (idx >= 0) {
-                      return `${data.title} - Evaluation ${idx + 1}`
-                    }
-                    return data.title
-                  })()
+              showReturnToLatest && selectedRunOrdinal
+                ? `${data.title} - Evaluation ${selectedRunOrdinal}`
                 : data.title
             }
             description={
               showReturnToLatest && selectedRun
-                ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · Evaluation from ${formatDateDdMmYyyy(selectedRun.startedAt)}`
+                ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · run ${formatDateTime(selectedRun.startedAt)}`
                 : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
             }
           />
         </div>
 
-        <div className="flex flex-nowrap items-center gap-2">
+        <div className="flex flex-wrap gap-2">
           {showReturnToLatest ? (
             <Link
               href={`/cases/${data.id}`}
@@ -338,20 +546,50 @@ export function CaseWorkspace({
             variant="outline"
             size="sm"
             onClick={handleRerun}
-            disabled={isRerunning}
+            disabled={loadingAction !== null}
           >
-            {isRerunning ? (
+            {loadingAction === "rerun" ? (
               <Loader2 className="size-3.5 animate-spin" />
             ) : (
               <Play className="size-3.5" />
             )}
-            Re-run
+            {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
           </Button>
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleStatus}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "status" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Activity className="size-3.5" />
+            )}
+            Status
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleResult}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "result" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <ShieldCheck className="size-3.5" />
+            )}
+            Result
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="size-3.5" />
             Export
           </Button>
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab("audit")}
+          >
             <ShieldCheck className="size-3.5" />
             Audit
           </Button>
@@ -363,12 +601,81 @@ export function CaseWorkspace({
               variant="button"
             />
           ) : null}
-          <Button size="sm">
+          <Button size="sm" onClick={handleEscalate}>
             <TimerReset className="size-3.5" />
             Escalate
           </Button>
         </div>
       </div>
+
+      {error ? (
+        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
+          <CardContent className="py-3 text-sm">{error}</CardContent>
+        </Card>
+      ) : null}
+
+      {message ? (
+        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
+          <CardContent className="py-3 text-sm">{message}</CardContent>
+        </Card>
+      ) : null}
+      {fallback ? (
+        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
+          <CardContent className="py-3 text-sm">
+            Runs endpoint degraded. Other pipeline actions remain usable. {fallback}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      <Card className="border-blue-200 bg-blue-50/60">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <div className="space-y-1">
+            <p className="text-xs font-medium uppercase tracking-wider text-blue-800">
+              Live run state
+            </p>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <StatusBadge
+                label={
+                  requestLive ? livePhaseLabel(requestLive.phase) : "No live run"
+                }
+                tone={requestLive ? livePhaseTone(requestLive.phase) : "neutral"}
+              />
+              {activeActionLifecycle ? (
+                <StatusBadge
+                  label={`Action: ${activeActionLifecycle.label}`}
+                  tone={activeActionLifecycle.phase === "error" ? "destructive" : "info"}
+                />
+              ) : null}
+              {lastActionLifecycle ? (
+                <StatusBadge
+                  label={`Last: ${lastActionLifecycle.phase}`}
+                  tone={
+                    lastActionLifecycle.phase === "success"
+                      ? "success"
+                      : lastActionLifecycle.phase === "error"
+                        ? "destructive"
+                        : "neutral"
+                  }
+                />
+              ) : null}
+            </div>
+          </div>
+          <div className="text-right text-xs text-blue-900/70">
+            <p>
+              Last checked:{" "}
+              {requestLive?.lastCheckedAt
+                ? formatDateTime(requestLive.lastCheckedAt)
+                : "Not yet"}
+            </p>
+            <p>
+              Last transition:{" "}
+              {lastActionLifecycle?.finishedAt
+                ? formatDateTime(lastActionLifecycle.finishedAt)
+                : "No completed action"}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Primary summary strip */}
       <section className="animate-fade-in-up grid gap-4 xl:grid-cols-[1.2fr_0.8fr]" style={{ animationDelay: "80ms" }}>
@@ -467,8 +774,28 @@ export function CaseWorkspace({
               value={`${data.recommendation.quotesRequired}`}
             />
             <FieldCell
+              label="Managers"
+              value={
+                data.recommendation.managers?.length
+                  ? data.recommendation.managers.join(", ")
+                  : "Not specified"
+              }
+            />
+            <FieldCell
+              label="Deviation Approvers"
+              value={
+                data.recommendation.deviationApprovers?.length
+                  ? data.recommendation.deviationApprovers.join(", ")
+                  : "Not specified"
+              }
+            />
+            <FieldCell
               label="Country Scope"
               value={data.rawRequest.deliveryCountries.join(", ")}
+            />
+            <FieldCell
+              label="Scenario Tags"
+              value={data.rawRequest.scenarioTags.join(", ") || "standard"}
             />
             <FieldCell
               label="Budget"
@@ -476,6 +803,11 @@ export function CaseWorkspace({
                 data.rawRequest.budgetAmount,
                 data.rawRequest.currency,
               )}
+              variant="default"
+            />
+            <FieldCell
+              label="Tier Range"
+              value={`${formatCurrency(data.recommendation.minAmount ?? null, data.recommendation.currency)} - ${formatCurrency(data.recommendation.maxAmount ?? null, data.recommendation.currency)}`}
               variant="default"
             />
             <FieldCell
@@ -538,12 +870,20 @@ export function CaseWorkspace({
                     value={data.rawRequest.requestChannel}
                   />
                   <FieldCell
+                    label="Request ID"
+                    value={data.rawRequest.requestId}
+                  />
+                  <FieldCell
                     label="Request language"
                     value={data.rawRequest.requestLanguage}
                   />
                   <FieldCell
                     label="Business unit"
                     value={data.rawRequest.businessUnit}
+                  />
+                  <FieldCell
+                    label="Requester ID"
+                    value={data.rawRequest.requesterId ?? "Not specified"}
                   />
                   <FieldCell label="Site" value={data.rawRequest.site} />
                   <FieldCell
@@ -563,6 +903,10 @@ export function CaseWorkspace({
                   <FieldCell
                     label="Incumbent supplier"
                     value={data.rawRequest.incumbentSupplier ?? "Not stated"}
+                  />
+                  <FieldCell
+                    label="Contract type"
+                    value={data.rawRequest.contractTypeRequested}
                   />
                 </div>
               </CardContent>
@@ -696,7 +1040,7 @@ export function CaseWorkspace({
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MiniMetric
                 label="Suppliers evaluated"
-                value={effectiveEvaluatedCount}
+                value={evaluatedSuppliers}
                 helper="Shortlist plus excluded rows"
               />
               <MiniMetric
@@ -706,41 +1050,28 @@ export function CaseWorkspace({
               />
               <MiniMetric
                 label="Lowest compliant price"
-                value={formatCurrency(effectiveLowestPrice, data.recommendation.currency)}
+                value={formatCurrency(lowestPrice, data.recommendation.currency)}
                 helper="Best commercial baseline"
               />
               <MiniMetric
                 label="Fastest expedited lead time"
                 value={
-                  effectiveFastestExpedited === null
+                  fastestExpeditedLeadTime === null
                     ? "Not available"
-                    : `${effectiveFastestExpedited} days`
+                    : `${fastestExpeditedLeadTime} days`
                 }
                 helper="Closest feasible delivery option"
               />
             </section>
 
-            <section className="min-w-0 space-y-4">
-              <Card className="h-fit w-full max-w-full overflow-hidden">
+            <section className="space-y-4">
+              <Card className="h-fit">
                 <CardHeader>
                   <CardTitle>Supplier comparison</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="overflow-x-auto rounded-lg border">
-                    <Table className="min-w-[720px] table-fixed">
-                      <colgroup>
-                        <col className="w-[4%]" />
-                        <col className="w-[18%]" />
-                        <col className="w-[11%]" />
-                        <col className="w-[12%]" />
-                        <col className="w-[10%]" />
-                        <col className="w-[7%]" />
-                        <col className="w-[7%]" />
-                        <col className="w-[6%]" />
-                        <col className="w-[6%]" />
-                        <col className="w-[6%]" />
-                        <col className="w-[13%]" />
-                      </colgroup>
+                    <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead className="px-3">Rank</TableHead>
@@ -757,159 +1088,121 @@ export function CaseWorkspace({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {visibleSuppliers.map(({ supplier, breakdown }) => {
-                          const { hardPassed, hardTotal, policyPassed, policyTotal } =
-                            getRuleCounts(breakdown)
-                          const flagCount = Math.min(
-                            (supplier.preferred ? 1 : 0) +
-                              (supplier.incumbent ? 1 : 0) +
-                              1,
-                            2,
-                          )
-                          const rulesLabel =
-                            data.evaluationRuns.length > 0
-                              ? `${hardPassed}/${hardTotal}`
-                              : "—"
-                          const policyLabel =
-                            data.evaluationRuns.length > 0
-                              ? `${policyPassed}/${policyTotal}`
-                              : "—"
-                          return (
-                            <TableRow
-                              key={supplier.supplierId}
-                              className={cn(
-                                supplier.rank === 1 ? "bg-emerald-50/40" : "",
-                                "cursor-pointer transition-colors hover:bg-muted/50",
-                              )}
-                              onClick={() =>
-                                setSelectedSupplierDetail({
-                                  supplier,
-                                  breakdown,
-                                })
-                              }
-                              tabIndex={0}
-                              role="button"
-                              aria-label={`View details for ${supplier.supplierName}`}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault()
-                                  setSelectedSupplierDetail({
-                                    supplier,
-                                    breakdown,
-                                  })
-                                }
-                              }}
-                            >
-                              <TableCell className="px-3">
+                        {visibleSuppliers.map(({ supplier }) => (
+                          <TableRow
+                            key={supplier.supplierId}
+                            className={
+                              supplier.rank === 1 ? "bg-emerald-50/40" : ""
+                            }
+                          >
+                            <TableCell className="px-3">
+                              <div className="space-y-1">
                                 <p className="text-base font-semibold tabular-nums">
                                   #{supplier.rank}
                                 </p>
-                              </TableCell>
-                              <TableCell className="align-top">
-                                <div className="space-y-0.5">
-                                  <p className="font-medium">
-                                    {supplier.supplierName}
-                                  </p>
-                                  <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                                    {supplier.supplierId}
-                                  </p>
-                                </div>
-                              </TableCell>
-                              <TableCell className="text-sm">
-                                {supplier.pricingTierApplied}
-                              </TableCell>
-                              <TableCell className="font-medium tabular-nums">
-                                <div>
-                                  {formatCurrency(
-                                    supplier.totalPrice,
-                                    data.recommendation.currency,
-                                  )}
-                                </div>
-                                <div className="text-xs text-muted-foreground">
-                                  Exp.{" "}
-                                  {formatCurrency(
-                                    supplier.expeditedTotal,
-                                    data.recommendation.currency,
-                                  )}
-                                </div>
-                              </TableCell>
-                              <TableCell className="tabular-nums">
-                                <div>{supplier.standardLeadTimeDays}d std</div>
-                                <div className="text-xs text-muted-foreground">
-                                  {supplier.expeditedLeadTimeDays}d exp
-                                </div>
-                              </TableCell>
-                              <TableCell className="tabular-nums text-sm">
-                                {rulesLabel}
-                              </TableCell>
-                              <TableCell className="tabular-nums text-sm">
-                                {policyLabel}
-                              </TableCell>
-                              <TableCell
-                                className={scoreTone(supplier.qualityScore)}
-                              >
-                                {supplier.qualityScore}
-                              </TableCell>
-                              <TableCell
-                                className={scoreTone(supplier.riskScore, true)}
-                              >
-                                {supplier.riskScore}
-                              </TableCell>
-                              <TableCell className={scoreTone(supplier.esgScore)}>
-                                {supplier.esgScore}
-                              </TableCell>
-                              <TableCell
-                                className={cn(
-                                  "py-2",
-                                  flagCount === 1 ? "align-middle" : "align-top",
+                                {supplier.rank === 1 ? (
+                                  <StatusBadge label="Top option" tone="success" />
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            <TableCell className="align-top">
+                              <div className="space-y-1">
+                                <p className="font-medium">
+                                  {supplier.supplierName}
+                                </p>
+                                <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                                  {supplier.supplierId}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {supplier.countryHq ?? "N/A"} ·{" "}
+                                  {supplier.currency ?? data.recommendation.currency}
+                                </p>
+                                <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
+                                  {supplier.recommendationNote}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              <p>{supplier.pricingTierApplied}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {supplier.region ?? "N/A"} · qty{" "}
+                                {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                MOQ {supplier.moq ?? "N/A"}
+                              </p>
+                            </TableCell>
+                            <TableCell className="font-medium tabular-nums">
+                              <div>
+                                {formatCurrency(
+                                  supplier.totalPrice,
+                                  data.recommendation.currency,
                                 )}
-                              >
-                                <div
-                                  className={cn(
-                                    "flex max-w-[100px] flex-col gap-0.5",
-                                    flagCount === 1 ? "items-center" : "items-start",
-                                  )}
-                                >
-                                  {[
-                                    supplier.preferred && (
-                                      <StatusBadge
-                                        key="preferred"
-                                        label="Preferred"
-                                        tone="info"
-                                        className="shrink-0"
-                                      />
-                                    ),
-                                    supplier.incumbent && (
-                                      <StatusBadge
-                                        key="incumbent"
-                                        label="Incumbent"
-                                        tone="neutral"
-                                        className="shrink-0"
-                                      />
-                                    ),
-                                    supplier.policyCompliant ? (
-                                      <StatusBadge
-                                        key="compliant"
-                                        label="Compliant"
-                                        tone="success"
-                                        className="shrink-0"
-                                      />
-                                    ) : (
-                                      <StatusBadge
-                                        key="conflict"
-                                        label="Conflict"
-                                        tone="destructive"
-                                        className="shrink-0"
-                                      />
-                                    ),
-                                  ]
-                                    .filter(Boolean)
-                                    .slice(0, 2)}
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          )
-                        })}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                Unit{" "}
+                                {formatCurrency(
+                                  supplier.unitPrice,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                Exp.{" "}
+                                {formatCurrency(
+                                  supplier.expeditedTotal,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                Exp unit{" "}
+                                {formatCurrency(
+                                  supplier.expeditedUnitPrice,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              <div>{supplier.standardLeadTimeDays}d std</div>
+                              <div className="text-xs text-muted-foreground">
+                                {supplier.expeditedLeadTimeDays}d exp
+                              </div>
+                            </TableCell>
+                            <TableCell
+                              className={scoreTone(supplier.qualityScore)}
+                            >
+                              {supplier.qualityScore}
+                            </TableCell>
+                            <TableCell
+                              className={scoreTone(supplier.riskScore, true)}
+                            >
+                              {supplier.riskScore}
+                            </TableCell>
+                            <TableCell className={scoreTone(supplier.esgScore)}>
+                              {supplier.esgScore}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex max-w-[180px] flex-wrap gap-1">
+                                {supplier.preferred ? (
+                                  <StatusBadge label="Preferred" tone="info" />
+                                ) : null}
+                                {supplier.incumbent ? (
+                                  <StatusBadge label="Incumbent" tone="neutral" />
+                                ) : null}
+                                {supplier.policyCompliant ? (
+                                  <StatusBadge label="Compliant" tone="success" />
+                                ) : (
+                                  <StatusBadge label="Conflict" tone="destructive" />
+                                )}
+                                {supplier.dataResidencySupported ? (
+                                  <StatusBadge label="Data residency" tone="info" />
+                                ) : null}
+                                {supplier.coversDeliveryCountry ? (
+                                  <StatusBadge label="Covers country" tone="neutral" />
+                                ) : null}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
                       </TableBody>
                     </Table>
                   </div>
@@ -921,15 +1214,6 @@ export function CaseWorkspace({
                       className="w-full"
                     >
                       Extend — show {compliantFirst.length - visibleCount} more
-                    </Button>
-                  ) : suppliersExpanded && compliantFirst.length > 3 ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSuppliersExpanded(false)}
-                      className="w-full"
-                    >
-                      Minimize
                     </Button>
                   ) : null}
                 </CardContent>
@@ -977,35 +1261,35 @@ export function CaseWorkspace({
                         No supplier was excluded.
                       </p>
                     ) : (
-                    effectiveExcluded.map((supplier) => (
-                      <div
-                        key={supplier.supplierId}
-                        className="rounded-lg border bg-background/80 p-3.5"
-                      >
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <StatusBadge
-                            label={supplier.supplierId}
-                            tone="neutral"
-                          />
-                          <StatusBadge
-                            label={
-                              supplier.hardExclusion
-                                ? "hard exclusion"
-                                : "not shortlisted"
-                            }
-                            tone={
-                              supplier.hardExclusion ? "destructive" : "warning"
-                            }
-                          />
+                      effectiveExcluded.map((supplier) => (
+                        <div
+                          key={supplier.supplierId}
+                          className="rounded-lg border bg-background/80 p-3.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusBadge
+                              label={supplier.supplierId}
+                              tone="neutral"
+                            />
+                            <StatusBadge
+                              label={
+                                supplier.hardExclusion
+                                  ? "hard exclusion"
+                                  : "not shortlisted"
+                              }
+                              tone={
+                                supplier.hardExclusion ? "destructive" : "warning"
+                              }
+                            />
+                          </div>
+                          <p className="mt-2 text-sm font-medium">
+                            {supplier.supplierName}
+                          </p>
+                          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                            {supplier.reason}
+                          </p>
                         </div>
-                        <p className="mt-2 text-sm font-medium">
-                          {supplier.supplierName}
-                        </p>
-                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                          {supplier.reason}
-                        </p>
-                      </div>
-                    ))
+                      ))
                     )}
                   </CardContent>
                 </Card>
@@ -1052,7 +1336,7 @@ export function CaseWorkspace({
                           label={`Runs: ${data.evaluationRuns.length}`}
                           tone="neutral"
                         />
-                        {/* <div className="flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2">
                           {data.evaluationRuns.slice(0, 4).map((run) => (
                             <Button
                               key={run.runId}
@@ -1067,7 +1351,7 @@ export function CaseWorkspace({
                           {data.evaluationRuns.length > 4 ? (
                             <StatusBadge label="More in API" tone="info" />
                           ) : null}
-                        </div> */}
+                        </div>
                       </div>
 
                       {selectedRun ? (
@@ -1242,8 +1526,7 @@ export function CaseWorkspace({
             value="audit"
             className="space-y-5 transition-all duration-200 ease-out"
           >
-          <div className="space-y-5">
-            <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+          <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
             <Card>
               <CardHeader>
                 <CardTitle>Decision timeline</CardTitle>
@@ -1288,9 +1571,33 @@ export function CaseWorkspace({
                       ) : (
                         content
                       )}
+
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <StatusBadge label={event.kind} tone="info" />
+                      {event.level ? (
+                        <StatusBadge
+                          label={event.level}
+                          tone={
+                            event.level === "error"
+                              ? "destructive"
+                              : event.level === "warn"
+                                ? "warning"
+                                : "neutral"
+                          }
+                        />
+                      ) : null}
+                      {event.stepName ? (
+                        <StatusBadge label={event.stepName} tone="neutral" />
+                      ) : null}
                     </div>
-                  )
-                })}
+                    <h3 className="mt-1 text-sm font-semibold">
+                      {event.title}
+                    </h3>
+                    <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
+                      {event.description}
+                    </p>
+                  </div>
+                ))}
               </CardContent>
             </Card>
 
@@ -1365,7 +1672,118 @@ export function CaseWorkspace({
               </Card>
             </div>
           </div>
-          </div>
+
+          <Card className="bg-muted/15">
+            <CardHeader>
+              <CardTitle>Advanced pipeline diagnostics</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Access run diagnostics and step-level controls moved from Pipeline Ops.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={runId}
+                  onChange={(event) => setRunId(event.target.value)}
+                  placeholder="Run ID (optional for run detail)"
+                  className="w-full sm:w-[340px]"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDiagnostics}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "runs" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Activity className="size-3.5" />
+                  )}
+                  List runs
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDetail}
+                  disabled={loadingAction !== null || !runId.trim()}
+                >
+                  {loadingAction === "run" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  Get run
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditTrail}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "audit" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit trail
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditSummary}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "summary" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit summary
+                </Button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map(
+                  (step) => (
+                    <Button
+                      key={step}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleStep(step)}
+                      disabled={loadingAction !== null}
+                    >
+                      {loadingAction === `step:${step}` ? (
+                        <RefreshCw className="size-3.5 animate-spin" />
+                      ) : (
+                        <Play className="size-3.5" />
+                      )}
+                      {step}
+                    </Button>
+                  ),
+                )}
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                {statusResult ? (
+                  <JsonViewer title="Pipeline Status" value={statusResult} />
+                ) : null}
+                {pipelineResult ? (
+                  <JsonViewer title="Pipeline Result" value={pipelineResult} />
+                ) : null}
+                {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
+                {runDetailResult ? (
+                  <JsonViewer title="Run Detail" value={runDetailResult} />
+                ) : null}
+                {auditResult ? (
+                  <JsonViewer title="Audit Trail" value={auditResult} />
+                ) : null}
+                {summaryResult ? (
+                  <JsonViewer title="Audit Summary" value={summaryResult} />
+                ) : null}
+                {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
+              </div>
+            </CardContent>
+          </Card>
           </TabsContent>
         </div>
       </Tabs>
@@ -1394,21 +1812,17 @@ function SupplierDetailSheetContent({
   const [isLoading, setIsLoading] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
 
-  const effectiveBreakdown =
-    breakdown ?? (isLoading ? null : fetchedBreakdown)
+  const effectiveBreakdown = breakdown ?? fetchedBreakdown
 
   useEffect(() => {
     if (breakdown || !requestId || !supplier.supplierId) {
+      setFetchedBreakdown(null)
+      setFetchError(null)
       return
     }
     let cancelled = false
-    // Avoid synchronous state updates inside the effect callback.
-    // We kick off loading indicators on the next microtask.
-    Promise.resolve().then(() => {
-      if (cancelled) return
-      setIsLoading(true)
-      setFetchError(null)
-    })
+    setIsLoading(true)
+    setFetchError(null)
     Promise.all([
       fetch(
         `/api/rule-versions/hard-rule-checks?request_id=${encodeURIComponent(requestId)}&supplier_id=${encodeURIComponent(supplier.supplierId)}`,
@@ -1436,7 +1850,7 @@ function SupplierDetailSheetContent({
             ruleId: c.rule_id,
             versionId: c.version_id,
             supplierId: c.supplier_id,
-            result: ((c.skipped ? "skipped" : c.result) ?? "skipped") as RuleCheckResult,
+            result: c.skipped ? "skipped" : toRuleCheckResult(c.result),
             checkedAt: c.checked_at,
           })),
           policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
@@ -1444,7 +1858,7 @@ function SupplierDetailSheetContent({
             ruleId: c.rule_id,
             versionId: c.version_id,
             supplierId: c.supplier_id,
-            result: c.result as RuleCheckResult,
+            result: toRuleCheckResult(c.result),
             checkedAt: c.checked_at,
           })),
         })

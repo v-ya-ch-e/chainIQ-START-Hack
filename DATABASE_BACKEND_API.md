@@ -1,6 +1,6 @@
 # DATABASE_BACKEND_API.md — ChainIQ Organisational Layer API
 
-This document is the complete reference for the **Organisational Layer** — a FastAPI microservice that exposes the ChainIQ MySQL database (22 tables) over a REST API. Use it to understand every available endpoint, its parameters, and its response shape.
+This document is the complete reference for the **Organisational Layer** — a FastAPI microservice that exposes the ChainIQ MySQL database (37 tables) over a REST API. Use it to understand every available endpoint, its parameters, and its response shape.
 
 - **Source code:** `backend/organisational_layer/`
 - **Deployment guide:** `backend/organisational_layer/DEPLOYMENT.md`
@@ -51,7 +51,14 @@ None. CORS is open (`*`) — all origins, methods, and headers are accepted. Sui
 | Historical Awards | `/api/awards` | 3 |
 | Policies | `/api/policies` | 6 |
 | Rules | `/api/rules` | 6 |
+| Escalations | `/api/escalations` | 3 |
+| Rule Versions | `/api/rule-versions` | 25 |
 | Analytics | `/api/analytics` | 10 |
+| Pipeline Results | `/api/pipeline-results` | 6 |
+| Pipeline Logs | `/api/logs` | 7 |
+| Audit Logs | `/api/logs/audit` | 5 |
+| Parse | `/api/parse` | 2 |
+| Intake | `/api/intake` | 1 |
 
 ---
 
@@ -436,7 +443,7 @@ Create a new request with nested delivery countries and scenario tags.
 
 ### `PUT /api/requests/{request_id}`
 
-Partial update — only scalar fields (delivery countries and tags not updated via this endpoint).
+Partial update. Supports updating scalar fields, `delivery_countries` (list of country codes — replaces all existing), and `scenario_tags` (list of tag strings — replaces all existing).
 
 **Response `200`:** Updated `RequestOut`  
 **Response `404`:** Request not found
@@ -746,6 +753,513 @@ Single escalation rule by `rule_id` (e.g. `ER-001`).
 
 **Response `200`:** `EscalationRuleOut`  
 **Response `404`:** Rule not found
+
+---
+
+## Escalations
+
+> Deterministic escalation queue and stored escalation management.
+
+### `GET /api/escalations/queue`
+
+Returns all active escalation items. Evaluates escalation rules (ER-*) and approval threshold conflicts to build a real-time queue.
+
+**Response `200`:** `EscalationQueueItemOut[]`
+
+```json
+[
+  {
+    "escalation_id": "ESC-001",
+    "request_id": "REQ-000042",
+    "title": "Laptop refresh Q1",
+    "category": "IT > Hardware",
+    "business_unit": "Finance",
+    "country": "DE",
+    "rule_id": "ER-003",
+    "rule_label": "Contract value exceeds tier",
+    "trigger": "Contract value EUR 75,000 exceeds threshold",
+    "escalate_to": "CPO",
+    "blocking": true,
+    "status": "open",
+    "created_at": "2026-03-19T14:30:00",
+    "last_updated": "2026-03-19T14:30:00",
+    "recommendation_status": "cannot_proceed"
+  }
+]
+```
+
+---
+
+### `GET /api/escalations/by-request/{request_id}`
+
+All escalation items for a specific request.
+
+**Response `200`:** `EscalationQueueItemOut[]`
+**Response `404`:** Request not found
+
+---
+
+### `PATCH /api/escalations/{escalation_id}`
+
+Update a stored escalation. Uses ACID workflow: inserts `policy_change_logs` and `escalation_logs`, then updates the escalation.
+
+**Request body:**
+
+```json
+{
+  "changed_by": "admin@company.com",
+  "updates": {
+    "status": "resolved",
+    "resolved_by": "admin@company.com",
+    "resolution_note": "Approved by CPO"
+  },
+  "policy_rule_id": "ER-003",
+  "change_reason": "CPO approved the procurement"
+}
+```
+
+**Response `200`:** `{ "escalation_id": "...", "status": "resolved" }`
+**Response `404`:** Escalation not found
+
+---
+
+## Rule Versions & Evaluations
+
+> Full CRUD for rule definitions and versions, evaluation traceability, hard rule checks, policy checks, and audit logs. All endpoints under `/api/rule-versions/`.
+
+### Rule Definitions
+
+#### `GET /api/rule-versions/definitions`
+
+List all rule definitions (HR-*, PC-*, ER-*).
+
+**Response `200`:** `RuleDefinitionOut[]`
+
+```json
+[
+  {
+    "rule_id": "HR-001",
+    "rule_type": "hard_rule",
+    "rule_name": "Budget ceiling check",
+    "is_skippable": false,
+    "source": "given",
+    "active": true,
+    "created_at": "2026-03-19T00:01:34"
+  }
+]
+```
+
+---
+
+#### `GET /api/rule-versions/definitions/{rule_id}`
+
+Single rule definition by ID.
+
+**Response `200`:** `RuleDefinitionOut`
+**Response `404`:** Rule definition not found
+
+---
+
+#### `POST /api/rule-versions/definitions`
+
+Create a new rule definition.
+
+**Request body (`RuleDefinitionCreate`):**
+
+```json
+{
+  "rule_id": "HR-010",
+  "rule_type": "hard_rule",
+  "rule_name": "Custom budget check",
+  "is_skippable": false,
+  "source": "custom"
+}
+```
+
+**Response `201`:** `RuleDefinitionOut` (auto-sets `active=true`, `created_at=now`)
+**Response `409`:** Rule ID already exists
+
+---
+
+#### `PATCH /api/rule-versions/definitions/{rule_id}`
+
+Update mutable fields on a rule definition.
+
+**Request body (`RuleDefinitionUpdate`, all fields optional):**
+
+```json
+{
+  "rule_name": "Updated name",
+  "is_skippable": true,
+  "active": false
+}
+```
+
+**Response `200`:** Updated `RuleDefinitionOut`
+**Response `404`:** Rule definition not found
+
+---
+
+#### `DELETE /api/rule-versions/definitions/{rule_id}`
+
+Soft-delete a rule definition by setting `active=false`.
+
+**Response `204`:** No content
+**Response `404`:** Rule definition not found
+
+---
+
+### Rule Versions
+
+#### `GET /api/rule-versions/versions`
+
+List rule versions with optional filters.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `rule_id` | string | - | Filter by rule ID |
+| `active_only` | bool | false | Only return versions where `valid_to IS NULL` |
+
+**Response `200`:** `RuleVersionWithDefinitionOut[]`
+
+```json
+[
+  {
+    "version_id": "cacde910-2326-11f1-b861-0a0ab2e5408d",
+    "rule_id": "HR-001",
+    "version_num": 1,
+    "rule_config": {"null_action": "skip_raise_ER001", "range_strategy": "use_max_conservative"},
+    "valid_from": "2026-03-19T00:01:34",
+    "valid_to": null,
+    "changed_by": null,
+    "change_reason": null,
+    "rule_name": "Budget ceiling check",
+    "rule_type": "hard_rule"
+  }
+]
+```
+
+---
+
+#### `POST /api/rule-versions/versions`
+
+Create a new rule version. ACID transaction: invalidates the previous active version (`valid_to=NOW()`) and inserts a `rule_change_logs` entry.
+
+**Request body (`RuleVersionCreate`):**
+
+```json
+{
+  "rule_id": "HR-001",
+  "rule_config": {"null_action": "skip_raise_ER001", "range_strategy": "use_max_conservative"},
+  "changed_by": "admin@company.com",
+  "change_reason": "Tightened budget validation"
+}
+```
+
+**Response `200`:** `RuleVersionOut`
+**Response `404`:** Rule definition not found
+
+---
+
+#### `GET /api/rule-versions/versions/active/{rule_id}`
+
+Get the currently active version for a rule (`valid_to IS NULL`).
+
+**Response `200`:** `RuleVersionOut`
+**Response `404`:** No active version found
+
+---
+
+#### `GET /api/rule-versions/versions/{version_id}`
+
+Get a single rule version by UUID, including parent definition metadata.
+
+**Response `200`:** `RuleVersionWithDefinitionOut`
+**Response `404`:** Rule version not found
+
+---
+
+#### `PATCH /api/rule-versions/versions/{version_id}`
+
+Update metadata on a rule version. Config is immutable — to change config, create a new version.
+
+**Request body (`RuleVersionUpdate`, all fields optional):**
+
+```json
+{
+  "changed_by": "admin@company.com",
+  "change_reason": "Added attribution"
+}
+```
+
+**Response `200`:** Updated `RuleVersionOut`
+**Response `404`:** Rule version not found
+
+---
+
+### Rule Change Logs
+
+#### `GET /api/rule-versions/logs/rule-change`
+
+List rule change log entries.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `rule_id` | string | Filter by rule ID |
+
+**Response `200`:** `RuleChangeLogOut[]`
+
+```json
+[
+  {
+    "log_id": "550e8400-e29b-41d4-a716-446655440000",
+    "rule_id": "HR-001",
+    "old_version_id": "cacde910-...",
+    "new_version_id": "d1f2a3b4-...",
+    "changed_at": "2026-03-19T15:00:00",
+    "changed_by": "admin@company.com",
+    "change_reason": "Tightened budget validation",
+    "affected_runs": null
+  }
+]
+```
+
+---
+
+#### `GET /api/rule-versions/logs/rule-change/{log_id}`
+
+Get a single rule change log entry by UUID.
+
+**Response `200`:** `RuleChangeLogOut`
+**Response `404`:** Rule change log not found
+
+---
+
+### Evaluations
+
+#### `GET /api/rule-versions/evaluations/{run_id}`
+
+Get full evaluation detail with per-supplier rule pass/fail breakdown.
+
+**Response `200`:** `EvaluationDetailOut`
+
+```json
+{
+  "run_id": "550e8400-...",
+  "request_id": "REQ-000042",
+  "status": "completed",
+  "started_at": "2026-03-19T14:30:00",
+  "finished_at": "2026-03-19T14:30:12",
+  "supplier_breakdowns": [
+    {
+      "supplier_id": "SUP-0001",
+      "supplier_name": "Dell Technologies",
+      "hard_rule_checks": [ { "check_id": "...", "rule_id": "HR-001", "version_id": "...", "result": "passed", ... } ],
+      "policy_checks": [ { "check_id": "...", "rule_id": "PC-003", "version_id": "...", "result": "passed", ... } ],
+      "excluded": false,
+      "exclusion_rule_id": null,
+      "exclusion_reason": null
+    }
+  ]
+}
+```
+
+**Response `404`:** Evaluation run not found
+
+---
+
+#### `POST /api/rule-versions/evaluations`
+
+Create an evaluation run with checks and supplier evaluations. Called by logical layer after processing.
+
+**Request body:** `EvaluationRunCreate` (includes `run_id`, `request_id`, `hard_rule_checks[]`, `policy_checks[]`, `supplier_evaluations[]`)
+
+**Response `200`:** `{ "run_id": "...", "status": "created" }`
+
+---
+
+#### `POST /api/rule-versions/evaluations/full`
+
+Full evaluation trigger with ACID workflow, including escalations and audit trail.
+
+**Request body:** `FullEvaluationTriggerCreate` (extends `EvaluationRunCreate` with `escalations[]`)
+
+**Response `200`:** `{ "run_id": "...", "status": "created" }`
+
+---
+
+#### `POST /api/rule-versions/evaluations/from-pipeline`
+
+Persist evaluation from pipeline output. Automatically maps `output_snapshot` to hard rule checks, policy checks, supplier evaluations, and escalations.
+
+**Request body:**
+
+```json
+{
+  "request_id": "REQ-000042",
+  "run_id": "550e8400-...",
+  "triggered_by": "agent",
+  "agent_version": "1.0",
+  "trigger_reason": "manual_recheck",
+  "output_snapshot": { "...full pipeline output..." }
+}
+```
+
+**Response `200`:** `{ "run_id": "...", "status": "created" }`
+
+---
+
+#### `POST /api/rule-versions/evaluations/reeval/{request_id}`
+
+Trigger full re-evaluation by calling the logical layer pipeline. Requires `LOGICAL_LAYER_URL` to be configured.
+
+**Response `200`:** Pipeline output JSON
+**Response `503`:** LOGICAL_LAYER_URL not configured
+
+---
+
+#### `GET /api/rule-versions/evaluations/by-request/{request_id}`
+
+List all evaluation runs for a request, ordered newest first. Each includes full supplier breakdowns.
+
+**Response `200`:** `EvaluationDetailOut[]`
+
+---
+
+### Hard Rule Checks
+
+#### `GET /api/rule-versions/hard-rule-checks`
+
+List hard rule checks with optional filters.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `run_id` | string | Filter by evaluation run |
+| `request_id` | string | Filter by request (via evaluation run) |
+| `supplier_id` | string | Filter by supplier |
+
+**Response `200`:** `RuleCheckOut[]`
+
+---
+
+#### `GET /api/rule-versions/hard-rule-checks/{check_id}`
+
+Get a single hard rule check.
+
+**Response `200`:** `RuleCheckOut`
+**Response `404`:** Hard rule check not found
+
+---
+
+#### `POST /api/rule-versions/evaluations/{run_id}/hard-rule-checks`
+
+Append hard rule checks to an existing evaluation run.
+
+**Request body:** `HardRuleCheckCreate[]`
+**Response `200`:** `RuleCheckOut[]`
+
+---
+
+### Policy Checks
+
+#### `GET /api/rule-versions/policy-checks`
+
+List policy checks with optional filters.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `run_id` | string | Filter by evaluation run |
+| `request_id` | string | Filter by request (via evaluation run) |
+| `supplier_id` | string | Filter by supplier |
+
+**Response `200`:** `PolicyCheckOut[]`
+
+---
+
+#### `GET /api/rule-versions/policy-checks/{check_id}`
+
+Get a single policy check.
+
+**Response `200`:** `PolicyCheckOut`
+**Response `404`:** Policy check not found
+
+---
+
+#### `PATCH /api/rule-versions/policy-checks/{check_id}`
+
+Override a policy check result. ACID workflow: inserts `policy_check_logs` then updates the check.
+
+**Request body:**
+
+```json
+{
+  "changed_by": "admin@company.com",
+  "new_result": "passed",
+  "override_reason": "Approved by CPO",
+  "new_evidence": {"override": true}
+}
+```
+
+**Response `200`:** Updated `PolicyCheckOut`
+**Response `404`:** Policy check not found
+
+---
+
+#### `POST /api/rule-versions/evaluations/{run_id}/policy-checks`
+
+Append policy checks to an existing evaluation run.
+
+**Request body:** `PolicyCheckCreate[]`
+**Response `200`:** `PolicyCheckOut[]`
+
+---
+
+### Evaluation Audit Logs
+
+#### `GET /api/rule-versions/logs/evaluation-run/{run_id}`
+
+List evaluation run status change logs for a run.
+
+**Response `200`:** `EvaluationRunLogOut[]`
+
+---
+
+#### `GET /api/rule-versions/logs/escalation/{escalation_id}`
+
+List escalation change logs for an escalation.
+
+**Response `200`:** `EscalationLogOut[]`
+
+---
+
+#### `GET /api/rule-versions/logs/policy-change/{escalation_id}`
+
+List policy change logs for an escalation.
+
+**Response `200`:** `PolicyChangeLogOut[]`
+
+---
+
+#### `GET /api/rule-versions/logs/policy-check`
+
+List policy check override logs.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `check_id` | string | Filter by policy check |
+| `run_id` | string | Filter by evaluation run |
+
+**Response `200`:** `PolicyCheckLogOut[]`
 
 ---
 
@@ -1139,12 +1653,315 @@ This executes steps 1–7 server-side and returns everything in one response.
 
 ---
 
+## Pipeline Logging
+
+> Step-level telemetry for every pipeline execution. The Logical Layer calls these endpoints automatically during request processing.
+
+### `POST /api/logs/runs`
+
+Create a new pipeline run record.
+
+**Request body:**
+
+```json
+{
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "request_id": "REQ-000042",
+  "started_at": "2026-03-19T14:30:00"
+}
+```
+
+**Response `201`:** `PipelineRunOut`
+
+```json
+{
+  "id": 1,
+  "run_id": "550e8400-...",
+  "request_id": "REQ-000042",
+  "status": "running",
+  "started_at": "2026-03-19T14:30:00",
+  "completed_at": null,
+  "total_duration_ms": null,
+  "steps_completed": 0,
+  "steps_failed": 0,
+  "error_message": null
+}
+```
+
+---
+
+### `PATCH /api/logs/runs/{run_id}`
+
+Update an existing run (typically to mark it as completed or failed).
+
+**Request body (all fields optional):**
+
+```json
+{
+  "status": "completed",
+  "completed_at": "2026-03-19T14:30:12",
+  "total_duration_ms": 12340,
+  "steps_completed": 11,
+  "steps_failed": 0
+}
+```
+
+**Response `200`:** Updated `PipelineRunOut`
+**Response `404`:** Run not found
+
+---
+
+### `GET /api/logs/runs`
+
+List pipeline runs with optional filters.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `request_id` | string | - | Filter by request ID |
+| `status` | string | - | Filter by status (`running`, `completed`, `failed`) |
+| `skip` | int | 0 | Pagination offset |
+| `limit` | int | 50 | Page size (max 200) |
+
+**Response `200`:** `{ items: PipelineRunOut[], total: int }`
+
+---
+
+### `GET /api/logs/runs/{run_id}`
+
+Get a single run with all its log entries.
+
+**Response `200`:** `PipelineRunDetailOut` (includes `entries: PipelineLogEntryOut[]`)
+**Response `404`:** Run not found
+
+---
+
+### `GET /api/logs/by-request/{request_id}`
+
+Get all pipeline runs for a given request, ordered newest first. Each run includes its full list of log entries.
+
+**Response `200`:** `PipelineRunDetailOut[]`
+
+---
+
+### `POST /api/logs/entries`
+
+Create a new log entry (step started).
+
+**Request body:**
+
+```json
+{
+  "run_id": "550e8400-...",
+  "step_name": "validate_request",
+  "step_order": 2,
+  "started_at": "2026-03-19T14:30:01",
+  "input_summary": {"request_id": "REQ-000042", "title": "Office supplies"}
+}
+```
+
+**Response `201`:** `PipelineLogEntryOut` (with `status: "started"`)
+
+---
+
+### `PATCH /api/logs/entries/{entry_id}`
+
+Update a log entry (step completed or failed).
+
+**Request body (all fields optional):**
+
+```json
+{
+  "status": "completed",
+  "completed_at": "2026-03-19T14:30:03",
+  "duration_ms": 1820,
+  "output_summary": {"issue_count": 2, "is_valid": true},
+  "metadata_": {"issue_types": ["missing_optional", "budget_mismatch"]}
+}
+```
+
+**Response `200`:** Updated `PipelineLogEntryOut`
+**Response `404`:** Entry not found
+
+---
+
+## Audit Logging
+
+> Human-readable, categorized messages that explain what the system decided and why. Every entry is tied to a `request_id` and optionally to a `run_id`.
+
+### `POST /api/logs/audit`
+
+Create a single audit log entry.
+
+**Request body:**
+
+```json
+{
+  "request_id": "REQ-000042",
+  "run_id": "550e8400-...",
+  "timestamp": "2026-03-19T14:30:01.234",
+  "level": "info",
+  "category": "policy",
+  "step_name": "evaluate_policy",
+  "message": "Applied approval threshold AT-002: contract value EUR 37,200 exceeds EUR 25,000.",
+  "details": {"policy_id": "AT-002", "threshold": 25000, "actual_value": 37200},
+  "source": "logical_layer"
+}
+```
+
+**Response `201`:** `AuditLogOut`
+
+---
+
+### `POST /api/logs/audit/batch`
+
+Create multiple audit log entries in one call.
+
+**Request body:**
+
+```json
+{
+  "entries": [
+    {
+      "request_id": "REQ-000042",
+      "timestamp": "2026-03-19T14:30:01.100",
+      "level": "info",
+      "category": "supplier_filter",
+      "step_name": "filter_suppliers",
+      "message": "Included SUP-0001 (Dell): covers IT > Docking Stations in DE.",
+      "details": {"supplier_id": "SUP-0001", "action": "included"}
+    }
+  ]
+}
+```
+
+**Response `201`:** `AuditLogOut[]`
+
+---
+
+### `GET /api/logs/audit/by-request/{request_id}`
+
+Get all audit logs for a specific request.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `level` | string | - | Filter by severity (`debug`, `info`, `warn`, `error`, `critical`) |
+| `category` | string | - | Filter by semantic category |
+| `run_id` | string | - | Filter to a specific pipeline run |
+| `step_name` | string | - | Filter to a specific pipeline step |
+| `skip` | int | 0 | Pagination offset |
+| `limit` | int | 100 | Page size (max 500) |
+
+**Response `200`:** `{ items: AuditLogOut[], total: int }`
+
+---
+
+### `GET /api/logs/audit/summary/{request_id}`
+
+Aggregated audit summary for a request.
+
+**Response `200`:** `AuditLogSummaryOut`
+
+```json
+{
+  "request_id": "REQ-000042",
+  "total_entries": 47,
+  "by_level": [{"level": "info", "count": 38}, {"level": "warn", "count": 6}],
+  "by_category": [{"category": "validation", "count": 5}, {"category": "supplier_filter", "count": 12}],
+  "distinct_policies": ["AT-001", "AT-002"],
+  "distinct_suppliers": ["SUP-0001", "SUP-0002"],
+  "escalation_count": 3,
+  "first_event": "2026-03-19T14:30:00.100",
+  "last_event": "2026-03-19T14:30:12.450"
+}
+```
+
+---
+
+### `GET /api/logs/audit`
+
+List all audit logs with filters and pagination.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `request_id` | string | - | Filter by request ID |
+| `level` | string | - | Filter by severity level |
+| `category` | string | - | Filter by semantic category |
+| `run_id` | string | - | Filter to a specific pipeline run |
+| `step_name` | string | - | Filter to a specific pipeline step |
+| `skip` | int | 0 | Pagination offset |
+| `limit` | int | 100 | Page size (max 500) |
+
+**Response `200`:** `{ items: AuditLogOut[], total: int }`
+
+---
+
+## Parse
+
+> Convert unstructured text or uploaded files (PDF, images) into structured purchase requests using LLM parsing.
+
+### `POST /api/parse/text`
+
+Parse raw procurement text into a structured purchase request.
+
+**Request body:**
+
+```json
+{
+  "text": "We need 50 Dell laptops for the Berlin office, budget around EUR 75,000, delivery by end of April."
+}
+```
+
+**Response `200`:** `ParseResponse`
+
+```json
+{
+  "complete": true,
+  "request": {
+    "title": "Dell Laptop Procurement",
+    "category_l1": "IT",
+    "category_l2": "Hardware",
+    "country": "DE",
+    "currency": "EUR",
+    "budget_amount": 75000,
+    "quantity": 50,
+    "unit_of_measure": "unit",
+    "required_by_date": "2026-04-30",
+    "preferred_supplier_mentioned": "Dell",
+    "delivery_countries": ["DE"],
+    "request_text": "We need 50 Dell laptops...",
+    "status": "new"
+  }
+}
+```
+
+---
+
+### `POST /api/parse/file`
+
+Parse an uploaded file (PDF or image) into a structured purchase request.
+
+**Request:** Multipart form data with a `file` field.
+**Accepted MIME types:** `application/pdf`, `image/png`, `image/jpeg`, `image/gif`, `image/webp`
+
+**Response `200`:** `ParseResponse` (same shape as `/text`)
+**Response `415`:** Unsupported file type
+**Response `400`:** Empty file
+
+---
+
 ## Related Documents
 
 | Document | Purpose |
 |---|---|
-| `DATABASE_STRUCTURE.md` | Full MySQL schema — all 22 tables, column types, FK relationships, row counts |
+| `DATABASE_STRUCTURE.md` | Full MySQL schema — all tables, column types, FK relationships, row counts |
 | `backend/organisational_layer/DEPLOYMENT.md` | How to deploy this service to AWS EC2 with Docker |
 | `backend/organisational_layer/CLAUDE.md` | Service development notes |
+| `backend/organisational_layer/LOGGING_API.md` | Pipeline logging, audit logging, and rule management API docs |
 | `database_init/CLAUDE.md` | How the database was populated |
 | `examples/example_output.json` | Reference output for REQ-000004 |

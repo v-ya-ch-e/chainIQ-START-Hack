@@ -32,8 +32,12 @@ services:
       target: runner
       args:
         BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
+        LOGICAL_BACKEND_INTERNAL_URL: ${LOGICAL_BACKEND_INTERNAL_URL}
     environment:
       BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
+      LOGICAL_BACKEND_INTERNAL_URL: ${LOGICAL_BACKEND_INTERNAL_URL}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-3-7-sonnet-20250219}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       NODE_ENV: production
     ports:
@@ -54,7 +58,7 @@ services:
     volumes:
       - .:/workspace
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt && python migrate.py"
+      sh -c "pip install --no-cache-dir -r requirements.txt && python migrate.py && python migrate_rules.py && python migrate_dynamic_rules.py"
     depends_on:
       mysql:
         condition: service_healthy
