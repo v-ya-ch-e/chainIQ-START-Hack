@@ -13,6 +13,9 @@ Usage:
 Requires: ANTHROPIC_API_KEY environment variable.
 """
 
+from __future__ import annotations
+
+import base64
 import json
 import sys
 from datetime import datetime, timezone
@@ -210,7 +213,7 @@ def _fill_from_request_text(data: dict) -> dict:
 
 
 def _convert_unstructured(content: str) -> dict:
-    """Use Anthropic to convert unstructured file content to the target schema."""
+    """Use Anthropic to convert unstructured text content to the target schema."""
     client = anthropic.Anthropic()
 
     response = client.messages.create(
@@ -218,6 +221,36 @@ def _convert_unstructured(content: str) -> dict:
         max_tokens=2048,
         system=CONVERT_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
+    )
+
+    return _extract_json(response.content[0].text)
+
+
+def _convert_document(file_bytes: bytes, media_type: str) -> dict:
+    """Send a binary file (PDF, etc.) directly to Anthropic as a document."""
+    client = anthropic.Anthropic()
+
+    response = client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=2048,
+        system=CONVERT_SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": base64.standard_b64encode(file_bytes).decode("ascii"),
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "Extract the purchase request from this document.",
+                },
+            ],
+        }],
     )
 
     return _extract_json(response.content[0].text)
@@ -236,15 +269,29 @@ def _is_complete(data: dict) -> bool:
     return True
 
 
-def create_request(file_content: str) -> dict:
-    """Core logic: takes raw file content, returns a structured purchase request dict
-    wrapped with a completeness flag."""
-    try:
-        data = json.loads(file_content)
-        if not isinstance(data, dict):
-            raise ValueError("Top-level value is not a JSON object")
-    except (json.JSONDecodeError, ValueError):
-        data = _convert_unstructured(file_content)
+BINARY_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+}
+
+
+def create_request(file_content: str | None = None, *,
+                   file_bytes: bytes | None = None,
+                   media_type: str | None = None) -> dict:
+    """Core logic: returns a structured purchase request dict with completeness flag.
+
+    Pass either file_content (text) or file_bytes + media_type (binary document).
+    """
+    if file_bytes is not None and media_type is not None:
+        data = _convert_document(file_bytes, media_type)
+    elif file_content is not None:
+        try:
+            data = json.loads(file_content)
+            if not isinstance(data, dict):
+                raise ValueError("Top-level value is not a JSON object")
+        except (json.JSONDecodeError, ValueError):
+            data = _convert_unstructured(file_content)
+    else:
+        raise ValueError("Provide either file_content or file_bytes + media_type")
 
     data = _ensure_schema(data)
     data = _fill_from_request_text(data)
@@ -267,10 +314,17 @@ def main():
 
     if len(sys.argv) in (2, 3):
         input_path = sys.argv[1]
-        with open(input_path, "r", encoding="utf-8") as f:
-            file_content = f.read()
+        ext = Path(input_path).suffix.lower()
+        media_type = BINARY_MEDIA_TYPES.get(ext)
 
-        result = create_request(file_content)
+        if media_type:
+            with open(input_path, "rb") as f:
+                file_bytes = f.read()
+            result = create_request(file_bytes=file_bytes, media_type=media_type)
+        else:
+            with open(input_path, "r", encoding="utf-8") as f:
+                file_content = f.read()
+            result = create_request(file_content)
 
         if len(sys.argv) == 3:
             output_path = sys.argv[2]
