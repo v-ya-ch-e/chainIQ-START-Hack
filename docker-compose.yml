@@ -30,6 +30,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: runner
+      args:
+        BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
     environment:
       BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
