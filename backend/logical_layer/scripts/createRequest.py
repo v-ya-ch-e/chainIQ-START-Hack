@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -226,9 +227,11 @@ def _convert_unstructured(content: str) -> dict:
     return _extract_json(response.content[0].text)
 
 
-def _convert_document(file_bytes: bytes, media_type: str) -> dict:
-    """Send a binary file (PDF, etc.) directly to Anthropic as a document."""
+def _convert_binary(file_bytes: bytes, media_type: str) -> dict:
+    """Send a binary file (PDF, image, etc.) directly to Anthropic."""
     client = anthropic.Anthropic()
+
+    block_type = "image" if media_type.startswith("image/") else "document"
 
     response = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -238,7 +241,7 @@ def _convert_document(file_bytes: bytes, media_type: str) -> dict:
             "role": "user",
             "content": [
                 {
-                    "type": "document",
+                    "type": block_type,
                     "source": {
                         "type": "base64",
                         "media_type": media_type,
@@ -269,11 +272,6 @@ def _is_complete(data: dict) -> bool:
     return True
 
 
-BINARY_MEDIA_TYPES = {
-    ".pdf": "application/pdf",
-}
-
-
 def create_request(file_content: str | None = None, *,
                    file_bytes: bytes | None = None,
                    media_type: str | None = None) -> dict:
@@ -282,7 +280,7 @@ def create_request(file_content: str | None = None, *,
     Pass either file_content (text) or file_bytes + media_type (binary document).
     """
     if file_bytes is not None and media_type is not None:
-        data = _convert_document(file_bytes, media_type)
+        data = _convert_binary(file_bytes, media_type)
     elif file_content is not None:
         try:
             data = json.loads(file_content)
@@ -314,17 +312,16 @@ def main():
 
     if len(sys.argv) in (2, 3):
         input_path = sys.argv[1]
-        ext = Path(input_path).suffix.lower()
-        media_type = BINARY_MEDIA_TYPES.get(ext)
 
-        if media_type:
-            with open(input_path, "rb") as f:
-                file_bytes = f.read()
-            result = create_request(file_bytes=file_bytes, media_type=media_type)
-        else:
+        try:
             with open(input_path, "r", encoding="utf-8") as f:
                 file_content = f.read()
             result = create_request(file_content)
+        except UnicodeDecodeError:
+            with open(input_path, "rb") as f:
+                file_bytes = f.read()
+            media_type = mimetypes.guess_type(input_path)[0] or "application/octet-stream"
+            result = create_request(file_bytes=file_bytes, media_type=media_type)
 
         if len(sys.argv) == 3:
             output_path = sys.argv[2]
