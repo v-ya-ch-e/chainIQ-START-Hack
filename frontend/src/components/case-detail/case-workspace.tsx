@@ -210,6 +210,23 @@ function coerceDynamicRuleVersionFromRow(c: Record<string, unknown>): number | n
   return null
 }
 
+function coerceJsonObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
 let ruleDefinitionNamesCache: Promise<Record<string, string>> | null = null
 
 function loadRuleDefinitionNames(): Promise<Record<string, string>> {
@@ -280,7 +297,7 @@ function EnrichedRuleChecksTable({ checks }: { checks: SupplierRuleCheck[] }) {
               <TableHead className="px-3 py-3">Rule</TableHead>
               <TableHead className="py-3">Result</TableHead>
               <TableHead className="py-3">Checked</TableHead>
-              <TableHead className="py-3 text-right font-mono text-xs">Ver.</TableHead>
+              <TableHead className="py-3 text-right font-mono text-xs">Version</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -2032,13 +2049,11 @@ function SupplierDetailSheetContent({
             checkedAt: String(c.checked_at),
             ruleName: pickRuleNameFromApiRow(c),
             versionSnapshot:
-              typeof c.version_snapshot === "object" && c.version_snapshot !== null
-                ? (c.version_snapshot as Record<string, unknown>)
-                : null,
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
             dynamicSnapshot:
-              typeof c.dynamic_snapshot === "object" && c.dynamic_snapshot !== null
-                ? (c.dynamic_snapshot as Record<string, unknown>)
-                : null,
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
             dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
           policyChecks: p.map((c: Record<string, unknown>) => ({
@@ -2050,13 +2065,11 @@ function SupplierDetailSheetContent({
             checkedAt: String(c.checked_at),
             ruleName: pickRuleNameFromApiRow(c),
             versionSnapshot:
-              typeof c.version_snapshot === "object" && c.version_snapshot !== null
-                ? (c.version_snapshot as Record<string, unknown>)
-                : null,
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
             dynamicSnapshot:
-              typeof c.dynamic_snapshot === "object" && c.dynamic_snapshot !== null
-                ? (c.dynamic_snapshot as Record<string, unknown>)
-                : null,
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
             dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
         })

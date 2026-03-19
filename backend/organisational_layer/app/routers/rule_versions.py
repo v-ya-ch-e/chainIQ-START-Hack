@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
 from app.models.requests import Request
-from app.models.dynamic_rules import DynamicRule, DynamicRuleVersion
 from app.models.evaluations import (
     EscalationLog,
     EvaluationRun,
@@ -26,7 +25,13 @@ from app.models.evaluations import (
     RuleVersion,
     SupplierEvaluation,
 )
+from app.services.dynamic_rule_versions import (
+    get_dynamic_snapshot_and_version,
+    get_dynamic_snapshot_by_version,
+)
 from app.schemas.rule_versions import (
+    DynamicRuleVersionActiveOut,
+    DynamicRuleVersionPinnedOut,
     EscalationLogOut,
     EvaluationDetailOut,
     EvaluationRunCreate,
@@ -66,28 +71,8 @@ def _version_config_snapshot(db: Session, version_id: str) -> dict[str, Any] | N
     return rv.rule_config
 
 
-def _dynamic_rule_version_row(
-    db: Session, rule_id: str
-) -> tuple[dict[str, Any] | None, int | None]:
-    """Active row in dynamic_rule_versions (valid_to IS NULL): snapshot JSON + version int."""
-    dr = db.query(DynamicRule).filter(DynamicRule.rule_id == rule_id).first()
-    if not dr:
-        return None, None
-    drv = (
-        db.query(DynamicRuleVersion)
-        .filter(
-            DynamicRuleVersion.rule_id == rule_id,
-            DynamicRuleVersion.valid_to.is_(None),
-        )
-        .first()
-    )
-    if not drv:
-        return None, None
-    return drv.snapshot, drv.version
-
-
 def _hard_rule_check_out(db: Session, h: HardRuleCheck) -> RuleCheckOut:
-    dyn_snap, dyn_ver = _dynamic_rule_version_row(db, h.rule_id)
+    dyn_snap, dyn_ver = get_dynamic_snapshot_and_version(db, h.rule_id)
     return RuleCheckOut(
         check_id=h.check_id,
         rule_id=h.rule_id,
@@ -106,7 +91,7 @@ def _hard_rule_check_out(db: Session, h: HardRuleCheck) -> RuleCheckOut:
 
 
 def _policy_rule_check_out(db: Session, p: PolicyCheck) -> PolicyCheckOut:
-    dyn_snap, dyn_ver = _dynamic_rule_version_row(db, p.rule_id)
+    dyn_snap, dyn_ver = get_dynamic_snapshot_and_version(db, p.rule_id)
     return PolicyCheckOut(
         check_id=p.check_id,
         rule_id=p.rule_id,
@@ -282,6 +267,50 @@ def get_active_version(rule_id: str, db: Session = Depends(get_db)):
             detail=f"No active version found for rule {rule_id}",
         )
     return v
+
+
+@router.get(
+    "/dynamic-rule-versions/active/{rule_id}",
+    response_model=DynamicRuleVersionActiveOut,
+)
+def get_active_dynamic_rule_version(rule_id: str, db: Session = Depends(get_db)):
+    """
+    Latest snapshot from `dynamic_rule_versions` (active row, else highest version),
+    else live row from `dynamic_rules`. Used by clients when embedded check payloads
+    omit `dynamic_snapshot` / `dynamic_rule_version`.
+    """
+    snap, ver = get_dynamic_snapshot_and_version(db, rule_id)
+    if snap is None or ver is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No dynamic rule snapshot found for rule_id={rule_id}",
+        )
+    return DynamicRuleVersionActiveOut(rule_id=rule_id, version=ver, snapshot=snap)
+
+
+@router.get(
+    "/dynamic-rule-versions/{rule_id}/at-version/{version_num}",
+    response_model=DynamicRuleVersionPinnedOut,
+)
+def get_dynamic_rule_version_at(
+    rule_id: str,
+    version_num: int,
+    db: Session = Depends(get_db),
+):
+    """Exact row from `dynamic_rule_versions` by (rule_id, integer version)."""
+    snap, row = get_dynamic_snapshot_by_version(db, rule_id, version_num)
+    if row is None or snap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No dynamic_rule_versions row for {rule_id} version {version_num}",
+        )
+    return DynamicRuleVersionPinnedOut(
+        rule_id=rule_id,
+        version=row.version,
+        snapshot=snap,
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+    )
 
 
 @router.get("/versions/{version_id}", response_model=RuleVersionWithDefinitionOut)

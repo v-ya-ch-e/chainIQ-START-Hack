@@ -623,6 +623,24 @@ function pickRuleNameFromEvaluationCheck(check: EvaluationCheckApi): string | nu
   return null
 }
 
+/** API may return JSON columns as objects or (rarely) JSON strings. */
+function coerceJsonObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
 function coerceDynamicRuleVersion(check: EvaluationCheckApi): number | null {
   const raw = check as Record<string, unknown>
   const v = raw.dynamic_rule_version ?? raw.dynamicRuleVersion
@@ -679,8 +697,12 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
         ruleName: pickRuleNameFromEvaluationCheck(check),
-        versionSnapshot: check.version_snapshot ?? null,
-        dynamicSnapshot: check.dynamic_snapshot ?? null,
+        versionSnapshot:
+          coerceJsonObjectRecord(check.version_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).versionSnapshot),
+        dynamicSnapshot:
+          coerceJsonObjectRecord(check.dynamic_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).dynamicSnapshot),
         dynamicRuleVersion: coerceDynamicRuleVersion(check),
       })),
       policyChecks: entry.policy_checks.map((check) => ({
@@ -694,8 +716,12 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
         ruleName: pickRuleNameFromEvaluationCheck(check),
-        versionSnapshot: check.version_snapshot ?? null,
-        dynamicSnapshot: check.dynamic_snapshot ?? null,
+        versionSnapshot:
+          coerceJsonObjectRecord(check.version_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).versionSnapshot),
+        dynamicSnapshot:
+          coerceJsonObjectRecord(check.dynamic_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).dynamicSnapshot),
         dynamicRuleVersion: coerceDynamicRuleVersion(check),
       })),
     })),
