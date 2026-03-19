@@ -5,6 +5,7 @@ import type {
   CaseStatus,
   DashboardPageData,
   DashboardMetric,
+  EvaluationRunDetail,
   QueueEscalationItem,
   RecommendationStatus,
   ScenarioTag,
@@ -181,6 +182,43 @@ type EscalationQueueApiRow = {
   created_at: string
   last_updated: string
   recommendation_status: RecommendationStatus
+}
+
+type EvaluationDetailApi = {
+  run_id: string
+  request_id: string
+  status: string
+  started_at: string
+  finished_at: string | null
+  supplier_breakdowns: Array<{
+    supplier_id: string
+    supplier_name: string | null
+    hard_rule_checks: Array<{
+      check_id: string
+      rule_id: string
+      version_id: string
+      supplier_id: string | null
+      result: string
+      evidence?: Record<string, unknown> | null
+      skipped?: boolean | null
+      skip_reason?: string | null
+      checked_at: string
+    }>
+    policy_checks: Array<{
+      check_id: string
+      rule_id: string
+      version_id: string
+      supplier_id: string | null
+      result: string
+      evidence?: Record<string, unknown> | null
+      skipped?: boolean | null
+      skip_reason?: string | null
+      checked_at: string
+    }>
+    excluded: boolean
+    exclusion_rule_id: string | null
+    exclusion_reason: string | null
+  }>
 }
 
 const backendInternalUrl = process.env.BACKEND_INTERNAL_URL
@@ -368,6 +406,45 @@ async function fetchEscalationRowsByRequest(
     `/api/escalations/by-request/${requestId}`,
   )
   return rows.map(mapEscalationQueueRow)
+}
+
+function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
+  return {
+    runId: raw.run_id,
+    requestId: raw.request_id,
+    status: raw.status,
+    startedAt: raw.started_at,
+    finishedAt: raw.finished_at,
+    supplierBreakdowns: raw.supplier_breakdowns.map((entry) => ({
+      supplierId: entry.supplier_id,
+      supplierName: entry.supplier_name,
+      excluded: entry.excluded,
+      exclusionRuleId: entry.exclusion_rule_id,
+      exclusionReason: entry.exclusion_reason,
+      hardRuleChecks: entry.hard_rule_checks.map((check) => ({
+        checkId: check.check_id,
+        ruleId: check.rule_id,
+        versionId: check.version_id,
+        supplierId: check.supplier_id,
+        result: (check.skipped ? "skipped" : check.result) ?? "skipped",
+        checkedAt: check.checked_at,
+        skipped: check.skipped ?? null,
+        skipReason: check.skip_reason ?? null,
+        evidence: check.evidence ?? null,
+      })),
+      policyChecks: entry.policy_checks.map((check) => ({
+        checkId: check.check_id,
+        ruleId: check.rule_id,
+        versionId: check.version_id,
+        supplierId: check.supplier_id,
+        result: check.result,
+        checkedAt: check.checked_at,
+        skipped: check.skipped ?? null,
+        skipReason: check.skip_reason ?? null,
+        evidence: check.evidence ?? null,
+      })),
+    })),
+  }
 }
 
 async function fetchDashboardRawData(): Promise<DashboardRawData> {
@@ -618,10 +695,12 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     throw error
   }
 
-  const [overview, awards, escalationRows] = await Promise.all([
+  const [overview, awards, escalationRows, evaluationRunsRaw] = await Promise.all([
     fetchJson<RequestOverview>(`/api/analytics/request-overview/${caseId}`),
     fetchJson<HistoricalAward[]>(`/api/awards/by-request/${caseId}`),
     fetchEscalationRowsByRequest(caseId),
+    fetchJson<EvaluationDetailApi[]>(`/api/rule-versions/evaluations/by-request/${caseId}`)
+      .catch(() => []),
   ])
 
   const pricingBySupplier = new Map(
@@ -830,6 +909,8 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       : []),
   ]
 
+  const evaluationRuns = evaluationRunsRaw.map(mapEvaluationRunDetail)
+
   return {
     id: caseId,
     title: detail.title,
@@ -901,6 +982,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     policyCards,
     supplierShortlist: shortlist,
     excludedSuppliers,
+    evaluationRuns,
     escalations,
     auditTrail: {
       policiesChecked: policyCards.map((entry) => entry.ruleId),
