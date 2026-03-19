@@ -6,7 +6,7 @@
 
 # **SERVICE OVERVIEW**
 
-FastAPI backend microservice for the ChainIQ procurement platform. Provides CRUD, analytics, pipeline logging, and audit logging endpoints for all 25 normalised MySQL tables hosted on AWS RDS.
+FastAPI backend microservice for the ChainIQ procurement platform. Provides CRUD and analytics endpoints for all 22 normalised MySQL tables hosted on AWS RDS.
 
 ## How to run
 
@@ -58,7 +58,7 @@ docker compose up --build
 ### CRUD
 - `GET/POST /api/categories/`, `GET/PUT/DELETE /api/categories/{id}`
 - `GET/POST /api/suppliers/`, `GET/PUT/DELETE /api/suppliers/{id}`, `GET /api/suppliers/{id}/categories|regions|pricing`
-- `GET/POST /api/requests/`, `GET/PUT/DELETE /api/requests/{id}`
+- `GET/POST /api/requests/`, `GET/PUT/DELETE /api/requests/{id}` (PUT now supports `delivery_countries` and `scenario_tags` replacement semantics)
 - `GET /api/awards/`, `GET /api/awards/{id}`, `GET /api/awards/by-request/{id}`
 - `GET /api/policies/approval-thresholds`, `GET /api/policies/preferred-suppliers`, `GET /api/policies/restricted-suppliers`
 - `GET /api/rules/category`, `GET /api/rules/geography`, `GET /api/rules/escalation`
@@ -79,6 +79,9 @@ docker compose up --build
 - `GET /api/logs/audit/by-request/{request_id}` — get all audit logs for a request (filterable by level, category, run_id, step_name)
 - `GET /api/logs/audit/summary/{request_id}` — aggregated audit summary (counts, policies, suppliers, escalations)
 - `GET /api/logs/audit` — list all audit logs with filters and pagination
+
+### Intake
+- `POST /api/intake/extract` — deterministic extraction stub for flexible intake (returns normalized draft fields, per-field confidence/status, missing-required list, and warnings)
 
 ### Intake
 - `POST /api/intake/extract` — deterministic extraction stub for flexible intake (returns normalized draft fields, per-field confidence/status, missing-required list, and warnings)
