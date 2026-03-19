@@ -9,6 +9,7 @@ const logicalApiBase =
   apiBase.replace(":8000", ":8080");
 
 const nextConfig: NextConfig = {
+  transpilePackages: ["@assistant-ui/react", "@assistant-ui/react-markdown", "@assistant-ui/react-ai-sdk"],
   async rewrites() {
     return [
       {
