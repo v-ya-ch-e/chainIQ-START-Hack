@@ -22,6 +22,8 @@ python migrate.py
 | File | Purpose |
 |------|---------|
 | `migrate.py` | Main migration script — drops/creates 24 tables, reads all data files, normalises inconsistencies, inserts in FK-safe order, prints summary |
+| `migrate_rules.py` | Creates rule_definitions, rule_versions, evaluation_runs, hard_rule_checks, policy_checks, supplier_evaluations, escalations. Seeds rule definitions and versions. Run after migrate.py. Required for from-pipeline evaluation persistence. |
+| `migrate_dynamic_rules.py` | Creates dynamic_rules tables and seeds 30+ procurement rules (validate, comply, policy, escalate stages). Run after migrate.py and migrate_rules.py. Idempotent. |
 | `requirements.txt` | Python deps: `mysql-connector-python`, `python-dotenv` |
 | `.env.example` | Template for DB connection env vars |
 | `.env` | Actual credentials (git-ignored) |

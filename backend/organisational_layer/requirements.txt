@@ -6,4 +6,5 @@ pydantic-settings
 python-dotenv
 cryptography
 anthropic
+pytest
 httpx

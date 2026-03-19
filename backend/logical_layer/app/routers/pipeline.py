@@ -68,9 +68,10 @@ async def process_batch(
             except Exception:
                 logger.exception("Batch item %s failed", request_id)
 
-    asyncio.ensure_future(
-        asyncio.gather(*[_run_one(rid) for rid in body.request_ids])
-    )
+    async def _run_batch() -> None:
+        await asyncio.gather(*[_run_one(rid) for rid in body.request_ids])
+
+    asyncio.create_task(_run_batch())
 
     return BatchResponse(
         batch_id=batch_id,

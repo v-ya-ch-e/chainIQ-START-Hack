@@ -1,3 +1,5 @@
+import uuid as _uuid
+
 from sqlalchemy import (
     Boolean,
     Column,
@@ -18,6 +20,7 @@ class Request(Base):
     __tablename__ = "requests"
 
     request_id = Column(String(20), primary_key=True)
+    uuid = Column(String(36), unique=True, nullable=False, default=lambda: str(_uuid.uuid4()))
     created_at = Column(DateTime, nullable=False)
     request_channel = Column(String(20), nullable=False)
     request_language = Column(String(5), nullable=False)
