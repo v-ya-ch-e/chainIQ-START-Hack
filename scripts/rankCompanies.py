@@ -1,0 +1,156 @@
+"""Rank suppliers by true cost -- the effective price adjusted for quality, risk, and ESG."""
+
+import json
+import sys
+import urllib.request
+import urllib.error
+import urllib.parse
+
+BASE_URL = "http://18.197.20.103:8000"
+
+COUNTRY_TO_REGION = {
+    "DE": "EU", "FR": "EU", "NL": "EU", "BE": "EU", "AT": "EU",
+    "IT": "EU", "ES": "EU", "PL": "EU", "UK": "EU",
+    "CH": "CH",
+    "US": "Americas", "CA": "Americas", "BR": "Americas", "MX": "Americas",
+    "SG": "APAC", "AU": "APAC", "IN": "APAC", "JP": "APAC",
+    "UAE": "MEA", "ZA": "MEA",
+}
+
+
+def api_get(path, params=None):
+    url = BASE_URL + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        print(f"Error reaching API at {url}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def resolve_region(request_data):
+    delivery_countries = request_data.get("delivery_countries", [])
+    country = delivery_countries[0] if delivery_countries else request_data.get("country", "")
+    return COUNTRY_TO_REGION.get(country, "EU")
+
+
+def compute_true_cost(total_price, quality_score, risk_score, esg_score, esg_requirement):
+    """Effective price inflated by quality gaps and risk exposure.
+
+    Formula: total_price / (quality_score/100) / ((100 - risk_score)/100)
+    With ESG:              / (esg_score/100)
+
+    Lower = better. Units are currency (EUR, CHF, USD).
+    Difference (true_cost - total_price) is the hidden cost of quality/risk.
+    """
+    if total_price is None or total_price == 0:
+        return None
+    cost = total_price / (quality_score / 100) / ((100 - risk_score) / 100)
+    if esg_requirement:
+        cost /= esg_score / 100
+    return round(cost, 2)
+
+
+def main():
+    if len(sys.argv) != 4:
+        print(
+            f"Usage: {sys.argv[0]} <request.json> <suppliers.json> <output.json>",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    request_path = sys.argv[1]
+    suppliers_path = sys.argv[2]
+    output_path = sys.argv[3]
+
+    with open(request_path, "r", encoding="utf-8") as f:
+        request_data = json.load(f)
+
+    with open(suppliers_path, "r", encoding="utf-8") as f:
+        suppliers = json.load(f)
+
+    category_l1 = request_data["category_l1"]
+    category_l2 = request_data["category_l2"]
+    quantity = request_data.get("quantity")
+    esg_requirement = request_data.get("esg_requirement", False)
+    region = resolve_region(request_data)
+
+    results = []
+
+    for sup in suppliers:
+        quality_score = sup["quality_score"]
+        risk_score = sup["risk_score"]
+        esg_score = sup["esg_score"]
+        supplier_id = sup["supplier_id"]
+
+        if quantity is None:
+            results.append({
+                "supplier_id": supplier_id,
+                "true_cost": None,
+                "overpayment": None,
+                "quality_score": quality_score,
+                "risk_score": risk_score,
+                "esg_score": esg_score,
+                "total_price": None,
+                "unit_price": None,
+                "currency": None,
+                "standard_lead_time_days": None,
+                "expedited_lead_time_days": None,
+                "preferred_supplier": sup.get("preferred_supplier", False),
+                "is_restricted": sup.get("is_restricted", False),
+            })
+            continue
+
+        pricing = api_get("/api/analytics/pricing-lookup", {
+            "supplier_id": supplier_id,
+            "category_l1": category_l1,
+            "category_l2": category_l2,
+            "region": region,
+            "quantity": int(quantity),
+        })
+
+        if not pricing:
+            continue
+
+        tier = pricing[0]
+        total_price = float(tier["total_price"])
+        unit_price = float(tier["unit_price"])
+        true_cost = compute_true_cost(total_price, quality_score, risk_score, esg_score, esg_requirement)
+        overpayment = round(true_cost - total_price, 2) if true_cost is not None else None
+
+        results.append({
+            "supplier_id": supplier_id,
+            "true_cost": true_cost,
+            "overpayment": overpayment,
+            "quality_score": quality_score,
+            "risk_score": risk_score,
+            "esg_score": esg_score,
+            "total_price": total_price,
+            "unit_price": unit_price,
+            "currency": tier.get("currency"),
+            "standard_lead_time_days": tier.get("standard_lead_time_days"),
+            "expedited_lead_time_days": tier.get("expedited_lead_time_days"),
+            "preferred_supplier": sup.get("preferred_supplier", False),
+            "is_restricted": sup.get("is_restricted", False),
+        })
+
+    if quantity is None:
+        results.sort(key=lambda r: r["quality_score"], reverse=True)
+    else:
+        results.sort(key=lambda r: r["true_cost"] or float("inf"))
+
+    for i, row in enumerate(results, start=1):
+        row["rank"] = i
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+
+    print(f"Ranked {len(results)} supplier(s) for {category_l1} / {category_l2}")
+    print(f"Output written to {output_path}")
+
+
+if __name__ == "__main__":
+    main()
