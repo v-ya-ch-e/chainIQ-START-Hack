@@ -38,7 +38,7 @@ docker compose up --build
 | `app/main.py` | FastAPI app entry point, CORS, router registration, `/health` endpoint |
 | `app/config.py` | Pydantic Settings — reads DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME from env |
 | `app/database.py` | SQLAlchemy engine, session factory, `get_db` dependency |
-| `app/models/` | SQLAlchemy ORM models for all 25 tables (reference, requests, historical, policies, logs, audit) |
+| `app/models/` | SQLAlchemy ORM models for all 22 tables (reference, requests, historical, policies) |
 | `app/schemas/` | Pydantic request/response schemas |
 | `app/routers/categories.py` | CRUD for categories |
 | `app/routers/suppliers.py` | CRUD for suppliers + sub-resources (categories, regions, pricing) |
@@ -48,11 +48,7 @@ docker compose up --build
 | `app/routers/rules.py` | Read endpoints for category, geography, and escalation rules |
 | `app/routers/escalations.py` | Deterministic escalation queue endpoints (read-only) |
 | `app/routers/analytics.py` | Domain-specific analytics: compliant suppliers, pricing lookup, approval tiers, restriction/preferred checks, applicable rules, request overview, spend aggregations, supplier win rates |
-| `app/routers/logs.py` | Pipeline logging + audit logging endpoints |
-| `app/models/logs.py` | SQLAlchemy models: `PipelineRun`, `PipelineLogEntry`, `AuditLog` |
-| `app/schemas/logs.py` | Pydantic schemas for pipeline logging and audit logging |
 | `app/services/escalations.py` | Escalation evaluation engine (ER rules + AT conflict detection) |
-| `LOGGING_API.md` | Full documentation for the pipeline logging and audit logging APIs |
 | `Dockerfile` | Python 3.14-slim container, installs deps, runs uvicorn |
 | `requirements.txt` | fastapi, uvicorn, sqlalchemy, pymysql, pydantic-settings, python-dotenv, cryptography |
 | `.env.example` | Template for DB connection env vars |
@@ -83,6 +79,9 @@ docker compose up --build
 - `GET /api/logs/audit/by-request/{request_id}` — get all audit logs for a request (filterable by level, category, run_id, step_name)
 - `GET /api/logs/audit/summary/{request_id}` — aggregated audit summary (counts, policies, suppliers, escalations)
 - `GET /api/logs/audit` — list all audit logs with filters and pagination
+
+### Intake
+- `POST /api/intake/extract` — deterministic extraction stub for flexible intake (returns normalized draft fields, per-field confidence/status, missing-required list, and warnings)
 
 ### Analytics
 - `GET /api/analytics/compliant-suppliers` — non-restricted suppliers for category+country

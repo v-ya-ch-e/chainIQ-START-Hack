@@ -251,8 +251,109 @@ export interface DashboardDataState {
   reason?: string
 }
 
+export interface DashboardFilterOptions {
+  statuses: CaseStatus[]
+  categories: string[]
+  countries: string[]
+}
+
+export interface DashboardStatusInsight {
+  status: CaseStatus
+  label: string
+  count: number
+}
+
+export interface DashboardSpendByCategoryInsight {
+  category: string
+  totalSpend: number
+  awardCount: number
+}
+
+export interface DashboardInsights {
+  statusBreakdown: DashboardStatusInsight[]
+  spendByCategory: DashboardSpendByCategoryInsight[]
+  filterOptions: DashboardFilterOptions
+}
+
 export interface DashboardPageData {
   metrics: DashboardMetric[]
   cases: CaseListItem[]
   dataState: DashboardDataState
+  insights: DashboardInsights
 }
+
+export type IntakeSourceType = "paste" | "upload" | "manual"
+
+export type IntakeFlowStep = "input" | "processing" | "complete" | "review" | "created"
+
+export type IntakeFieldStatus =
+  | "confident"
+  | "inferred"
+  | "missing"
+  | "needs_review"
+
+export interface IntakeFieldMeta {
+  status: IntakeFieldStatus
+  confidence: number
+  reason?: string
+}
+
+export interface CaseIntakeInput {
+  sourceType: IntakeSourceType
+  sourceText: string
+  note?: string
+  requestChannel?: RequestChannel
+  fileNames?: string[]
+}
+
+export interface CategoryOption {
+  id: number
+  categoryL1: string
+  categoryL2: string
+}
+
+export interface CaseDraftPayload {
+  requestId?: string
+  createdAt?: string
+  title: string
+  requestText: string
+  requestChannel: RequestChannel
+  requestLanguage: string
+  businessUnit: string
+  country: string
+  site: string
+  requesterId: string
+  requesterRole: string
+  submittedForId: string
+  categoryId: number | null
+  quantity: number | null
+  unitOfMeasure: string
+  currency: string
+  budgetAmount: number | null
+  requiredByDate: string
+  deliveryCountries: string[]
+  preferredSupplierMentioned: string | null
+  incumbentSupplier: string | null
+  contractTypeRequested: string
+  dataResidencyConstraint: boolean
+  esgRequirement: boolean
+  requesterInstruction: string | null
+  scenarioTags: ScenarioTag[]
+  status: string
+}
+
+export interface ExtractionWarning {
+  code: string
+  severity: Severity
+  message: string
+}
+
+export interface ExtractionResult {
+  draft: CaseDraftPayload
+  fieldStatus: Partial<Record<keyof CaseDraftPayload, IntakeFieldMeta>>
+  missingRequired: Array<keyof CaseDraftPayload>
+  warnings: ExtractionWarning[]
+  extractionStrength: "strong" | "partial" | "low"
+}
+
+export type CreateCasePayload = CaseDraftPayload

@@ -34,11 +34,16 @@ import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
 interface CaseWorkspaceProps {
   data: CaseDetail
   initialTab?: CaseTab
+  createdFromIntake?: boolean
 }
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
 
-export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspaceProps) {
+export function CaseWorkspace({
+  data,
+  initialTab = "overview",
+  createdFromIntake = false,
+}: CaseWorkspaceProps) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
@@ -94,6 +99,12 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
       window.removeEventListener("resize", updateHeight)
     }
   }, [activeTab, data.id])
+
+  useEffect(() => {
+    if (createdFromIntake) {
+      setMessage(`Case ${data.id} created successfully.`)
+    }
+  }, [createdFromIntake, data.id, setMessage])
 
   function handleRerun() {
     void runAction({
