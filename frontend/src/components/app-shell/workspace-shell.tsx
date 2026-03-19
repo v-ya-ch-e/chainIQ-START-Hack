@@ -133,8 +133,8 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
 
       </Sidebar>
 
-      <SidebarInset className="min-h-0 overflow-hidden bg-muted/35">
-        <header className="flex h-(--header-height) shrink-0 items-center gap-3 border-b px-4">
+      <SidebarInset className="min-h-0 overflow-hidden bg-white">
+        <header className="flex h-(--header-height) shrink-0 items-center gap-3 border-b bg-white px-4">
           <SidebarTrigger className="-ml-1" />
           <nav aria-label="Breadcrumb" className="min-w-0">
             <ol className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:text-sm">
@@ -170,7 +170,7 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="@container/main flex flex-col gap-2">
-            <div className="m-3 flex min-w-0 flex-col gap-4 rounded-xl border bg-white p-4 shadow-sm md:m-4 md:gap-6 md:p-6 dark:bg-card">
+            <div className="m-3 flex min-w-0 flex-col gap-4 rounded-xl border bg-white p-4 shadow-sm md:m-4 md:gap-6 md:p-6">
               <PageTransition>{children}</PageTransition>
             </div>
           </div>

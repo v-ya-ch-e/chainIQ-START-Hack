@@ -1,9 +1,12 @@
 import type { NextConfig } from "next";
 
+const apiBase = process.env.BACKEND_INTERNAL_URL;
+if (!apiBase) {
+  throw new Error("BACKEND_INTERNAL_URL is required for frontend rewrites.");
+}
+
 const nextConfig: NextConfig = {
   async rewrites() {
-    const apiBase = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000";
-
     return [
       {
         source: "/api/:path*",
