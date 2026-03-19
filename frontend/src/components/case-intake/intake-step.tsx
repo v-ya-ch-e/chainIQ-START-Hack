@@ -142,55 +142,59 @@ export function IntakeStep({
             </Tabs>
           </div>
 
-          <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
-            <div>
-              <p className="text-sm font-medium">Request metadata</p>
-              <p className="text-xs text-muted-foreground">
-                Add optional context to improve extraction quality.
-              </p>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Request channel
-              </p>
-              <Select
-                value={requestChannel}
-                onValueChange={(value) =>
-                  onRequestChannelChange((value as RequestChannel) ?? "portal")
-                }
-              >
-                <SelectTrigger className="w-full">
-                  <span className="truncate">
-                    {requestChannelLabelByValue[requestChannel] ?? "Portal"}
-                  </span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="portal">Portal</SelectItem>
-                  <SelectItem value="email">Email</SelectItem>
-                  <SelectItem value="teams">Teams</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
-              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Supporting note
-              </p>
-              <Textarea
-                className="min-h-[120px]"
-                placeholder="Optional context for procurement reviewers"
-                value={note}
-                onChange={(event) => onNoteChange(event.target.value)}
-              />
+          <div className="flex flex-col justify-between space-y-4 rounded-lg border bg-muted/20 p-4">
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm font-medium">Request metadata</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Add optional context to improve extraction quality.
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Request channel
+                </label>
+                <Select
+                  value={requestChannel}
+                  onValueChange={(value) =>
+                    onRequestChannelChange((value as RequestChannel) ?? "portal")
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <span className="truncate">
+                      {requestChannelLabelByValue[requestChannel] ?? "Portal"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="portal">Portal</SelectItem>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="teams">Teams</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Supporting note
+                </label>
+                <Textarea
+                  className="min-h-[120px] resize-none"
+                  placeholder="Optional context for procurement reviewers"
+                  value={note}
+                  onChange={(event) => onNoteChange(event.target.value)}
+                />
+              </div>
             </div>
 
-            <Alert>
-              Tip: include quantity, budget, and required-by date in source text to
-              skip most manual edits.
-            </Alert>
+            <div className="space-y-3">
+              <p className="rounded-md border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
+                Tip: include quantity, budget, and required-by date in source text to
+                skip most manual edits.
+              </p>
 
-            <Button onClick={onExtract} disabled={processing} className="w-full">
-              {processing ? "Extracting..." : extractionButtonLabel}
-            </Button>
+              <Button onClick={onExtract} disabled={processing} className="w-full" size="lg">
+                {processing ? "Extracting..." : extractionButtonLabel}
+              </Button>
+            </div>
           </div>
         </div>
       </CardContent>

@@ -510,12 +510,12 @@ export function OverviewPage({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">
-                        {entry.requestId}
+                        {entry.title}
                       </span>
                       <StatusBadge label="cannot proceed" tone="destructive" />
                     </div>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {entry.title}
+                      {entry.category}
                     </p>
                     <p
                       className={cn(
@@ -561,7 +561,7 @@ export function OverviewPage({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium">
-                        {entry.requestId}
+                        {entry.title}
                       </span>
                       <StatusBadge
                         label={entry.escalationStatus}

@@ -303,6 +303,7 @@ function CaseWorkspaceHeaderActions({
   )
 }
 
+
 export function CaseWorkspace({
   data,
   initialTab = "overview",
@@ -318,6 +319,7 @@ export function CaseWorkspace({
     initialRunId ?? data.evaluationRuns[0]?.runId ?? null,
   )
   const [suppliersExpanded, setSuppliersExpanded] = useState(false)
+  const [supplierPriority, setSupplierPriority] = useState<"balanced" | "price" | "speed">("balanced")
   const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<{
     supplier: SupplierRow
     breakdown: SupplierRuleBreakdown | null
@@ -381,9 +383,12 @@ export function CaseWorkspace({
       getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
     ),
   }))
-  const compliantFirst = [...shortlistWithBreakdown].sort((a, b) =>
-    a.meetsAll === b.meetsAll ? 0 : a.meetsAll ? -1 : 1,
-  )
+  const compliantFirst = [...shortlistWithBreakdown].sort((a, b) => {
+    if (a.meetsAll !== b.meetsAll) return a.meetsAll ? -1 : 1
+    if (supplierPriority === "price") return a.supplier.totalPrice - b.supplier.totalPrice
+    if (supplierPriority === "speed") return a.supplier.expeditedLeadTimeDays - b.supplier.expeditedLeadTimeDays
+    return 0
+  })
   const compliantCount = compliantFirst.filter((x) => x.meetsAll).length
   const visibleCount = suppliersExpanded
     ? compliantFirst.length
@@ -789,57 +794,55 @@ export function CaseWorkspace({
               : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
           }
         />
+
+        <div className="flex flex-nowrap items-center gap-2">
+          {showReturnToLatest ? (
+            <Link
+              href={`/cases/${data.id}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+            >
+              <ArrowLeft className="size-3.5" />
+              Return to latest evaluation
+            </Link>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRerun}
+            disabled={isRerunning}
+          >
+            {isRerunning ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            Re-run
+          </Button>
+          <Button variant="outline" size="sm">
+            <Download className="size-3.5" />
+            Export
+          </Button>
+          <Button variant="outline" size="sm">
+            <ShieldCheck className="size-3.5" />
+            Audit
+          </Button>
+          <Button size="sm" onClick={handleEscalate}>
+            <TimerReset className="size-3.5" />
+            Escalate
+          </Button>
+        </div>
       </div>
 
-      <Card className="border-blue-200 bg-blue-50/60">
-        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
-          <div className="space-y-1">
-            <p className="text-xs font-medium uppercase tracking-wider text-blue-800">
-              Live run state
+      {requestLive && (requestLive.phase === "queued" || requestLive.phase === "running") ? (
+        <Card className="border-blue-200 bg-blue-50/60">
+          <CardContent className="flex items-center gap-3 py-3">
+            <Loader2 className="size-4 animate-spin text-blue-700" />
+            <p className="text-sm font-medium text-blue-800">
+              Pipeline is {livePhaseLabel(requestLive.phase).toLowerCase()}…
             </p>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <StatusBadge
-                label={
-                  requestLive ? livePhaseLabel(requestLive.phase) : "No live run"
-                }
-                tone={requestLive ? livePhaseTone(requestLive.phase) : "neutral"}
-              />
-              {activeActionLifecycle ? (
-                <StatusBadge
-                  label={`Action: ${activeActionLifecycle.label}`}
-                  tone={activeActionLifecycle.phase === "error" ? "destructive" : "info"}
-                />
-              ) : null}
-              {lastActionLifecycle ? (
-                <StatusBadge
-                  label={`Last: ${lastActionLifecycle.phase}`}
-                  tone={
-                    lastActionLifecycle.phase === "success"
-                      ? "success"
-                      : lastActionLifecycle.phase === "error"
-                        ? "destructive"
-                        : "neutral"
-                  }
-                />
-              ) : null}
-            </div>
-          </div>
-          <div className="text-right text-xs text-blue-900/70">
-            <p>
-              Last checked:{" "}
-              {requestLive?.lastCheckedAt
-                ? formatDateTime(requestLive.lastCheckedAt)
-                : "Not yet"}
-            </p>
-            <p>
-              Last transition:{" "}
-              {lastActionLifecycle?.finishedAt
-                ? formatDateTime(lastActionLifecycle.finishedAt)
-                : "No completed action"}
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* Primary summary strip */}
       <section className="animate-fade-in-up grid gap-4 xl:grid-cols-[1.2fr_0.8fr]" style={{ animationDelay: "80ms" }}>
@@ -932,38 +935,6 @@ export function CaseWorkspace({
               variant="emphasis"
             />
             <FieldCell
-              label="Approval Tier"
-              value={data.recommendation.approvalTier}
-            />
-            <FieldCell
-              label="Quotes Required"
-              value={`${data.recommendation.quotesRequired}`}
-            />
-            <FieldCell
-              label="Managers"
-              value={
-                data.recommendation.managers?.length
-                  ? data.recommendation.managers.join(", ")
-                  : "Not specified"
-              }
-            />
-            <FieldCell
-              label="Deviation Approvers"
-              value={
-                data.recommendation.deviationApprovers?.length
-                  ? data.recommendation.deviationApprovers.join(", ")
-                  : "Not specified"
-              }
-            />
-            <FieldCell
-              label="Country Scope"
-              value={data.rawRequest.deliveryCountries.join(", ")}
-            />
-            <FieldCell
-              label="Scenario Tags"
-              value={data.rawRequest.scenarioTags.join(", ") || "—"}
-            />
-            <FieldCell
               label="Budget"
               value={formatCurrency(
                 data.rawRequest.budgetAmount,
@@ -972,13 +943,20 @@ export function CaseWorkspace({
               variant="default"
             />
             <FieldCell
-              label="Tier Range"
-              value={`${formatCurrency(data.recommendation.minAmount ?? null, data.recommendation.currency)} - ${formatCurrency(data.recommendation.maxAmount ?? null, data.recommendation.currency)}`}
-              variant="default"
+              label="Approval Tier"
+              value={displayApprovalTier(data.recommendation.approvalTier)}
             />
             <FieldCell
-              label="Last Updated"
-              value={formatDateTime(data.lastUpdated)}
+              label="Quotes Required"
+              value={`${data.recommendation.quotesRequired}`}
+            />
+            <FieldCell
+              label="Countries"
+              value={data.rawRequest.deliveryCountries.join(", ")}
+            />
+            <FieldCell
+              label="Scenario"
+              value={data.rawRequest.scenarioTags.join(", ") || "—"}
             />
           </CardContent>
         </Card>
@@ -1032,33 +1010,25 @@ export function CaseWorkspace({
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <FieldCell
+                    label="Business unit"
+                    value={data.rawRequest.businessUnit}
+                  />
+                  <FieldCell label="Site" value={data.rawRequest.site} />
+                  <FieldCell
                     label="Request channel"
                     value={data.rawRequest.requestChannel}
                   />
                   <FieldCell
-                    label="Request ID"
-                    value={data.rawRequest.requestId}
-                  />
-                  <FieldCell
-                    label="Request language"
+                    label="Language"
                     value={data.rawRequest.requestLanguage}
                   />
-                  <FieldCell
-                    label="Business unit"
-                    value={data.rawRequest.businessUnit}
-                  />
-                  <FieldCell
-                    label="Requester ID"
-                    value={data.rawRequest.requesterId ?? "Not specified"}
-                  />
-                  <FieldCell label="Site" value={data.rawRequest.site} />
                   <FieldCell
                     label="Requester role"
                     value={data.rawRequest.requesterRole}
                   />
                   <FieldCell
-                    label="Submitted for"
-                    value={data.rawRequest.submittedForId}
+                    label="Contract type"
+                    value={data.rawRequest.contractTypeRequested}
                   />
                   <FieldCell
                     label="Preferred supplier"
@@ -1069,10 +1039,6 @@ export function CaseWorkspace({
                   <FieldCell
                     label="Incumbent supplier"
                     value={data.rawRequest.incumbentSupplier ?? "Not stated"}
-                  />
-                  <FieldCell
-                    label="Contract type"
-                    value={data.rawRequest.contractTypeRequested}
                   />
                 </div>
               </CardContent>
@@ -1262,8 +1228,25 @@ export function CaseWorkspace({
 
             <section className="space-y-4">
               <Card className="h-fit">
-                <CardHeader>
+                <CardHeader className="flex-row items-center justify-between gap-4">
                   <CardTitle>Supplier comparison</CardTitle>
+                  <div className="flex items-center gap-1 rounded-lg border bg-muted/30 p-0.5">
+                    {(["balanced", "price", "speed"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => setSupplierPriority(mode)}
+                        className={cn(
+                          "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                          supplierPriority === mode
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {mode === "balanced" ? "Balanced" : mode === "price" ? "Lowest price" : "Fastest delivery"}
+                      </button>
+                    ))}
+                  </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="overflow-x-auto rounded-lg border">
@@ -1307,16 +1290,15 @@ export function CaseWorkspace({
                                 <p className="font-medium">
                                   {supplier.supplierName}
                                 </p>
-                                <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                                  {supplier.supplierId}
-                                </p>
                                 <p className="text-xs text-muted-foreground">
                                   {supplier.countryHq ?? "N/A"} ·{" "}
                                   {supplier.currency ?? data.recommendation.currency}
                                 </p>
-                                <p className="text-xs leading-relaxed text-muted-foreground">
-                                  {supplier.recommendationNote}
-                                </p>
+                                {supplier.recommendationNote ? (
+                                  <p className="text-xs leading-relaxed text-muted-foreground">
+                                    {supplier.recommendationNote}
+                                  </p>
+                                ) : null}
                               </div>
                             </TableCell>
                             <TableCell className="whitespace-normal text-sm">
@@ -1616,7 +1598,6 @@ export function CaseWorkspace({
                 <CardContent className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={activeEscalation.escalationId} tone="neutral" />
                       <StatusBadge label={activeEscalation.rule} tone="info" />
                       <StatusBadge
                         label={titleCase(activeEscalation.status)}
@@ -1673,18 +1654,13 @@ export function CaseWorkspace({
                       {data.escalations.map((entry) => (
                         <TableRow key={entry.escalationId}>
                           <TableCell className="px-3 align-top">
-                            <p className="font-medium">{entry.escalationId}</p>
+                            <p className="font-medium">{entry.ruleLabel || entry.rule}</p>
                             <p className="mt-1 max-w-[320px] text-xs leading-relaxed text-muted-foreground">
                               {entry.trigger}
                             </p>
                           </TableCell>
                           <TableCell className="align-top text-sm">
-                            <p className="font-medium">{entry.rule}</p>
-                            {entry.ruleLabel ? (
-                              <p className="mt-1 text-xs text-muted-foreground">
-                                {entry.ruleLabel}
-                              </p>
-                            ) : null}
+                            <StatusBadge label={entry.rule} tone="info" />
                           </TableCell>
                           <TableCell className="align-top text-sm">
                             {entry.escalateTo}
@@ -1774,13 +1750,21 @@ export function CaseWorkspace({
                 </CardHeader>
                 <CardContent className="grid gap-3 sm:grid-cols-2">
                   <FieldCell
-                    label="Policies checked"
-                    value={data.auditTrail.policiesChecked.join(", ")}
+                    label="Suppliers evaluated"
+                    value={
+                      data.auditTrail.supplierIdsEvaluated
+                        .map((id) => {
+                          const match = data.supplierShortlist.find((s) => s.supplierId === id)
+                            ?? data.excludedSuppliers.find((s) => s.supplierId === id)
+                          return match?.supplierName ?? id
+                        })
+                        .join(", ") || "—"
+                    }
                     variant="default"
                   />
                   <FieldCell
-                    label="Suppliers evaluated"
-                    value={data.auditTrail.supplierIdsEvaluated.join(", ")}
+                    label="Policies checked"
+                    value={`${data.auditTrail.policiesChecked.length} rules`}
                     variant="default"
                   />
                   <FieldCell
@@ -1789,20 +1773,12 @@ export function CaseWorkspace({
                     variant="default"
                   />
                   <FieldCell
-                    label="Data sources used"
-                    value={data.auditTrail.dataSourcesUsed.join(", ")}
-                    variant="default"
-                  />
-                  <FieldCell
-                    label="Historical awards consulted"
+                    label="Historical precedent"
                     value={
-                      data.auditTrail.historicalAwardsConsulted ? "Yes" : "No"
+                      data.auditTrail.historicalAwardsConsulted
+                        ? data.auditTrail.historicalAwardNote || "Yes"
+                        : "No historical awards consulted"
                     }
-                    variant="default"
-                  />
-                  <FieldCell
-                    label="Historical award note"
-                    value={data.auditTrail.historicalAwardNote}
                     variant="default"
                   />
                 </CardContent>
@@ -1839,117 +1815,57 @@ export function CaseWorkspace({
             </div>
           </div>
 
-          <Card className="bg-muted/15">
-            <CardHeader>
-              <CardTitle>Advanced pipeline diagnostics</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Access run diagnostics and step-level controls moved from Pipeline Ops.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Input
-                  value={runId}
-                  onChange={(event) => setRunId(event.target.value)}
-                  placeholder="Run ID (optional for run detail)"
-                  className="w-full sm:w-[340px]"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRunDiagnostics}
-                  disabled={loadingAction !== null}
-                >
-                  {loadingAction === "runs" ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCw className="size-3.5" />
-                  )}
-                  List runs
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleRunDetail}
-                  disabled={loadingAction !== null || !runId.trim()}
-                >
-                  {loadingAction === "run" ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <Play className="size-3.5" />
-                  )}
-                  Get run
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleAuditTrail}
-                  disabled={loadingAction !== null}
-                >
-                  {loadingAction === "audit" ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <ShieldCheck className="size-3.5" />
-                  )}
-                  Audit trail
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleAuditSummary}
-                  disabled={loadingAction !== null}
-                >
-                  {loadingAction === "summary" ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <ShieldCheck className="size-3.5" />
-                  )}
-                  Audit summary
-                </Button>
-              </div>
-
-              <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map(
-                  (step) => (
-                    <Button
-                      key={step}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleStep(step)}
-                      disabled={loadingAction !== null}
-                    >
-                      {loadingAction === `step:${step}` ? (
-                        <RefreshCw className="size-3.5 animate-spin" />
-                      ) : (
-                        <Play className="size-3.5" />
-                      )}
+          <details className="group">
+            <summary className="flex cursor-pointer items-center gap-2 rounded-lg border bg-muted/15 px-5 py-3 text-sm font-medium text-muted-foreground hover:text-foreground">
+              <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
+              Advanced pipeline diagnostics
+            </summary>
+            <Card className="mt-2 bg-muted/15 border-dashed">
+              <CardContent className="space-y-4 pt-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    value={runId}
+                    onChange={(event) => setRunId(event.target.value)}
+                    placeholder="Run ID (optional for run detail)"
+                    className="w-full sm:w-[340px]"
+                  />
+                  <Button variant="outline" size="sm" onClick={handleRunDiagnostics} disabled={loadingAction !== null}>
+                    {loadingAction === "runs" ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                    List runs
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleRunDetail} disabled={loadingAction !== null || !runId.trim()}>
+                    {loadingAction === "run" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                    Get run
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleAuditTrail} disabled={loadingAction !== null}>
+                    {loadingAction === "audit" ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
+                    Audit trail
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={handleAuditSummary} disabled={loadingAction !== null}>
+                    {loadingAction === "summary" ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
+                    Audit summary
+                  </Button>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map((step) => (
+                    <Button key={step} variant="outline" size="sm" onClick={() => handleStep(step)} disabled={loadingAction !== null}>
+                      {loadingAction === `step:${step}` ? <RefreshCw className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                       {step}
                     </Button>
-                  ),
-                )}
-              </div>
-
-              <div className="grid gap-4 xl:grid-cols-2">
-                {statusResult ? (
-                  <JsonViewer title="Pipeline Status" value={statusResult} />
-                ) : null}
-                {pipelineResult ? (
-                  <JsonViewer title="Pipeline Result" value={pipelineResult} />
-                ) : null}
-                {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
-                {runDetailResult ? (
-                  <JsonViewer title="Run Detail" value={runDetailResult} />
-                ) : null}
-                {auditResult ? (
-                  <JsonViewer title="Audit Trail" value={auditResult} />
-                ) : null}
-                {summaryResult ? (
-                  <JsonViewer title="Audit Summary" value={summaryResult} />
-                ) : null}
-                {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
-              </div>
-            </CardContent>
-          </Card>
+                  ))}
+                </div>
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {statusResult ? <JsonViewer title="Pipeline Status" value={statusResult} /> : null}
+                  {pipelineResult ? <JsonViewer title="Pipeline Result" value={pipelineResult} /> : null}
+                  {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
+                  {runDetailResult ? <JsonViewer title="Run Detail" value={runDetailResult} /> : null}
+                  {auditResult ? <JsonViewer title="Audit Trail" value={auditResult} /> : null}
+                  {summaryResult ? <JsonViewer title="Audit Summary" value={summaryResult} /> : null}
+                  {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
+                </div>
+              </CardContent>
+            </Card>
+          </details>
           </TabsContent>
         </div>
       </Tabs>
