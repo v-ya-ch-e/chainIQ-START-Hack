@@ -40,9 +40,10 @@ docker compose up --build
 | `app/config.py` | Pydantic Settings — reads `ORGANISATIONAL_LAYER_URL` from env |
 | `app/clients/organisational.py` | Async HTTP client wrapping Organisational Layer API calls (for future pipeline use) |
 | `app/routers/processing.py` | `POST /api/processRequest` — stub endpoint (not yet implemented) |
-| `app/routers/scripts.py` | `POST /api/filter-suppliers`, `/api/rank-suppliers`, `/api/validate-request` — script-backed endpoints |
+| `app/routers/scripts.py` | `POST /api/create-request`, `/api/filter-suppliers`, `/api/rank-suppliers`, `/api/validate-request` — script-backed endpoints |
 | `app/schemas/processing.py` | Pydantic models for the processRequest stub |
-| `app/schemas/scripts.py` | Pydantic models for the filter, rank, and validate endpoints |
+| `app/schemas/scripts.py` | Pydantic models for the create, filter, rank, and validate endpoints |
+| `scripts/createRequest.py` | Standalone script: converts any file (JSON, text, PDF, image) into a structured purchase request via Anthropic LLM |
 | `scripts/filterCompaniesByProduct.py` | Standalone script: filters suppliers by product category via Organisational Layer API |
 | `scripts/rankCompanies.py` | Standalone script: ranks suppliers by true cost (price adjusted for quality/risk/ESG) |
 | `scripts/validateRequest.py` | Standalone script: validates purchase request completeness and consistency using deterministic checks + Anthropic LLM |
@@ -56,10 +57,40 @@ docker compose up --build
 | Method | Path | Status | Description |
 |--------|------|--------|-------------|
 | `GET` | `/health` | Active | Liveness check |
+| `POST` | `/api/create-request` | Active | Convert any file upload into a structured purchase request (uses Anthropic LLM) |
 | `POST` | `/api/validate-request` | Active | Validate request completeness and consistency (uses Anthropic LLM) |
 | `POST` | `/api/filter-suppliers` | Active | Filter suppliers by product category |
 | `POST` | `/api/rank-suppliers` | Active | Rank suppliers by true cost |
 | `POST` | `/api/processRequest` | Stub | Full pipeline (not yet implemented) |
+
+### POST /api/create-request
+
+Accepts a file upload (multipart/form-data) of any type — JSON, plain text, PDF, or image — and converts it into a structured purchase request. For JSON inputs, missing fields are filled from `request_text`. For binary/unstructured inputs, the Anthropic API extracts the data.
+
+**Request:** `multipart/form-data` with a `file` field.
+
+```bash
+curl -X POST http://localhost:8080/api/create-request \
+  -F "file=@purchase_request.pdf"
+```
+
+**Response:**
+```json
+{
+  "complete": true,
+  "request": {
+    "request_id": null,
+    "category_l1": "IT",
+    "category_l2": "Laptops",
+    "quantity": 50,
+    "budget_amount": 75000,
+    "currency": "EUR",
+    ...
+  }
+}
+```
+
+**Error responses:** `400` if the input cannot be processed. `502` if the Anthropic API is unreachable or returns an error.
 
 ### POST /api/validate-request
 

@@ -9,6 +9,8 @@ Still supports the original CLI file-based mode for backward compatibility.
 Requires: ANTHROPIC_API_KEY environment variable.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import sys

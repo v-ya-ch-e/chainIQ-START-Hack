@@ -124,15 +124,44 @@ python3 scripts/rankCompanies.py request.json suppliers.json ranked.json
 
 ## createRequest.py
 
-Converts any file into a structured purchase request JSON matching the `examples/example_request.json` schema. Accepts both structured (JSON) and unstructured (plain text, email, memo, etc.) inputs. Both paths converge through the same schema-enforcement and field-filling pipeline.
+Converts any file into a structured purchase request JSON matching the `examples/example_request.json` schema. Accepts any input format: structured JSON, plain text, PDFs, and images (JPEG, PNG, GIF, WebP). All paths converge through the same schema-enforcement and field-filling pipeline.
+
+### HTTP Endpoint
+
+`POST /api/create-request`
+
+**Request:** `multipart/form-data` with a `file` field. Accepts any file type (JSON, text, PDF, image).
+
+```bash
+curl -X POST http://localhost:8080/api/create-request \
+  -F "file=@purchase_request.pdf"
+```
+
+**Response:**
+```json
+{
+  "complete": false,
+  "request": {
+    "request_id": null,
+    "category_l1": "IT",
+    "category_l2": "Laptops",
+    "quantity": 50,
+    "budget_amount": 75000,
+    "currency": "EUR",
+    ...
+  }
+}
+```
+
+**Error responses:** `400` if the input cannot be processed. `502` if the Anthropic API is unreachable or returns an error.
 
 ### Function API
 
 ```python
-create_request(file_content: str) -> dict
+create_request(file_content: str | None = None, *, file_bytes: bytes | None = None, media_type: str | None = None) -> dict
 ```
 
-**Input** — raw file content as a string (JSON or unstructured text).
+**Input** — pass either `file_content` (text string for JSON or plain text) or `file_bytes` + `media_type` (for binary files like PDFs and images).
 
 **Output:**
 ```json
@@ -182,11 +211,21 @@ The `complete` flag is `true` only when every field in the request is non-null a
 
 ### How It Works
 
-1. **File type detection** — Attempts `json.loads()` on the file content. If it succeeds and the result is a dict, the data enters the JSON path. Otherwise it enters the unstructured path.
-2. **Unstructured path** — Sends the raw content to Claude (claude-sonnet-4-6) with a system prompt containing the full target schema. The LLM extracts all available fields and returns a JSON object. This JSON then enters the same pipeline as the JSON path (steps 3-4).
-3. **Schema enforcement** (`_ensure_schema`) — Guarantees all 27 canonical fields exist. Missing string fields default to `null`, booleans to `false`, lists to `[]`, and `status` to `"new"`. If `created_at` is still null after filling, it is set to the current UTC timestamp.
-4. **Gap filling** (`_fill_from_request_text`) — Identifies fillable fields that are still `null` or empty. If a `request_text` field exists, makes a single Anthropic API call with a conservative prompt that extracts values ONLY for fields explicitly and directly stated in the text. Fields not mentioned remain `null`.
-5. **Completeness check** (`_is_complete`) — Checks every canonical field for non-null, non-empty values. Returns the `complete` boolean flag alongside the request.
+1. **File type detection** — The CLI tries to read the file as UTF-8 text. If that succeeds, it attempts `json.loads()`. Valid JSON dicts enter the JSON path; other text enters the unstructured text path. If the file is binary (UTF-8 decode fails), it is read as raw bytes and its media type is determined via `mimetypes.guess_type()`.
+2. **Binary path** — Binary files (PDFs, images) are sent directly to the Anthropic API as base64-encoded content blocks. Images (`image/*`) use the `"image"` block type; documents (`application/pdf`) use `"document"`. The API extracts all available fields and returns a JSON object, which then enters steps 3-5.
+3. **Unstructured text path** — Plain text content is sent to Claude (claude-sonnet-4-6) with the target schema as a system prompt. The returned JSON enters steps 3-5.
+4. **Schema enforcement** (`_ensure_schema`) — Guarantees all 27 canonical fields exist. Missing string fields default to `null`, booleans to `false`, lists to `[]`, and `status` to `"new"`. If `created_at` is still null after filling, it is set to the current UTC timestamp.
+5. **Gap filling** (`_fill_from_request_text`) — Identifies fillable fields that are still `null` or empty. If a `request_text` field exists, makes a single Anthropic API call with a conservative prompt that extracts values ONLY for fields explicitly and directly stated in the text. Fields not mentioned remain `null`.
+6. **Completeness check** (`_is_complete`) — Checks every canonical field for non-null, non-empty values. Returns the `complete` boolean flag alongside the request.
+
+### Supported File Types
+
+| Type | Examples | How it's processed |
+|------|----------|--------------------|
+| JSON | `.json` | Parsed directly, missing fields filled from `request_text` |
+| Text | `.txt`, `.md`, `.csv`, `.html`, `.eml` | Sent as text to Anthropic for conversion |
+| PDF | `.pdf` | Sent as base64 document block to Anthropic |
+| Image | `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp` | Sent as base64 image block to Anthropic |
 
 ### Fillable Fields
 

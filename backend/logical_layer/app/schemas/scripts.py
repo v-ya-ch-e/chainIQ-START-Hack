@@ -8,6 +8,18 @@ from pydantic import BaseModel, Field
 
 
 # ------------------------------------------------------------------
+# Create Request
+# ------------------------------------------------------------------
+
+
+class CreateRequestResponse(BaseModel):
+    """Output of the create-request endpoint."""
+
+    complete: bool
+    request: dict[str, Any]
+
+
+# ------------------------------------------------------------------
 # Filter Suppliers
 # ------------------------------------------------------------------
 

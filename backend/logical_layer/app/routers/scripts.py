@@ -6,10 +6,12 @@ via ``asyncio.to_thread`` to avoid blocking the event loop.
 """
 
 import asyncio
+import mimetypes
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 
 from app.schemas.scripts import (
+    CreateRequestResponse,
     FilterSuppliersRequest,
     FilterSuppliersResponse,
     RankSuppliersRequest,
@@ -17,11 +19,48 @@ from app.schemas.scripts import (
     ValidateRequestRequest,
     ValidateRequestResponse,
 )
+from scripts.createRequest import create_request
 from scripts.filterCompaniesByProduct import filter_suppliers
 from scripts.rankCompanies import rank_suppliers
 from scripts.validateRequest import validate_request
 
 router = APIRouter(prefix="/api", tags=["Scripts"])
+
+
+@router.post(
+    "/create-request",
+    response_model=CreateRequestResponse,
+    summary="Convert any file into a structured purchase request",
+    description=(
+        "Accepts a file upload (JSON, plain text, PDF, image) and converts it "
+        "into a structured purchase request matching the canonical schema. "
+        "For JSON inputs, missing fields are filled from request_text. "
+        "For other formats, the Anthropic API extracts the structured data. "
+        "Returns the request and a completeness flag."
+    ),
+)
+async def create_request_endpoint(file: UploadFile) -> CreateRequestResponse:
+    try:
+        raw = await file.read()
+
+        try:
+            file_content = raw.decode("utf-8")
+            result = await asyncio.to_thread(create_request, file_content)
+        except UnicodeDecodeError:
+            media_type = (
+                file.content_type
+                or mimetypes.guess_type(file.filename or "")[0]
+                or "application/octet-stream"
+            )
+            result = await asyncio.to_thread(
+                create_request, file_bytes=raw, media_type=media_type,
+            )
+
+        return CreateRequestResponse(**result)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Request creation error: {exc}")
 
 
 @router.post(
