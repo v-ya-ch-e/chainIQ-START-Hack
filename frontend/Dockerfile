@@ -16,6 +16,8 @@ EXPOSE 3000
 CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
 
 FROM deps AS builder
+ARG BACKEND_INTERNAL_URL=http://organisational-layer:8000
+ENV BACKEND_INTERNAL_URL=${BACKEND_INTERNAL_URL}
 COPY . .
 RUN npm run build
 
