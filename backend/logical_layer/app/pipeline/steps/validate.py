@@ -186,6 +186,38 @@ async def validate_request(
                 elif rr.result == "error" or rr.result == "skipped":
                     llm_fallback = True
 
+        # ── Policy conflict: requester single-supplier vs AT-002 ─────
+        # When requester says "no exception" / "single supplier" but tier requires 2+ quotes
+        instruction = requester_instruction or ""
+        if not instruction and req.request_text:
+            text_lower = req.request_text.lower()
+            if "no exception" in text_lower or "single supplier" in text_lower or "single source" in text_lower:
+                instruction = "no exception — single supplier only"
+                requester_instruction = instruction
+        if fetch_result.approval_tier and fetch_result.approval_tier.get_quotes_required() >= 2:
+            if instruction and (
+                "no exception" in instruction.lower()
+                or "single supplier" in instruction.lower()
+                or "single source" in instruction.lower()
+            ):
+                issues.append(ValidationIssue(
+                    severity="high",
+                    type="policy_conflict",
+                    description=(
+                        f"Requester instruction '{instruction}' conflicts with "
+                        f"{fetch_result.approval_tier.threshold_id}: a contract value above "
+                        f"{req.currency or 'EUR'} {fetch_result.approval_tier.get_min_amount():,.0f} "
+                        f"requires at least {fetch_result.approval_tier.get_quotes_required()} supplier quotes. "
+                        "All compliant pricing options for this quantity exceed that threshold. "
+                        "The requester cannot waive this requirement unilaterally."
+                    ),
+                    action_required=(
+                        f"Procurement policy {fetch_result.approval_tier.threshold_id} must be applied. "
+                        f"{fetch_result.approval_tier.get_quotes_required()} quotes are required and a deviation "
+                        "requires Procurement Manager approval."
+                    ),
+                ))
+
         # ── Build interpretation ──────────────────────────────
 
         countries = normalize_delivery_countries(req.delivery_countries)
@@ -206,6 +238,9 @@ async def validate_request(
             requester_instruction=requester_instruction,
         )
 
+        # Order: budget_insufficient, policy_conflict, lead_time_infeasible, then others
+        _ORDER = {"budget_insufficient": 0, "policy_conflict": 1, "lead_time_infeasible": 2}
+        issues.sort(key=lambda i: (_ORDER.get(i.type, 99), i.type))
         for idx, issue in enumerate(issues, 1):
             issue.issue_id = f"V-{idx:03d}"
 

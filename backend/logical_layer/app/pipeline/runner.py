@@ -109,7 +109,10 @@ class PipelineRunner:
             await pl.flush_audit()
 
             # ── Step 5: Rank ──────────────────────────────────
-            rank_result = await rank_suppliers(fetch_result, compliance_result, pl)
+            rank_result = await rank_suppliers(
+                fetch_result, compliance_result, pl,
+                validation_result=validation_result,
+            )
             await pl.flush_audit()
 
             # ── Steps 6 & 7: Policy + Escalations (parallel) ─

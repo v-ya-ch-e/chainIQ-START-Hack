@@ -223,8 +223,9 @@ def _discover_pipeline_issues(
                 issues.append(PipelineEscalation(
                     rule_id="ER-001",
                     trigger=(
-                        f"Budget is insufficient. Budget {currency} {budget:,.2f}, "
-                        f"minimum total {currency} {min_total:,.2f}."
+                        "Budget is insufficient to fulfil the stated quantity at any compliant "
+                        "supplier price. Requester must confirm revised budget or reduced quantity "
+                        "before sourcing can proceed."
                     ),
                     escalate_to="Requester Clarification",
                     blocking=True,
@@ -234,12 +235,18 @@ def _discover_pipeline_issues(
     for vi in validation_result.issues:
         if vi.type == "lead_time_infeasible":
             interp = validation_result.request_interpretation
+            min_exp = max_exp = None
+            for s in rank_result.ranked_suppliers:
+                if s.expedited_lead_time_days is not None:
+                    min_exp = min(min_exp, s.expedited_lead_time_days) if min_exp is not None else s.expedited_lead_time_days
+                    max_exp = max(max_exp, s.expedited_lead_time_days) if max_exp is not None else s.expedited_lead_time_days
+            range_str = f"{min_exp}–{max_exp}" if min_exp is not None and max_exp is not None and min_exp != max_exp else str(min_exp or max_exp or "?")
             issues.append(PipelineEscalation(
                 rule_id="ER-004",
                 trigger=(
-                    f"Lead time infeasible: required delivery "
-                    f"{interp.required_by_date} "
-                    f"({interp.days_until_required} days)."
+                    f"Lead time infeasible: required delivery {interp.required_by_date} "
+                    f"({interp.days_until_required} days). All suppliers' expedited lead times are "
+                    f"{range_str} days. No compliant supplier can meet the stated deadline."
                 ),
                 escalate_to="Head of Category",
                 blocking=True,
@@ -290,16 +297,17 @@ def _discover_pipeline_issues(
     if interp.requester_instruction:
         for vi in validation_result.issues:
             if vi.type in ("contradictory", "policy_conflict"):
+                instruction = interp.requester_instruction
                 issues.append(PipelineEscalation(
                     rule_id="AT-002",
                     trigger=(
-                        f"Policy conflict: requester instruction "
-                        f"'{interp.requester_instruction}' conflicts with policy. "
-                        f"{vi.description}"
+                        f"Policy conflict: requester instruction '{instruction}' cannot override AT-002. "
+                        "All valid contract values exceed EUR 25,000, requiring 2 quotes and "
+                        "Procurement Manager approval for any deviation."
                     ),
                     escalate_to="Procurement Manager",
                     blocking=True,
-                    source="llm",
+                    source="pipeline",
                 ))
                 break
 
@@ -339,7 +347,12 @@ def _merge_escalations(
                 source=issue.source,
             )
 
-    result = sorted(merged.values(), key=lambda e: e.rule)
+    # Order: ER-001 (budget) first, then AT-002 (policy), then others
+    _PRIORITY = {"ER-001": 0, "AT-002": 1, "ER-004": 2}
+    result = sorted(
+        merged.values(),
+        key=lambda e: (_PRIORITY.get(e.rule, 99), e.rule),
+    )
     for i, esc in enumerate(result, 1):
         esc.escalation_id = f"ESC-{i:03d}"
 

@@ -192,7 +192,8 @@ async def _check_supplier(
 
     if not supplier.preferred_supplier and supplier.risk_score > RISK_SCORE_THRESHOLD:
         return (
-            f"preferred=False, risk_score={supplier.risk_score} "
+            f"{supplier.supplier_name} is not restricted for {req.category_l2}. "
+            f"However, preferred=False and risk_score={supplier.risk_score} "
             f"(exceeds threshold of {RISK_SCORE_THRESHOLD}). "
             f"Excluded from shortlist on risk grounds."
         )

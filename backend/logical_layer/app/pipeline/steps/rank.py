@@ -22,6 +22,8 @@ async def rank_suppliers(
     fetch_result: FetchResult,
     compliance_result: ComplianceResult,
     pipeline_logger: PipelineLogger,
+    *,
+    validation_result=None,
 ) -> RankResult:
     """Rank compliant suppliers by true cost or quality score."""
 
@@ -105,11 +107,19 @@ async def rank_suppliers(
                     },
                 )
 
-        # Sort
+        # Sort: when budget insufficient, rank by price (lowest first) to surface best option
+        has_budget_issue = False
+        if validation_result:
+            has_budget_issue = any(
+                vi.type == "budget_insufficient" for vi in validation_result.issues
+            )
         ranking_method = "true_cost"
         if use_quality_ranking:
             ranking_method = "quality_score"
             ranked.sort(key=lambda s: -s.quality_score)
+        elif has_budget_issue:
+            ranking_method = "total_price"
+            ranked.sort(key=lambda s: s.total_price if s.total_price is not None else float("inf"))
         else:
             ranked.sort(key=lambda s: s.true_cost if s.true_cost is not None else float("inf"))
 

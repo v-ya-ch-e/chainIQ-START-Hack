@@ -220,6 +220,22 @@ def _evaluate_approval_threshold(
     note = tier.policy_note or ""
     if basis_note:
         note = f"{basis_note} {note}".strip()
+    # When stated budget falls just above lower tier but actual value exceeds it
+    if budget is not None and rank_result.ranked_suppliers:
+        totals = [s.total_price for s in rank_result.ranked_suppliers if s.total_price is not None]
+        if totals:
+            min_total = min(totals)
+            min_amt = tier.get_min_amount()
+            # AT-002 (EUR 25k+): requester may have thought 25,199 was single-quote (AT-001)
+            prev_ceiling = 24999.99 if min_amt >= 25000 else None
+            if prev_ceiling is not None and budget < min_total and budget <= min_amt + 2000:
+                extra = (
+                    f"Stated budget of {currency} {budget:,.2f} falls just above the AT-001 ceiling "
+                    f"({currency} {prev_ceiling:,.2f}), so requester may have believed this was a "
+                    "single-quote scenario. However, stated budget cannot cover the required "
+                    f"quantity. The actual procurement value falls in {tier.threshold_id} regardless."
+                )
+                note = f"{extra} {note}".strip() if note else extra
 
     eval_result = ApprovalThresholdEval(
         rule_applied=rule_applied,
@@ -303,9 +319,19 @@ def _evaluate_preferred_supplier(
         f"{fetch_result.request.category_l2} in {delivery_country}."
     )
     if is_preferred and status == "eligible":
-        policy_note += (
-            " Preferred status means this supplier should be included in the comparison."
-        )
+        quotes_req = 0
+        if fetch_result.approval_tier:
+            quotes_req = fetch_result.approval_tier.get_quotes_required()
+        if quotes_req >= 2:
+            policy_note += (
+                f" Preferred status means {matched.supplier_name} should be included in the "
+                f"comparison — it does not mandate single-source selection, particularly where "
+                f"{fetch_result.approval_tier.threshold_id} requires {quotes_req} quotes."
+            )
+        else:
+            policy_note += (
+                " Preferred status means this supplier should be included in the comparison."
+            )
 
     eval_result = PreferredSupplierEval(
         supplier=matched.supplier_name,
