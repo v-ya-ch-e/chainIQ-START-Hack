@@ -10,7 +10,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-BASE_URL = "http://18.197.20.103:8000"
+BASE_URL = "http://3.68.96.236:8000"
 
 
 def api_get(path, params=None):

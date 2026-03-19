@@ -109,7 +109,7 @@ None -- uses only Python standard library (`json`, `sys`, `urllib`).
 
 ### API
 
-Queries the ChainIQ Organisational Layer API at `http://18.197.20.103:8000`. See `DATABASE_BACKEND_API.md` for full endpoint documentation.
+Queries the ChainIQ Organisational Layer API at `http://3.68.96.236:8000`. See `DATABASE_BACKEND_API.md` for full endpoint documentation.
 
 ---
 
@@ -198,4 +198,4 @@ None -- uses only Python standard library (`json`, `sys`, `urllib`).
 
 ### API
 
-Queries the ChainIQ Organisational Layer API at `http://18.197.20.103:8000`. See `DATABASE_BACKEND_API.md` for full endpoint documentation.
+Queries the ChainIQ Organisational Layer API at `http://3.68.96.236:8000`. See `DATABASE_BACKEND_API.md` for full endpoint documentation.

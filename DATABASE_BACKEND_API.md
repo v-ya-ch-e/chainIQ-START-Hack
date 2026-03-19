@@ -5,16 +5,16 @@ This document is the complete reference for the **Organisational Layer** — a F
 - **Source code:** `backend/organisational_layer/`
 - **Deployment guide:** `backend/organisational_layer/DEPLOYMENT.md`
 - **Database schema reference:** `DATABASE_STRUCTURE.md`
-- **Live Swagger UI:** `http://18.197.20.103:8000/docs`
-- **Live ReDoc:** `http://18.197.20.103:8000/redoc`
+- **Live Swagger UI:** `http://3.68.96.236:8000/docs`
+- **Live ReDoc:** `http://3.68.96.236:8000/redoc`
 
 ---
 
 ## Base URL
 
 ```
-http://18.197.20.103:8000
-http://18.197.20.103:8000/docs#/
+http://3.68.96.236:8000/
+http://3.68.96.236:8000/docs#/
 ```
 
 All data endpoints are prefixed with `/api`.
