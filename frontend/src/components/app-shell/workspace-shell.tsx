@@ -2,8 +2,11 @@
 
 import type { ReactNode } from "react"
 import Image from "next/image"
+import Link from "next/link"
+import { usePathname } from "next/navigation"
 import {
   ChevronsUpDown,
+  ChevronRight,
   LogOut,
   Settings,
   User,
@@ -38,6 +41,10 @@ interface WorkspaceShellProps {
 }
 
 export function WorkspaceShell({ children }: WorkspaceShellProps) {
+  const pathname = usePathname()
+
+  const crumbs = buildBreadcrumbs(pathname)
+
   return (
     <SidebarProvider
       style={
@@ -126,17 +133,44 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
 
       </Sidebar>
 
-      <SidebarInset className="min-h-0 overflow-hidden">
-        <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b px-4">
+      <SidebarInset className="min-h-0 overflow-hidden bg-muted/35">
+        <header className="flex h-(--header-height) shrink-0 items-center gap-3 border-b px-4">
           <SidebarTrigger className="-ml-1" />
-          <span className="text-sm font-medium">
-            Sourcing Decision Cockpit
-          </span>
+          <nav aria-label="Breadcrumb" className="min-w-0">
+            <ol className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:text-sm">
+              {crumbs.map((crumb, index) => {
+                const isLast = index === crumbs.length - 1
+
+                return (
+                  <li
+                    key={crumb.href ?? `${crumb.label}-${index}`}
+                    className="flex min-w-0 items-center gap-1.5"
+                  >
+                    {index > 0 ? (
+                      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" />
+                    ) : null}
+                    {isLast || !crumb.href ? (
+                      <span className="truncate font-medium text-foreground">
+                        {crumb.label}
+                      </span>
+                    ) : (
+                      <Link
+                        href={crumb.href}
+                        className="truncate transition-colors hover:text-foreground"
+                      >
+                        {crumb.label}
+                      </Link>
+                    )}
+                  </li>
+                )
+              })}
+            </ol>
+          </nav>
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="@container/main flex flex-col gap-2">
-            <div className="flex min-w-0 flex-col gap-4 p-4 md:gap-6 md:p-6">
+            <div className="m-3 flex min-w-0 flex-col gap-4 rounded-xl border bg-white p-4 shadow-sm md:m-4 md:gap-6 md:p-6 dark:bg-card">
               <PageTransition>{children}</PageTransition>
             </div>
           </div>
@@ -144,4 +178,51 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
       </SidebarInset>
     </SidebarProvider>
   )
+}
+
+type BreadcrumbItem = {
+  label: string
+  href?: string
+}
+
+function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
+  const normalizedPath = pathname.replace(/\/+$/, "") || "/"
+
+  if (normalizedPath === "/") {
+    return [{ label: "Overview" }]
+  }
+
+  if (normalizedPath === "/inbox") {
+    return [{ label: "Inbox" }]
+  }
+
+  if (normalizedPath === "/escalations") {
+    return [{ label: "Escalations" }]
+  }
+
+  if (normalizedPath === "/audit") {
+    return [{ label: "Audit" }]
+  }
+
+  if (normalizedPath.startsWith("/cases/")) {
+    const caseId = decodeURIComponent(normalizedPath.split("/")[2] ?? "").trim()
+    return [
+      { label: "Inbox", href: "/inbox" },
+      { label: caseId ? `Case ${caseId}` : "Case Detail" },
+    ]
+  }
+
+  return [
+    { label: toTitleCase(normalizedPath.split("/").filter(Boolean).at(-1) ?? "Page") },
+  ]
+}
+
+function toTitleCase(value: string) {
+  return value
+    .replaceAll("-", " ")
+    .replaceAll("_", " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
 }
