@@ -7,10 +7,19 @@ import { ArrowRight, Loader2, Play, Search, Sparkles } from "lucide-react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
+import { CaseIntakeWizard } from "@/components/case-intake/case-intake-wizard"
 import { JsonViewer } from "@/components/shared/json-viewer"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -18,7 +27,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import {
   Table,
@@ -58,6 +66,7 @@ export function InboxPage({ cases }: InboxPageProps) {
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [escalationFilter, setEscalationFilter] = useState("all")
+  const [newRequestOpen, setNewRequestOpen] = useState(false)
   const [attentionOnly, setAttentionOnly] = useState(false)
   const [batchIds, setBatchIds] = useState("")
   const [concurrency, setConcurrency] = useState("5")
@@ -93,6 +102,12 @@ export function InboxPage({ cases }: InboxPageProps) {
       )
     })
   }, [attentionOnly, cases, escalationFilter, query, statusFilter])
+  const selectedStatusLabel =
+    statusOptions.find((option) => option.value === statusFilter)?.label ??
+    "All statuses"
+  const selectedEscalationLabel =
+    escalationOptions.find((option) => option.value === escalationFilter)?.label ??
+    "All escalations"
 
   function triggerRequest(requestId: string) {
     void runAction({
@@ -137,11 +152,25 @@ export function InboxPage({ cases }: InboxPageProps) {
           title="Case triage queue"
           description="Search, filter, and drill into individual sourcing cases."
         />
-        <Button render={<Link href="/cases/new" />}>
+        <Button onClick={() => setNewRequestOpen(true)}>
           <Sparkles className="mr-2 size-4" />
           New Request
         </Button>
       </div>
+
+      <Dialog open={newRequestOpen} onOpenChange={setNewRequestOpen}>
+        <DialogContent className="w-[min(100vw-2rem,80rem)] max-w-none p-0" showCloseButton={false}>
+          <DialogHeader className="border-b px-5 py-4">
+            <DialogTitle>New Sourcing Case</DialogTitle>
+            <DialogDescription>
+              Provide messy input and progressively structure it before creation.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="max-h-[calc(100svh-9rem)] overflow-y-auto p-5">
+            <CaseIntakeWizard embedded />
+          </DialogBody>
+        </DialogContent>
+      </Dialog>
 
       {message ? (
         <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
@@ -180,7 +209,7 @@ export function InboxPage({ cases }: InboxPageProps) {
                 onValueChange={(v) => setStatusFilter(v ?? "all")}
               >
                 <SelectTrigger className="w-[160px]">
-                  <SelectValue />
+                  <span className="truncate">{selectedStatusLabel}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {statusOptions.map((option) => (
@@ -195,7 +224,7 @@ export function InboxPage({ cases }: InboxPageProps) {
                 onValueChange={(value) => setEscalationFilter(value ?? "all")}
               >
                 <SelectTrigger className="w-[160px]">
-                  <SelectValue />
+                  <span className="truncate">{selectedEscalationLabel}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {escalationOptions.map((option) => (
@@ -395,9 +424,12 @@ export function InboxPage({ cases }: InboxPageProps) {
                 </>
               )}
             </Button>
-            <Button variant="outline" render={<Link href="/audit" />}>
+            <Link
+              href="/audit"
+              className={buttonVariants({ variant: "outline" })}
+            >
               View audit diagnostics
-            </Button>
+            </Link>
           </div>
         </CardContent>
       </Card>

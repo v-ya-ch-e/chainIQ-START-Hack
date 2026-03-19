@@ -1,6 +1,9 @@
 import { chainIqApi } from "@/lib/api/client"
 import type {
   AuditFeedEvent,
+  AuditFeedMeta,
+  AuditPageData,
+  AuditSummaryMetric,
   CaseIntakeInput,
   CaseDraftPayload,
   CaseDetail,
@@ -179,6 +182,11 @@ type AuditSummaryOut = {
   last_event?: string | null
 }
 
+type AuditFetchResult = {
+  audit: AuditListOut
+  meta: AuditFeedMeta
+}
+
 type EscalationQueueApiRow = {
   escalation_id: string
   request_id: string
@@ -229,6 +237,7 @@ type DashboardSnapshot = {
 }
 
 const DASHBOARD_CACHE_TTL_MS = 15_000
+const AUDIT_FEED_LIMIT = 500
 
 const STATUS_MAP: Record<string, CaseStatus> = {
   new: "received",
@@ -338,6 +347,55 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>
   }
   return null
+}
+
+function emptyAuditList(): AuditListOut {
+  return {
+    items: [],
+    total: 0,
+  }
+}
+
+function emptyAuditSummary(requestId: string): AuditSummaryOut {
+  return {
+    request_id: requestId,
+    total_entries: 0,
+    by_level: [],
+    by_category: [],
+    distinct_policies: [],
+    distinct_suppliers: [],
+    escalation_count: 0,
+    first_event: null,
+    last_event: null,
+  }
+}
+
+async function fetchCaseAuditLogs(requestId: string): Promise<AuditListOut> {
+  try {
+    return (await chainIqApi.orgLogs.audit.byRequest(requestId, {
+      limit: 500,
+    })) as AuditListOut
+  } catch {
+    try {
+      return (await chainIqApi.pipeline.audit(requestId, {
+        limit: 500,
+      })) as AuditListOut
+    } catch {
+      return emptyAuditList()
+    }
+  }
+}
+
+async function fetchCaseAuditSummary(requestId: string): Promise<AuditSummaryOut> {
+  try {
+    return (await chainIqApi.orgLogs.audit.summary(requestId)) as AuditSummaryOut
+  } catch {
+    try {
+      return (await chainIqApi.pipeline.auditSummary(requestId)) as AuditSummaryOut
+    } catch {
+      return emptyAuditSummary(requestId)
+    }
+  }
 }
 
 async function getAllRequests(): Promise<RequestRow[]> {
@@ -716,6 +774,82 @@ function mapAuditEvent(
   }
 }
 
+function buildAuditFeedMeta({
+  mode,
+  source,
+  totalKnown,
+  fetchedCount,
+  warning,
+}: {
+  mode: AuditFeedMeta["mode"]
+  source: AuditFeedMeta["source"]
+  totalKnown: number
+  fetchedCount: number
+  warning?: string
+}): AuditFeedMeta {
+  return {
+    mode,
+    source,
+    totalKnown,
+    fetchedCount,
+    isTruncated: totalKnown > fetchedCount,
+    asOf: new Date().toISOString(),
+    ...(warning ? { warning } : {}),
+  }
+}
+
+async function fetchAuditListWithFallback(
+  limit = AUDIT_FEED_LIMIT,
+): Promise<AuditFetchResult> {
+  try {
+    const audit = (await chainIqApi.orgLogs.audit.list({ limit })) as AuditListOut
+    const totalKnown = Number.isFinite(audit.total) ? audit.total : audit.items.length
+    return {
+      audit,
+      meta: buildAuditFeedMeta({
+        mode: "fresh",
+        source: "orgLogs",
+        totalKnown,
+        fetchedCount: audit.items.length,
+      }),
+    }
+  } catch (primaryError) {
+    try {
+      const fallbackAudit = (await chainIqApi.orgLogs.audit.list()) as AuditListOut
+      const totalKnown = Number.isFinite(fallbackAudit.total)
+        ? fallbackAudit.total
+        : fallbackAudit.items.length
+      const slicedItems = fallbackAudit.items.slice(0, limit)
+      return {
+        audit: {
+          ...fallbackAudit,
+          items: slicedItems,
+          total: totalKnown,
+        },
+        meta: buildAuditFeedMeta({
+          mode: "degraded",
+          source: "orgLogsFallback",
+          totalKnown,
+          fetchedCount: slicedItems.length,
+          warning:
+            "Primary audit feed query failed. Fallback snapshot loaded with reduced reliability.",
+        }),
+      }
+    } catch {
+      return {
+        audit: { items: [], total: 0 },
+        meta: buildAuditFeedMeta({
+          mode: "degraded",
+          source: "none",
+          totalKnown: 0,
+          fetchedCount: 0,
+          warning: `Audit data is temporarily unavailable. ${fallbackReasonFromError(primaryError)}`,
+        }),
+      }
+    }
+  }
+}
+
 export async function getDashboardPageData(): Promise<DashboardPageData> {
   const nowMs = Date.now()
   if (dashboardSnapshot && isDashboardSnapshotFresh(dashboardSnapshot, nowMs)) {
@@ -758,24 +892,13 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     throw error
   }
 
-  const [overview, awards, escalationRows, auditLogs, auditSummary] =
-    await Promise.all([
-      chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
-      chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
-      fetchEscalationRowsByRequest(caseId),
-      chainIqApi.orgLogs.audit
-        .byRequest(caseId, { limit: 500 })
-        .catch(async () =>
-          (await chainIqApi.pipeline.audit(caseId, {
-            limit: 500,
-          })) as AuditListOut,
-        ),
-      chainIqApi.orgLogs.audit
-        .summary(caseId)
-        .catch(async () =>
-          (await chainIqApi.pipeline.auditSummary(caseId)) as AuditSummaryOut,
-        ),
-    ])
+  const [overview, awards, escalationRows, auditLogs, auditSummary] = await Promise.all([
+    chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
+    chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
+    fetchEscalationRowsByRequest(caseId),
+    fetchCaseAuditLogs(caseId),
+    fetchCaseAuditSummary(caseId),
+  ])
 
   const pricingBySupplier = new Map(
     overview.pricing.map((entry) => [entry.supplier_id, entry]),
@@ -1128,59 +1251,72 @@ export async function getEscalationQueue(): Promise<QueueEscalationItem[]> {
   )
 }
 
-export async function getAuditFeed(): Promise<AuditFeedEvent[]> {
-  const [requests, audit] = await Promise.all([
+export async function getAuditPageData(): Promise<AuditPageData> {
+  const [requests, escalationRows, auditResult] = await Promise.all([
     getAllRequests(),
-    chainIqApi.orgLogs.audit.list({ limit: 500 }),
+    fetchEscalationQueueRows(),
+    fetchAuditListWithFallback(),
   ])
+
   const titleByRequestId = new Map(
     requests.map((entry) => [entry.request_id, entry.title]),
   )
 
-  const typedAudit = audit as AuditListOut
-
-  return typedAudit.items
+  const feed = auditResult.audit.items
     .map((entry) => mapAuditEvent(entry, titleByRequestId))
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-}
 
-export async function getAuditOverview(): Promise<{
-  summary: Array<{ label: string; value: string; helper: string }>
-}> {
-  const [requests, escalationRows, audit] = await Promise.all([
-    getAllRequests(),
-    fetchEscalationQueueRows(),
-    chainIqApi.orgLogs.audit.list({ limit: 500 }).catch(() => ({ items: [], total: 0 })),
-  ])
-
-  const typedAudit = audit as AuditListOut
-  const policyConflicts = typedAudit.items.filter(
+  const casesWithTrace = new Set(
+    auditResult.audit.items.map((entry) => entry.request_id).filter(Boolean),
+  )
+  const policyConflicts = auditResult.audit.items.filter(
     (entry) => entry.category === "policy" && entry.level === "error",
   )
 
+  const summary: AuditSummaryMetric[] = [
+    {
+      label: "Cases With Audit Trace",
+      value: casesWithTrace.size.toString(),
+      helper: `${casesWithTrace.size} of ${requests.length} requests have captured audit events.`,
+    },
+    {
+      label: "Audit Entries",
+      value: auditResult.meta.totalKnown.toString(),
+      helper: auditResult.meta.isTruncated
+        ? `Showing ${auditResult.meta.fetchedCount} of ${auditResult.meta.totalKnown} entries (current fetch limit ${AUDIT_FEED_LIMIT}).`
+        : "Structured pipeline events available for review.",
+    },
+    {
+      label: "Escalations In Queue",
+      value: escalationRows.length.toString(),
+      helper: "Open and resolved escalation objects produced by policy logic.",
+    },
+    {
+      label: "Policy Conflicts",
+      value: policyConflicts.length.toString(),
+      helper: "Audit events flagged as policy-level errors.",
+    },
+  ]
+
   return {
-    summary: [
-      {
-        label: "Cases With Audit Trace",
-        value: requests.length.toString(),
-        helper: "Requests represented in the backend dataset",
-      },
-      {
-        label: "Audit Entries",
-        value: typedAudit.total.toString(),
-        helper: "Structured pipeline events available for review",
-      },
-      {
-        label: "Escalation Events",
-        value: escalationRows.length.toString(),
-        helper: "Deterministic escalation objects generated by policy logic",
-      },
-      {
-        label: "Policy Conflicts",
-        value: policyConflicts.length.toString(),
-        helper: "Audit entries flagged as policy-level errors",
-      },
-    ],
+    summary,
+    feed,
+    feedMeta: auditResult.meta,
+  }
+}
+
+export async function getAuditFeed(): Promise<AuditFeedEvent[]> {
+  return (await getAuditPageData()).feed
+}
+
+export async function getAuditOverview(): Promise<{
+  summary: AuditSummaryMetric[]
+  feedMeta: AuditFeedMeta
+}> {
+  const data = await getAuditPageData()
+  return {
+    summary: data.summary,
+    feedMeta: data.feedMeta,
   }
 }
 

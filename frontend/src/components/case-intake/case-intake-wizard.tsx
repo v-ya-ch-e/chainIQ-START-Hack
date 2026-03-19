@@ -59,7 +59,11 @@ const EMPTY_EXTRACTION: ExtractionResult = {
   extractionStrength: "low",
 }
 
-export function CaseIntakeWizard() {
+interface CaseIntakeWizardProps {
+  embedded?: boolean
+}
+
+export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
   const router = useRouter()
   const [step, setStep] = useState<IntakeFlowStep>("input")
   const [mode, setMode] = useState<IntakeSourceType>("paste")
@@ -104,6 +108,14 @@ export function CaseIntakeWizard() {
     () => computeMissingRequiredFields(result.draft),
     [result.draft],
   )
+  const stepOrder: IntakeFlowStep[] = ["input", "processing", "complete", "review", "created"]
+  const activeStepIndex = stepOrder.indexOf(step)
+  const confidenceCount = Object.values(result.fieldStatus).filter(
+    (entry) => entry?.status === "confident",
+  ).length
+  const reviewCount = Object.values(result.fieldStatus).filter(
+    (entry) => entry?.status === "inferred" || entry?.status === "needs_review",
+  ).length
 
   function patchDraft(patch: Partial<CaseDraftPayload>) {
     setResult((current) => ({
@@ -191,12 +203,54 @@ export function CaseIntakeWizard() {
   }
 
   return (
-    <div className="space-y-6">
-      <SectionHeading
-        eyebrow="Intake"
-        title="New Sourcing Case"
-        description="Submit messy input first, then review extracted structure before creating the case."
-      />
+    <div className={embedded ? "space-y-4" : "space-y-6"}>
+      {!embedded ? (
+        <SectionHeading
+          eyebrow="Intake"
+          title="New Sourcing Case"
+          description="Submit messy input first, then review extracted structure before creating the case."
+        />
+      ) : null}
+
+      <Card className="border-muted bg-muted/20">
+        <CardContent className="space-y-3 pt-4">
+          <div className="grid gap-2 md:grid-cols-4">
+            <StepChip
+              title="1. Input"
+              active={activeStepIndex >= 0}
+              done={activeStepIndex > 0}
+            />
+            <StepChip
+              title="2. Processing"
+              active={step === "processing"}
+              done={activeStepIndex > 1}
+            />
+            <StepChip
+              title="3. Complete"
+              active={step === "complete"}
+              done={activeStepIndex > 2}
+            />
+            <StepChip
+              title="4. Review"
+              active={step === "review"}
+              done={activeStepIndex > 3}
+            />
+          </div>
+          {step !== "input" ? (
+            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <span className="rounded-md border bg-background px-2 py-1">
+                Confident fields: {confidenceCount}
+              </span>
+              <span className="rounded-md border bg-background px-2 py-1">
+                Need review: {reviewCount}
+              </span>
+              <span className="rounded-md border bg-background px-2 py-1">
+                Missing required: {missingRequired.length}
+              </span>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       {loadingCategories ? (
         <Card>
@@ -208,15 +262,18 @@ export function CaseIntakeWizard() {
       ) : null}
 
       {step === "processing" ? (
-        <Card className="mx-auto max-w-4xl">
+        <Card className="mx-auto max-w-5xl">
           <CardHeader>
             <CardTitle>Processing input</CardTitle>
             <CardDescription>
               Extracting fields, checking completeness, and preparing a structured draft.
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             <Alert>Analyzing request...</Alert>
+            <div className="h-2 overflow-hidden rounded-full bg-muted">
+              <div className="h-full w-1/2 animate-pulse rounded-full bg-primary/60" />
+            </div>
           </CardContent>
         </Card>
       ) : null}
@@ -256,6 +313,7 @@ export function CaseIntakeWizard() {
       {step === "review" ? (
         <ReviewStep
           draft={result.draft}
+          categories={categories}
           sourceText={sourceText}
           fieldStatus={result.fieldStatus}
           missingRequired={missingRequired}
@@ -269,6 +327,29 @@ export function CaseIntakeWizard() {
           onCreate={handleCreateCase}
         />
       ) : null}
+    </div>
+  )
+}
+
+function StepChip({
+  title,
+  active,
+  done,
+}: {
+  title: string
+  active: boolean
+  done: boolean
+}) {
+  return (
+    <div
+      className={[
+        "rounded-lg border px-3 py-2 text-sm transition-colors",
+        done ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "",
+        active && !done ? "border-primary/40 bg-primary/10 text-foreground" : "",
+        !active ? "bg-background text-muted-foreground" : "",
+      ].join(" ")}
+    >
+      {title}
     </div>
   )
 }

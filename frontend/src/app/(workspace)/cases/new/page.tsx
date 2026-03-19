@@ -1,5 +1,5 @@
-import { CaseIntakeWizard } from "@/components/case-intake/case-intake-wizard"
+import { redirect } from "next/navigation"
 
 export default function Page() {
-  return <CaseIntakeWizard />
+  redirect("/inbox")
 }
