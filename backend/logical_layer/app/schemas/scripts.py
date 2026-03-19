@@ -1,4 +1,4 @@
-"""Pydantic models for the script-backed endpoints (filter + rank)."""
+"""Pydantic models for the script-backed endpoints (filter, rank, validate)."""
 
 from __future__ import annotations
 
@@ -105,3 +105,55 @@ class RankSuppliersResponse(BaseModel):
     category_l1: str
     category_l2: str
     count: int
+
+
+# ------------------------------------------------------------------
+# Validate Request
+# ------------------------------------------------------------------
+
+
+class ValidateRequestRequest(BaseModel):
+    """Input for the validate-request endpoint.
+
+    A full purchase request dict. All fields are accepted; the script
+    checks which required/optional fields are present and uses the
+    Anthropic API to detect contradictions between structured fields
+    and request_text.
+    """
+
+    model_config = {"extra": "allow"}
+
+
+class ValidationIssue(BaseModel):
+    """A single validation issue found by deterministic checks or the LLM."""
+
+    field: str | None = None
+    type: str
+    message: str
+
+
+class RequestInterpretation(BaseModel):
+    """Structured interpretation of the purchase request."""
+
+    category_l1: str | None = None
+    category_l2: str | None = None
+    quantity: float | None = None
+    unit_of_measure: str | None = None
+    budget_amount: float | None = None
+    currency: str | None = None
+    delivery_country: str | None = None
+    required_by_date: str | None = None
+    days_until_required: int | None = None
+    data_residency_required: bool = False
+    esg_requirement: bool = False
+    preferred_supplier_stated: str | None = None
+    incumbent_supplier: str | None = None
+    requester_instruction: str | None = None
+
+
+class ValidateRequestResponse(BaseModel):
+    """Output of the validate-request endpoint."""
+
+    completeness: bool
+    issues: list[ValidationIssue]
+    request_interpretation: RequestInterpretation

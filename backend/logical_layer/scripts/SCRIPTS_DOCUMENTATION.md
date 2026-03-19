@@ -1,12 +1,12 @@
 # Scripts Documentation
 
-Both scripts expose their core logic as **importable Python functions** and support **stdin/stdout JSON** for easy API integration, while remaining backward-compatible with the original file-based CLI mode.
+All scripts expose their core logic as **importable Python functions** and support **stdin/stdout JSON** for easy API integration, while remaining backward-compatible with the original file-based CLI mode.
 
 They are also exposed as **HTTP endpoints** through the Logical Layer FastAPI service.
 
 ## Configuration
 
-Both scripts read the Organisational Layer base URL from the `ORGANISATIONAL_LAYER_URL` environment variable, falling back to `http://3.68.96.236:8000` if unset.
+The filter and rank scripts read the Organisational Layer base URL from the `ORGANISATIONAL_LAYER_URL` environment variable, falling back to `http://3.68.96.236:8000` if unset.
 
 ```bash
 # Override for local development
@@ -16,19 +16,30 @@ export ORGANISATIONAL_LAYER_URL=http://localhost:8000
 ORGANISATIONAL_LAYER_URL=http://organisational-layer:8000
 ```
 
+The validate script requires the `ANTHROPIC_API_KEY` environment variable for LLM-powered checks. It also loads variables from the `.env` file in the `backend/logical_layer/` directory via `python-dotenv`.
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
 ## Integration Patterns
 
 ### 1. HTTP API via Logical Layer (recommended for n8n / external callers)
 
-The Logical Layer exposes both scripts as POST endpoints at `http://localhost:8080`.
+The Logical Layer exposes all scripts as POST endpoints at `http://localhost:8080`.
 
 ```bash
-# Step 1: filter
+# Step 1: validate
+curl -X POST http://localhost:8080/api/validate-request \
+  -H "Content-Type: application/json" \
+  -d '{ "request_id": "REQ-000004", "category_l1": "IT", ... }'
+
+# Step 2: filter
 curl -X POST http://localhost:8080/api/filter-suppliers \
   -H "Content-Type: application/json" \
   -d '{"category_l1": "IT", "category_l2": "Hardware"}'
 
-# Step 2: rank (pass the suppliers array from step 1)
+# Step 3: rank (pass the suppliers array from step 2)
 curl -X POST http://localhost:8080/api/rank-suppliers \
   -H "Content-Type: application/json" \
   -d '{
@@ -42,13 +53,17 @@ Full Swagger documentation is available at `http://localhost:8080/docs`.
 ### 2. Import as a module (for in-process Python use)
 
 ```python
+from scripts.validateRequest import validate_request
 from scripts.filterCompaniesByProduct import filter_suppliers
 from scripts.rankCompanies import rank_suppliers
 
-# Step 1: filter
+# Step 1: validate
+validation = validate_request(request_data)  # dict in -> dict out
+
+# Step 2: filter
 filter_result = filter_suppliers(request_data)   # dict in -> dict out
 
-# Step 2: rank
+# Step 3: rank
 rank_result = rank_suppliers(request_data, filter_result["suppliers"])  # dicts in -> dict out
 ```
 
@@ -56,6 +71,14 @@ rank_result = rank_suppliers(request_data, filter_result["suppliers"])  # dicts 
 
 ```python
 import subprocess, json
+
+# validateRequest
+proc = subprocess.run(
+    ["python3", "scripts/validateRequest.py"],
+    input=json.dumps(request_data),
+    capture_output=True, text=True,
+)
+validation = json.loads(proc.stdout)
 
 # filterCompaniesByProduct
 proc = subprocess.run(
@@ -77,9 +100,99 @@ rank_result = json.loads(proc.stdout)
 ### 4. Original file-based CLI (still works)
 
 ```bash
+python3 scripts/validateRequest.py request.json validation_output.json
 python3 scripts/filterCompaniesByProduct.py request.json suppliers.json
 python3 scripts/rankCompanies.py request.json suppliers.json ranked.json
 ```
+
+---
+
+## validateRequest.py
+
+Validates a purchase request for completeness and internal consistency. Uses deterministic checks for required/optional fields and the Anthropic API (Claude) to detect discrepancies between the free-text `request_text` and the structured fields.
+
+### HTTP Endpoint
+
+`POST /api/validate-request`
+
+**Request body:** A full purchase request JSON object (same structure as `examples/example_request.json`). All fields are accepted; the script checks which required/optional fields are present.
+
+**Response:**
+```json
+{
+  "completeness": false,
+  "issues": [
+    {
+      "field": "quantity",
+      "type": "missing_optional",
+      "message": "Field 'quantity' is missing or null — request is incomplete."
+    },
+    {
+      "field": "budget_amount",
+      "type": "contradictory",
+      "message": "Text says '50,000 EUR' but budget_amount is 30000."
+    }
+  ],
+  "request_interpretation": {
+    "category_l1": "IT",
+    "category_l2": "Hardware",
+    "quantity": null,
+    "unit_of_measure": null,
+    "budget_amount": 30000,
+    "currency": "EUR",
+    "delivery_country": "DE",
+    "required_by_date": "2026-06-01",
+    "days_until_required": 74,
+    "data_residency_required": false,
+    "esg_requirement": false,
+    "preferred_supplier_stated": null,
+    "incumbent_supplier": null,
+    "requester_instruction": "must use Dell"
+  }
+}
+```
+
+**Error responses:** `400` if the input cannot be processed. `502` if the Anthropic API is unreachable or returns an error.
+
+### Function API
+
+```python
+validate_request(request_data: dict) -> dict
+```
+
+**Input** — a purchase request dict (same structure as `examples/example_request.json`).
+
+**Output:** `{ "completeness": bool, "issues": [...], "request_interpretation": {...} }`
+
+### CLI Usage
+
+| Mode | Command |
+|------|---------|
+| stdin/stdout | `echo '{ ... }' \| python3 scripts/validateRequest.py` |
+| File (stdout) | `python3 scripts/validateRequest.py request.json` |
+| File (output) | `python3 scripts/validateRequest.py request.json output.json` |
+
+### How It Works
+
+1. **Deterministic checks** — Verifies required fields (`request_id`, `created_at`, `request_channel`, `request_language`, `business_unit`, `country`, `category_l1`, `category_l2`, `title`, `request_text`, `currency`, `status`) are present and non-null. Checks completeness fields (`quantity`, `budget_amount`, `required_by_date`, `unit_of_measure`, `delivery_countries`) for presence.
+2. **LLM checks** — Sends the full request JSON to Claude (claude-sonnet-4-6) with a system prompt that instructs it to find only major issues: `missing_info` (critical fields missing or text mentions info with no structured field) and `contradictory` (text clearly contradicts a structured field value). The LLM also extracts any explicit requester instruction from the free text.
+3. **Interpretation** — Builds a structured interpretation of the request fields, including computed `days_until_required` and the LLM-extracted `requester_instruction`.
+4. **Result** — Merges deterministic and LLM issues. `completeness` is `true` only if zero issues are found.
+
+### Issue Types
+
+| Type | Source | Description |
+|------|--------|-------------|
+| `missing_required` | Deterministic | A required field is missing or null |
+| `missing_optional` | Deterministic | A completeness field is missing or null |
+| `missing_info` | LLM | Text mentions info with no corresponding structured field |
+| `contradictory` | LLM | Text clearly contradicts a structured field value |
+
+### Dependencies
+
+- `anthropic` — Anthropic Python SDK
+- `python-dotenv` — Loads `.env` file for API key
+- Requires `ANTHROPIC_API_KEY` environment variable
 
 ---
 

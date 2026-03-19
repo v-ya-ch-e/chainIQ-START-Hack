@@ -1,7 +1,7 @@
-"""Script-backed endpoints for supplier filtering and ranking.
+"""Script-backed endpoints for supplier filtering, ranking, and validation.
 
 These endpoints wrap the standalone scripts in ``scripts/`` as HTTP APIs.
-The scripts use synchronous urllib internally, so they are run in a thread
+The scripts use synchronous I/O internally, so they are run in a thread
 via ``asyncio.to_thread`` to avoid blocking the event loop.
 """
 
@@ -14,9 +14,12 @@ from app.schemas.scripts import (
     FilterSuppliersResponse,
     RankSuppliersRequest,
     RankSuppliersResponse,
+    ValidateRequestRequest,
+    ValidateRequestResponse,
 )
 from scripts.filterCompaniesByProduct import filter_suppliers
 from scripts.rankCompanies import rank_suppliers
+from scripts.validateRequest import validate_request
 
 router = APIRouter(prefix="/api", tags=["Scripts"])
 
@@ -60,3 +63,24 @@ async def rank_suppliers_endpoint(body: RankSuppliersRequest) -> RankSuppliersRe
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Organisational layer error: {exc}")
     return RankSuppliersResponse(**result)
+
+
+@router.post(
+    "/validate-request",
+    response_model=ValidateRequestResponse,
+    summary="Validate a purchase request for completeness and consistency",
+    description=(
+        "Accepts a full purchase request, runs deterministic checks for "
+        "required/optional fields, then uses the Anthropic API to detect "
+        "contradictions between the free-text request_text and structured "
+        "fields. Returns validation issues and a structured interpretation."
+    ),
+)
+async def validate_request_endpoint(body: ValidateRequestRequest) -> ValidateRequestResponse:
+    try:
+        result = await asyncio.to_thread(validate_request, body.model_dump())
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Validation error: {exc}")
+    return ValidateRequestResponse(**result)
