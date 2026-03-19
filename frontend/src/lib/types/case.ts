@@ -204,6 +204,7 @@ export interface AuditTimelineEvent {
   stepName?: string | null
   source?: string
   details?: Record<string, unknown> | null
+  runId?: string | null
 }
 
 export interface AuditFeedEvent extends AuditTimelineEvent {

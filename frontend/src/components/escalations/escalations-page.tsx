@@ -285,7 +285,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                           }
                         />
                       </TableCell>
-                      <TableCell className="text-sm tabular-nums">
+                      <TableCell className="text-sm tabular-nums" suppressHydrationWarning>
                         {formatDateTime(item.createdAt)}
                       </TableCell>
                     </TableRow>

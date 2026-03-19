@@ -1,5 +1,12 @@
 import { type CaseStatus, type RecommendationStatus, type Severity } from "@/lib/types/case"
 
+function parseAsUtc(date: string): Date {
+  if (/[Zz]$/.test(date) || /[+-]\d{2}:?\d{2}$/.test(date)) {
+    return new Date(date)
+  }
+  return new Date(date + "Z")
+}
+
 export function formatCurrency(
   value: number | null | undefined,
   currency = "EUR"
@@ -17,7 +24,7 @@ export function formatCurrency(
 
 export function formatDate(date: string) {
   if (!date || typeof date !== "string") return "—"
-  const d = new Date(date)
+  const d = parseAsUtc(date)
   if (Number.isNaN(d.getTime())) return "—"
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
@@ -27,18 +34,17 @@ export function formatDate(date: string) {
   }).format(d)
 }
 
-/** dd.mm.yyyy for eval run dates in subheaders */
 export function formatDateDdMmYyyy(date: string) {
-  const d = new Date(date)
-  const day = String(d.getDate()).padStart(2, "0")
-  const month = String(d.getMonth() + 1).padStart(2, "0")
-  const year = d.getFullYear()
+  const d = parseAsUtc(date)
+  const day = String(d.getUTCDate()).padStart(2, "0")
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0")
+  const year = d.getUTCFullYear()
   return `${day}.${month}.${year}`
 }
 
 export function formatDateTime(date: string) {
   if (!date || typeof date !== "string") return "—"
-  const d = new Date(date)
+  const d = parseAsUtc(date)
   if (Number.isNaN(d.getTime())) return "—"
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
