@@ -64,6 +64,7 @@ export function WorkspaceShell({
               alt="ChainIQ"
               width={473}
               height={187}
+              priority
               className="h-8 w-auto shrink-0 group-data-[collapsible=icon]:hidden"
             />
             <Image
@@ -71,6 +72,7 @@ export function WorkspaceShell({
               alt="ChainIQ"
               width={473}
               height={187}
+              priority
               className="hidden h-5 w-auto shrink-0 group-data-[collapsible=icon]:block"
             />
           </div>
