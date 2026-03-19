@@ -207,6 +207,7 @@ class EscalationRuleCurrency(Base):
 
 class RuleDefinition(Base):
     __tablename__ = "rule_definitions"
+    __table_args__ = {"extend_existing": True}
 
     rule_id = Column(String(10), primary_key=True)
     rule_type = Column(String(30), nullable=False)
@@ -233,6 +234,7 @@ class RuleDefinition(Base):
 
 class RuleVersion(Base):
     __tablename__ = "rule_versions"
+    __table_args__ = {"extend_existing": True}
 
     version_id = Column(String(36), primary_key=True)
     rule_id = Column(String(10), ForeignKey("rule_definitions.rule_id"), nullable=False)
