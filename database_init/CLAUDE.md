@@ -21,12 +21,12 @@ python migrate.py
 
 | File | Purpose |
 |------|---------|
-| `migrate.py` | Main migration script — drops/creates 22 tables, reads all data files, normalises inconsistencies, inserts in FK-safe order, prints summary |
+| `migrate.py` | Main migration script — drops/creates 24 tables, reads all data files, normalises inconsistencies, inserts in FK-safe order, prints summary |
 | `requirements.txt` | Python deps: `mysql-connector-python`, `python-dotenv` |
 | `.env.example` | Template for DB connection env vars |
 | `.env` | Actual credentials (git-ignored) |
 
-## Database schema (22 tables)
+## Database schema (24 tables)
 
 **Reference data:** `categories`, `suppliers`, `supplier_categories`, `supplier_service_regions`, `pricing_tiers`
 **Requests:** `requests`, `request_delivery_countries`, `request_scenario_tags`
@@ -35,6 +35,7 @@ python migrate.py
 **Policies — preferred:** `preferred_suppliers_policy`, `preferred_supplier_region_scopes`
 **Policies — restricted:** `restricted_suppliers_policy`, `restricted_supplier_scopes`
 **Policies — rules:** `category_rules`, `geography_rules`, `geography_rule_countries`, `geography_rule_applies_to_categories`, `escalation_rules`, `escalation_rule_currencies`
+**Pipeline logging:** `pipeline_runs`, `pipeline_log_entries`
 
 ## Normalisation details
 

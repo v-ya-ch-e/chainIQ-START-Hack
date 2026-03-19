@@ -26,6 +26,7 @@ from app.models.policies import (
     EscalationRule,
     EscalationRuleCurrency,
 )
+from app.models.logs import PipelineRun, PipelineLogEntry, AuditLog
 
 __all__ = [
     "Category",
@@ -50,4 +51,7 @@ __all__ = [
     "GeographyRuleAppliesToCategory",
     "EscalationRule",
     "EscalationRuleCurrency",
+    "PipelineRun",
+    "PipelineLogEntry",
+    "AuditLog",
 ]

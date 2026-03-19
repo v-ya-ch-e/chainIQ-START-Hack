@@ -28,6 +28,9 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 # ---------------------------------------------------------------------------
 
 DROP_TABLES = [
+    "audit_logs",
+    "pipeline_log_entries",
+    "pipeline_runs",
     "escalation_rule_currencies",
     "escalation_rules",
     "geography_rule_applies_to_categories",
@@ -334,6 +337,65 @@ CREATE_TABLES = [
         currency  VARCHAR(5)  NOT NULL,
         UNIQUE KEY uq_esc_cur (rule_id, currency),
         FOREIGN KEY (rule_id) REFERENCES escalation_rules(rule_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    # -- Pipeline logging --
+    """
+    CREATE TABLE pipeline_runs (
+        id                INT AUTO_INCREMENT PRIMARY KEY,
+        run_id            VARCHAR(36)  NOT NULL,
+        request_id        VARCHAR(20)  NOT NULL,
+        status            VARCHAR(20)  NOT NULL DEFAULT 'running',
+        started_at        DATETIME     NOT NULL,
+        completed_at      DATETIME,
+        total_duration_ms INT,
+        steps_completed   INT          NOT NULL DEFAULT 0,
+        steps_failed      INT          NOT NULL DEFAULT 0,
+        error_message     TEXT,
+        UNIQUE KEY uq_run_id (run_id),
+        FOREIGN KEY (request_id) REFERENCES requests(request_id),
+        INDEX idx_run_request (request_id),
+        INDEX idx_run_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    """
+    CREATE TABLE pipeline_log_entries (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        run_id          VARCHAR(36)  NOT NULL,
+        step_name       VARCHAR(60)  NOT NULL,
+        step_order      INT          NOT NULL,
+        status          VARCHAR(20)  NOT NULL DEFAULT 'started',
+        started_at      DATETIME     NOT NULL,
+        completed_at    DATETIME,
+        duration_ms     INT,
+        input_summary   JSON,
+        output_summary  JSON,
+        error_message   TEXT,
+        metadata        JSON,
+        FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id),
+        INDEX idx_entry_run (run_id),
+        INDEX idx_entry_step (step_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    # -- Audit logs --
+    """
+    CREATE TABLE audit_logs (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        request_id    VARCHAR(20)  NOT NULL,
+        run_id        VARCHAR(36),
+        timestamp     DATETIME(3)  NOT NULL,
+        level         VARCHAR(10)  NOT NULL DEFAULT 'info',
+        category      VARCHAR(40)  NOT NULL DEFAULT 'general',
+        step_name     VARCHAR(60),
+        message       TEXT         NOT NULL,
+        details       JSON,
+        source        VARCHAR(30)  NOT NULL DEFAULT 'logical_layer',
+        FOREIGN KEY (request_id) REFERENCES requests(request_id),
+        INDEX idx_audit_request (request_id),
+        INDEX idx_audit_run (run_id),
+        INDEX idx_audit_timestamp (timestamp),
+        INDEX idx_audit_category (category),
+        INDEX idx_audit_level (level)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 ]
@@ -661,7 +723,7 @@ def run_migration():
     conn.commit()
 
     # ---- Create tables ----
-    print("Creating 22 tables...")
+    print("Creating 24 tables...")
     for ddl in CREATE_TABLES:
         cursor.execute(ddl)
     conn.commit()
@@ -894,6 +956,7 @@ def run_migration():
         "category_rules",
         "geography_rules", "geography_rule_countries", "geography_rule_applies_to_categories",
         "escalation_rules", "escalation_rule_currencies",
+        "pipeline_runs", "pipeline_log_entries", "audit_logs",
     ]
     total = 0
     for table in all_tables:
