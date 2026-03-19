@@ -43,8 +43,10 @@ python -m pytest tests/ -v
 
 Tests require a live MySQL database configured via `.env`. The test suite includes:
 
-- **106 tests total** (97 integration + 9 unit)
+- **137 tests total** (128 integration + 9 unit)
 - `tests/test_api.py` — 97 integration tests covering all API endpoints (health, categories, suppliers, requests, awards, policies, rules, escalations, analytics, pipeline logs, audit logs, rule versions, intake)
+- `tests/test_evaluation_detail.py` — 6 integration tests for evaluation detail endpoint (supplier_shortlist, suppliers_excluded from output snapshot, null/empty/malformed handling)
+- `tests/test_dynamic_rules.py` — 25 integration tests for dynamic rules CRUD, versioning, evaluation results, seeded rules
 - `tests/test_escalation_service.py` — 6 unit tests for the escalation evaluation engine
 - `tests/test_escalation_router.py` — 3 unit tests for escalation router endpoints (mocked DB)
 
@@ -120,7 +122,7 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 - `GET/POST /api/rule-versions/definitions`, `GET/PATCH/DELETE /api/rule-versions/definitions/{rule_id}`
 - `GET/POST /api/rule-versions/versions`, `GET/PATCH /api/rule-versions/versions/{version_id}`, `GET /api/rule-versions/versions/active/{rule_id}`
 - `GET /api/rule-versions/logs/rule-change[/{log_id}]`
-- Evaluations: `GET /api/rule-versions/evaluations/{run_id}`, `POST /api/rule-versions/evaluations`, `POST /api/rule-versions/evaluations/full`, `POST /api/rule-versions/evaluations/from-pipeline`, `POST /api/rule-versions/evaluations/reeval/{request_id}`, `GET /api/rule-versions/evaluations/by-request/{request_id}`
+- Evaluations: `GET /api/rule-versions/evaluations/{run_id}` (returns `supplier_shortlist` + `suppliers_excluded` from output snapshot), `POST /api/rule-versions/evaluations`, `POST /api/rule-versions/evaluations/full`, `POST /api/rule-versions/evaluations/from-pipeline`, `POST /api/rule-versions/evaluations/reeval/{request_id}`, `GET /api/rule-versions/evaluations/by-request/{request_id}`
 - Hard rule checks: `GET /api/rule-versions/hard-rule-checks[/{check_id}]`, `POST /api/rule-versions/evaluations/{run_id}/hard-rule-checks`
 - Policy checks: `GET/PATCH /api/rule-versions/policy-checks[/{check_id}]`, `POST /api/rule-versions/evaluations/{run_id}/policy-checks`
 - Audit logs: `GET /api/rule-versions/logs/evaluation-run/{run_id}`, `GET /api/rule-versions/logs/escalation/{escalation_id}`, `GET /api/rule-versions/logs/policy-change/{escalation_id}`, `GET /api/rule-versions/logs/policy-check`
@@ -155,7 +157,7 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 - `GET /api/analytics/check-restricted` — restriction check for supplier+category+country
 - `GET /api/analytics/check-preferred` — preferred status for supplier+category+region
 - `GET /api/analytics/applicable-rules` — category and geography rules for a context
-- `GET /api/analytics/request-overview/{id}` — comprehensive request evaluation
+- `GET /api/analytics/request-overview/{id}?pipeline_mode=false` — comprehensive request evaluation (supplier/pricing data gated by pipeline status; use `pipeline_mode=true` for raw reference data)
 - `GET /api/analytics/spend-by-category` — aggregated historical spend by category
 - `GET /api/analytics/spend-by-supplier` — aggregated historical spend by supplier
 - `GET /api/analytics/supplier-win-rates` — win rates from historical awards
@@ -208,7 +210,7 @@ Test dependencies: `pytest`, `pytest-asyncio`, `pytest-cov` (in `requirements.tx
 ## Logical Layer Integration Contract
 
 The logical layer depends on these org layer endpoints:
-- `GET /api/analytics/request-overview/{id}` — must return `request_text`, `created_at`, `request_language`, `unit_of_measure`, `capacity_per_month` in compliant suppliers
+- `GET /api/analytics/request-overview/{id}?pipeline_mode=true` — must return `request_text`, `created_at`, `request_language`, `unit_of_measure`, `capacity_per_month` in compliant suppliers; `pipeline_mode=true` is required for the pipeline to get raw reference data
 - `GET /api/escalations/by-request/{id}` — returns deterministic escalation queue
 - `GET /api/analytics/check-restricted` — per-supplier restriction check
 - `PUT /api/requests/{id}` — status updates (`in_review`, `evaluated`, `escalated`, `error`)
@@ -229,6 +231,8 @@ The logical layer depends on these org layer endpoints:
 6. **`CompliantSupplierOut` missing `capacity_per_month`** — The supplier capacity compliance check in the logical layer never triggered because `capacity_per_month` was not included in the compliant supplier query/schema. Fixed by adding to both query and schema.
 
 6. **`request-overview` multi-country delivery bug** — The endpoint only used the first delivery country for supplier filtering, restriction checks, pricing region lookup, and geography rules. For multi-country requests, this meant suppliers that don't serve all delivery countries were incorrectly included, pricing for other regions was missed, and geography rules for non-primary countries were omitted. Fixed by: intersecting supplier coverage across all delivery countries, checking restrictions against all countries, looking up pricing for all unique regions, and collecting geography rules for every delivery country.
+
+7. **`request-overview` leaked pre-processing supplier data** — The endpoint returned compliant suppliers and pricing tiers for ALL requests, even unprocessed ones. The frontend displayed these as if the request had been evaluated, showing misleading supplier comparisons with pricing/rankings before the pipeline had run. Fixed by adding a `pipeline_mode` query parameter: `pipeline_mode=false` (default, used by frontend) gates supplier/pricing data behind pipeline result existence and filters to the pipeline's evaluated shortlist; `pipeline_mode=true` (used by Logical Layer) returns the full raw reference data needed for pipeline processing.
 
 ### Logical Layer
 7. **`llm.py` StopIteration crash** — `next()` without default would raise `StopIteration` if the LLM returned no `tool_use` block. Fixed with `next(..., None)` + explicit None check.

@@ -1479,6 +1479,14 @@ Return all category rules and geography rules that apply to a given category + d
 **Path params:**
 - `request_id` — e.g. `REQ-000004`
 
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `pipeline_mode` | bool | `false` | When `true`, returns raw reference data (used by the Logical Layer pipeline). When `false`, supplier and pricing data is **only** returned for requests that have been processed through the pipeline. For processed requests, the supplier list is additionally filtered to match the pipeline's evaluated shortlist. |
+
+> **Important:** The Logical Layer must always call this endpoint with `pipeline_mode=true` to receive the raw data needed for processing. Frontend clients should use the default (`pipeline_mode=false`) to avoid displaying misleading pre-processing supplier data.
+
 **Response `200`:** `RequestOverviewOut`
 
 ```json
@@ -1528,11 +1536,12 @@ Return all category rules and geography rules that apply to a given category + d
 **Internal logic:**
 1. Resolves primary delivery country (first in `delivery_countries`, falls back to `request.country`)
 2. Maps country to region using: `DE/FR/NL/BE/AT/IT/ES/PL/UK → EU`, `CH → CH`, `US/CA/BR/MX → Americas`, `SG/AU/IN/JP → APAC`, `UAE/ZA → MEA`
-3. Filters suppliers: must serve the category + primary country, must not be restricted
-4. Looks up pricing tiers for each compliant supplier at the resolved region + request quantity
-5. Fetches approval tier for `(currency, budget_amount)`
-6. Returns `approval_tier: null` if `budget_amount` is null or no threshold matches
-7. Returns `pricing: []` if `quantity` is null
+3. **Pipeline-mode gating:** When `pipeline_mode=false` (default), checks for an existing pipeline result. If none exists, returns empty `compliant_suppliers` and `pricing`. If a pipeline result exists, filters the supplier list to only those in the pipeline's `supplier_shortlist`.
+4. Filters suppliers: must serve the category + ALL delivery countries, must not be restricted in ANY country
+5. Looks up pricing tiers for each compliant supplier across ALL unique pricing regions + request quantity
+6. Fetches approval tier for `(currency, budget_amount)`
+7. Returns `approval_tier: null` if `budget_amount` is null or no threshold matches
+8. Returns `pricing: []` if `quantity` is null
 
 **Response `404`:** Request not found
 

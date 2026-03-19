@@ -33,7 +33,7 @@ The PDF is rendered via `reportlab` in `app/reports/audit_report.py` and returne
 
 ## Org Layer Endpoints Used
 
-- `GET /api/analytics/request-overview/{id}` — fetch data
+- `GET /api/analytics/request-overview/{id}?pipeline_mode=true` — fetch raw reference data (pipeline_mode=true bypasses the frontend gate that hides supplier data for unprocessed requests)
 - `GET /api/escalations/by-request/{id}` — deterministic escalation queue
 - `GET /api/analytics/check-restricted` — per-supplier restriction check
 - `PUT /api/requests/{id}` — status updates

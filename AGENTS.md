@@ -113,6 +113,7 @@ Default local URLs:
 - Frontend API calls are same-origin (`/api/*`) and proxied to backend through Next rewrites.
 - Frontend server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal networking.
 - Mock fixture pass-through in `frontend/src/lib/data/cases.ts` has been replaced with backend-backed async mapping logic.
+- **`request-overview` pipeline gating:** The `GET /api/analytics/request-overview/{id}` endpoint accepts `?pipeline_mode=true|false`. The default (`false`) hides supplier and pricing data for requests that have not been processed through the pipeline, and filters the supplier list to the pipeline's evaluated shortlist for processed requests. The Logical Layer always calls with `pipeline_mode=true` to get the full raw reference data needed for processing.
 
 ## Deployment
 
