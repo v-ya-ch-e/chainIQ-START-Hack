@@ -40,6 +40,60 @@ class OrganisationalClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_procurement_rules(
+        self,
+        rule_type: str | None = None,
+        scope: str | None = None,
+        enabled: bool = True,
+        evaluation_mode: str | None = None,
+    ) -> list[dict]:
+        """GET /api/rules/definitions — fetches rule definitions with current version.
+
+        Returns flat dicts compatible with the rule evaluator: each dict has
+        rule_id, evaluation_mode, condition_expr, llm_prompt, trigger_template,
+        action_target, is_blocking, severity, etc.
+        """
+        params = {}
+        if rule_type:
+            params["rule_type"] = rule_type
+        if scope:
+            params["scope"] = scope
+        if enabled is not None:
+            params["active"] = str(enabled).lower()
+        if evaluation_mode:
+            params["evaluation_mode"] = evaluation_mode
+        resp = await self._client.get(
+            f"{self._base}/api/rules/definitions",
+            params=params or None,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        return [self._flatten_rule(r) for r in raw]
+
+    @staticmethod
+    def _flatten_rule(r: dict) -> dict:
+        """Merge rule_definition + current_version into flat evaluator dict."""
+        config = {}
+        cv = r.get("current_version")
+        if cv and cv.get("rule_config"):
+            config = cv["rule_config"]
+        return {
+            "rule_id": r.get("rule_id", ""),
+            "evaluation_mode": r.get("evaluation_mode", "expression"),
+            "condition_expr": config.get("condition_expr"),
+            "llm_prompt": config.get("llm_prompt"),
+            "trigger_template": r.get("trigger_template", ""),
+            "action_target": r.get("action_target"),
+            "is_blocking": r.get("is_blocking", True),
+            "severity": r.get("severity", "high"),
+            "enabled": r.get("active", True),
+            "action_type": r.get("action_type", "escalate"),
+            "field_ref": r.get("field_ref"),
+            "action_required": r.get("action_required"),
+            "breaks_completeness": r.get("breaks_completeness", False),
+        }
+
     async def check_restricted(
         self,
         supplier_id: str,

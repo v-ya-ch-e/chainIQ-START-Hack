@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from app.clients.organisational import OrganisationalClient
@@ -20,7 +21,32 @@ logger = logging.getLogger(__name__)
 
 STEP_NAME = "check_compliance"
 
-RISK_SCORE_THRESHOLD = 30
+
+async def _prefetch_restrictions(
+    suppliers: list[EnrichedSupplier],
+    category_l1: str,
+    category_l2: str,
+    primary_country: str,
+    org_client: OrganisationalClient,
+) -> dict[str, tuple[bool, str | None]]:
+    """Pre-fetch restriction status for all suppliers. Returns {supplier_id: (is_restricted, reason)}."""
+    if not category_l1 or not category_l2:
+        return {s.supplier_id: (False, None) for s in suppliers}
+
+    async def check_one(supplier: EnrichedSupplier) -> tuple[str, bool, str | None]:
+        try:
+            r = await org_client.check_restricted(
+                supplier_id=supplier.supplier_id,
+                category_l1=category_l1,
+                category_l2=category_l2,
+                delivery_country=primary_country,
+            )
+            return (supplier.supplier_id, r.get("is_restricted", False), r.get("restriction_reason"))
+        except Exception:
+            return (supplier.supplier_id, False, None)
+
+    results = await asyncio.gather(*[check_one(s) for s in suppliers])
+    return {sid: (restricted, reason) for sid, restricted, reason in results}
 
 
 def _build_supplier_context(
@@ -73,7 +99,6 @@ async def check_compliance(
     """Apply compliance rules to each enriched supplier."""
 
     req = fetch_result.request
-    budget = coerce_budget(req.budget_amount)
     quantity = coerce_quantity(req.quantity)
     delivery_countries = normalize_delivery_countries(req.delivery_countries)
     primary_country = delivery_countries[0] if delivery_countries else req.country or "DE"
@@ -84,6 +109,34 @@ async def check_compliance(
     ) as ctx:
         compliant: list[EnrichedSupplier] = []
         excluded: list[ExcludedSupplier] = []
+
+        # Pre-fetch restriction status for all suppliers
+        restriction_map = await _prefetch_restrictions(
+            filter_result.enriched_suppliers,
+            req.category_l1 or "",
+            req.category_l2 or "",
+            primary_country,
+            org_client,
+        )
+
+        # Fetch compliance rules
+        rules: list[dict] = []
+        try:
+            rules = await org_client.get_procurement_rules(
+                rule_type="supplier_compliance",
+                scope="supplier",
+                enabled=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to fetch compliance rules, using fallback: %s", exc)
+
+        if rules:
+            pipeline_logger.audit(
+                "compliance", "info", STEP_NAME,
+                f"Loaded {len(rules)} compliance rules from rule_definitions",
+                {"rules_loaded": len(rules),
+                 "rule_ids": [r.get("rule_id") for r in rules]},
+            )
 
         for supplier in filter_result.enriched_suppliers:
             exclusion_reason = await _check_supplier(
@@ -97,6 +150,44 @@ async def check_compliance(
                 dynamic_rules=dynamic_rules,
             )
 
+            supplier_context = {
+                "req_data_residency_constraint": req.data_residency_constraint,
+                "req_quantity": quantity,
+                "req_category_l1": req.category_l1,
+                "req_category_l2": req.category_l2,
+                "delivery_country": primary_country,
+                "sup_supplier_id": supplier.supplier_id,
+                "sup_supplier_name": supplier.supplier_name,
+                "sup_preferred_supplier": supplier.preferred_supplier,
+                "sup_data_residency_supported": supplier.data_residency_supported,
+                "sup_capacity_per_month": supplier.capacity_per_month,
+                "sup_risk_score": int(supplier.risk_score) if supplier.risk_score is not None else 0,
+                "sup_esg_score": int(supplier.esg_score) if supplier.esg_score is not None else 0,
+                "sup_quality_score": int(supplier.quality_score) if supplier.quality_score is not None else 0,
+                "sup_is_restricted": is_restricted,
+                "sup_restriction_reason": restriction_reason or "",
+            }
+
+            exclusion_reason: str | None = None
+            exclusion_rule_id: str | None = None
+
+            if rules:
+                triggered = await evaluate_rules_async(rules, supplier_context)
+                if triggered:
+                    exclusion_reason = triggered[0].get("trigger", "Excluded by compliance rule")
+                    exclusion_rule_id = triggered[0].get("rule_id")
+            else:
+                # Fallback: original hardcoded checks
+                if req.data_residency_constraint and not supplier.data_residency_supported:
+                    exclusion_reason = f"Does not support data residency in {primary_country}"
+                elif quantity is not None and supplier.capacity_per_month is not None and quantity > supplier.capacity_per_month:
+                    exclusion_reason = f"Quantity {quantity} exceeds monthly capacity {supplier.capacity_per_month}"
+                elif not supplier.preferred_supplier and (supplier.risk_score or 0) > 30:
+                    exclusion_reason = (f"preferred=False, risk_score={supplier.risk_score} "
+                        f"(exceeds threshold of 30). Excluded from shortlist on risk grounds.")
+                elif is_restricted:
+                    exclusion_reason = f"Restricted: {restriction_reason or 'Policy restriction'}"
+
             if exclusion_reason:
                 excluded.append(ExcludedSupplier(
                     supplier_id=supplier.supplier_id,
@@ -107,7 +198,7 @@ async def check_compliance(
                     "compliance", "warn", STEP_NAME,
                     f"Excluded {supplier.supplier_id} ({supplier.supplier_name}): {exclusion_reason}",
                     {"supplier_id": supplier.supplier_id, "action": "excluded",
-                     "reason": exclusion_reason},
+                     "rule_id": exclusion_rule_id, "reason": exclusion_reason},
                 )
             else:
                 compliant.append(supplier)
