@@ -138,6 +138,11 @@ Open in browser:
 - Organisational Layer Swagger: http://localhost:8000/docs
 - Logical Layer Swagger: http://localhost:8080/docs
 
+Intake guardrails:
+- `POST /api/chat/intake` requires frontend runtime `ANTHROPIC_API_KEY`.
+- Missing key returns `503` with code `ANTHROPIC_NOT_CONFIGURED`.
+- `POST /api/intake/extract` is deterministic (not Anthropic-backed) in the current architecture.
+
 ---
 
 ## 2. AWS Deployment (EC2 + RDS)
@@ -274,6 +279,8 @@ nano .env
 FRONTEND_PORT=3000
 BACKEND_INTERNAL_URL=http://organisational-layer:8000
 NEXT_PUBLIC_API_BASE_URL=/api
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-3-7-sonnet-20250219
 ```
 
 > The URLs use Docker service names — Docker's internal DNS resolves them on the shared network. No external IPs needed when running on the same machine.
@@ -414,6 +421,8 @@ No `docker network create` is needed — each machine uses its own default netwo
 | `FRONTEND_PORT` | `3000` | Published frontend port |
 | `BACKEND_INTERNAL_URL` | `http://organisational-layer:8000` | Backend URL for Next.js SSR |
 | `NEXT_PUBLIC_API_BASE_URL` | `/api` | Client-side API base path |
+| `ANTHROPIC_API_KEY` | _(empty)_ | Frontend server-only Anthropic key for `POST /api/chat/intake` |
+| `ANTHROPIC_MODEL` | `claude-3-7-sonnet-20250219` | Optional frontend intake-chat model override |
 
 ### Backend — Organisational Layer (`backend/organisational_layer/.env`)
 
@@ -430,6 +439,8 @@ No `docker network create` is needed — each machine uses its own default netwo
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORGANISATIONAL_LAYER_URL` | `http://organisational-layer:8000` | Internal URL to organisational layer |
+| `ANTHROPIC_API_KEY` | _(empty)_ | Anthropic key for logical-layer LLM-assisted steps (optional; fallback remains available) |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | Anthropic model for logical-layer structured calls |
 
 ---
 
@@ -487,8 +498,14 @@ docker compose --profile tools run --rm migrator   # re-bootstrap
 | `Connection refused` on 8080 | Logical layer waiting for org layer | Check if org layer is healthy: `cd backend && docker compose ps` |
 | Frontend shows API errors | Backend not reachable from frontend container | Verify `BACKEND_INTERNAL_URL`; verify both stacks are on `chainiq-network` |
 | Logical layer `502` errors | Org layer unreachable | Check `ORGANISATIONAL_LAYER_URL` in logical layer `.env` |
+| `POST /api/chat/intake` returns `503` (`ANTHROPIC_NOT_CONFIGURED`) | Frontend runtime missing Anthropic key | Set root `.env` `ANTHROPIC_API_KEY`, then rebuild/restart frontend container |
 | `Access denied` to RDS | Wrong DB credentials | Verify with `mysql` CLI from EC2 |
 | `Unknown database` error | Wrong `DB_NAME` | Check `DB_NAME` in org layer `.env` |
 | RDS timeout | EC2 SG not allowed in RDS SG | Add EC2 SG as inbound source on RDS SG, port 3306 |
 | Slow cold start | Docker images not cached | Subsequent builds are fast after first run |
 | Network not found | `chainiq-network` not created | Run `docker network create chainiq-network` |
+
+## 8. Known Technical Backlog
+
+- Unify duplicate deterministic intake extraction implementations into one backend source of truth.
+- Migrate organisational parse service Anthropic calls to async-safe execution (avoid blocking SDK calls in async handlers).

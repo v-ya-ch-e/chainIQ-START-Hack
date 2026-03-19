@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from datetime import datetime, timezone
 
 import anthropic
@@ -119,6 +120,14 @@ Respond with ONLY the JSON object (no markdown fencing).\
 """
 
 
+def _anthropic_client() -> anthropic.Anthropic:
+    """Create Anthropic client with explicit key validation."""
+    api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY is missing in organisational-layer environment")
+    return anthropic.Anthropic(api_key=api_key)
+
+
 def _ensure_schema(data: dict) -> dict:
     """Guarantee all canonical fields exist with correct defaults."""
     result = {}
@@ -171,7 +180,7 @@ def _fill_from_request_text(data: dict) -> dict:
     if not missing:
         return data
 
-    client = anthropic.Anthropic()
+    client = _anthropic_client()
     user_content = json.dumps({
         "request_text": request_text,
         "missing_fields": missing,
@@ -196,7 +205,7 @@ def _fill_from_request_text(data: dict) -> dict:
 
 def _convert_unstructured(content: str) -> dict:
     """Use Anthropic to convert unstructured text content to the target schema."""
-    client = anthropic.Anthropic()
+    client = _anthropic_client()
 
     response = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -210,7 +219,7 @@ def _convert_unstructured(content: str) -> dict:
 
 def _convert_binary(file_bytes: bytes, media_type: str) -> dict:
     """Send a binary file (PDF, image, etc.) directly to Anthropic."""
-    client = anthropic.Anthropic()
+    client = _anthropic_client()
 
     block_type = "image" if media_type.startswith("image/") else "document"
 
