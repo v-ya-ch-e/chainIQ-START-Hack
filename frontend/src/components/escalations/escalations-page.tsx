@@ -283,11 +283,34 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
       <div className="space-y-6">
       <div className="animate-fade-in-up">
         <SectionHeading
-          eyebrow="Escalation queue"
-          title={`${openCount} open human-review actions`}
-          description="Operational queue for blocked or conditionally proceedable cases."
+          eyebrow="Escalations"
+          title={`${openCount} open reviews`}
+          description="Human-review queue for blocked or conditionally proceedable cases."
         />
       </div>
+
+        <div
+          className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-3"
+          style={{ animationDelay: "80ms" }}
+        >
+          <QueueMetric
+            label="Open escalations"
+            value={openCount.toString()}
+            helper="Awaiting human decision"
+          />
+          <QueueMetric
+            label="Blocking cases"
+            value={items
+              .filter((item) => item.blocking && item.status !== "resolved")
+              .length.toString()}
+            helper="Cannot proceed autonomously"
+          />
+          <QueueMetric
+            label="Target roles"
+            value={new Set(items.map((item) => item.escalateTo)).size.toString()}
+            helper="Distinct stakeholders involved"
+          />
+        </div>
 
       <Card className="animate-fade-in-up" style={{ animationDelay: "160ms" }}>
         <CardHeader className="space-y-2 border-b pb-4">
@@ -360,9 +383,9 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                       <TableCell className="px-4 py-3">
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="font-medium">{item.caseId}</p>
+                            <p className="font-medium">{item.title}</p>
                             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                              {item.title}
+                              {item.category} · {formatCountryDisplayName(item.country)}
                             </p>
                           </div>
                           <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -405,28 +428,6 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
         </CardContent>
       </Card>
 
-        <div
-          className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-3"
-          style={{ animationDelay: "240ms" }}
-        >
-          <QueueMetric
-            label="Open escalations"
-            value={openCount.toString()}
-            helper="Unresolved workflow objects"
-          />
-          <QueueMetric
-            label="Blocking cases"
-            value={items
-              .filter((item) => item.blocking && item.status !== "resolved")
-              .length.toString()}
-            helper="Autonomous progression paused"
-          />
-          <QueueMetric
-            label="Distinct target roles"
-            value={new Set(items.map((item) => item.escalateTo)).size.toString()}
-            helper="Human stakeholders involved"
-          />
-        </div>
       </div>
 
       <Sheet open={isReviewOpen} onOpenChange={setIsReviewOpen}>
@@ -436,7 +437,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
         >
           <SheetHeader>
             <SheetTitle>
-              {selectedItem ? `Review ${selectedItem.escalationId}` : "Review escalation"}
+              {selectedItem ? `Review: ${selectedItem.title}` : "Review escalation"}
             </SheetTitle>
             <SheetDescription>
               Human review workspace for escalation triage and case handoff.
@@ -449,9 +450,9 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                 <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                   Request snapshot
                 </p>
-                <p className="mt-1 text-sm font-semibold">{selectedItem.caseId}</p>
+                <p className="mt-1 text-sm font-semibold">{selectedItem.title}</p>
                 <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                  {selectedItem.title}
+                  {selectedItem.caseId} · {selectedItem.businessUnit}
                 </p>
                 <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
                   <DetailRow label="Category" value={selectedItem.category} />

@@ -5,8 +5,11 @@ if (!apiBase) {
   throw new Error("BACKEND_INTERNAL_URL is required for frontend rewrites.");
 }
 const logicalApiBase =
-  process.env.LOGICAL_BACKEND_INTERNAL_URL ??
-  apiBase.replace(":8000", ":8080");
+  process.env.LOGICAL_BACKEND_INTERNAL_URL || apiBase.replace(":8000", ":8080");
+
+// #region agent log
+console.log(`[DEBUG-105a7f] next.config.ts loaded: apiBase=${apiBase}, logicalApiBase=${logicalApiBase}, LOGICAL_BACKEND_INTERNAL_URL=${process.env.LOGICAL_BACKEND_INTERNAL_URL ?? "(unset)"}`);
+// #endregion
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@assistant-ui/react", "@assistant-ui/react-markdown", "@assistant-ui/react-ai-sdk"],

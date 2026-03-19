@@ -482,28 +482,26 @@ export function InboxPage({
             <Table className="motion-safe:transition-[opacity] motion-safe:duration-150">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="min-w-[200px] px-4">
-                    Request
+                  <TableHead className="min-w-[220px] px-4">
+                    Project
                   </TableHead>
-                  <TableHead className="min-w-[120px]">Category</TableHead>
-                  <TableHead className="min-w-[120px]">Business Unit</TableHead>
-                  <TableHead className="min-w-[80px]">Country</TableHead>
-                  <TableHead className="min-w-[100px]">Budget</TableHead>
-                  <TableHead className="min-w-[100px]">Required By</TableHead>
-                  <TableHead className="min-w-[120px]">Last Updated</TableHead>
-                  <TableHead className="min-w-[100px]">Status</TableHead>
-                  <TableHead className="min-w-[120px]">Escalation</TableHead>
-                  <TableHead className="min-w-[160px]">Scenario</TableHead>
                   <TableHead className="min-w-[120px]">
                     Recommendation
                   </TableHead>
+                  <TableHead className="min-w-[120px]">Category</TableHead>
+                  <TableHead className="min-w-[100px]">Budget</TableHead>
+                  <TableHead className="min-w-[80px]">Country</TableHead>
+                  <TableHead className="min-w-[100px]">Status</TableHead>
+                  <TableHead className="min-w-[120px]">Escalation</TableHead>
+                  <TableHead className="min-w-[140px]">Scenario</TableHead>
+                  <TableHead className="min-w-[100px]">Required By</TableHead>
                   <TableHead className="min-w-[150px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredCases.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-muted-foreground">
                       {cases.length === 0
                         ? "No cases for the current view."
                         : "No cases match your filters on this page."}
@@ -543,39 +541,30 @@ export function InboxPage({
                           className="flex items-center justify-between gap-3"
                         >
                           <div className="min-w-0">
-                            <p className="font-medium">{entry.requestId}</p>
+                            <p className="font-medium">{entry.title}</p>
                             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                              {entry.title}
+                              {entry.businessUnit}
                             </p>
                           </div>
                           <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
                         </Link>
                       </TableCell>
+                      <TableCell>
+                        <StatusBadge
+                          label={displayRecommendationStatus(entry.recommendationStatus)}
+                          tone={recommendationTone}
+                        />
+                      </TableCell>
                       <TableCell className="text-sm">
                         {entry.category || emptyCell()}
                       </TableCell>
-                      <TableCell className="text-sm">
-                        {entry.businessUnit}
+                      <TableCell className="text-sm font-medium tabular-nums">
+                        {formatCurrency(entry.budgetAmount, entry.currency)}
                       </TableCell>
                       <TableCell className="text-sm">
                         {entry.countryLabel
                           ? formatCountryDisplayName(entry.countryLabel)
                           : emptyCell()}
-                      </TableCell>
-                      <TableCell className="text-sm font-medium tabular-nums">
-                        {formatCurrency(entry.budgetAmount, entry.currency)}
-                      </TableCell>
-                      <TableCell
-                        className="text-sm tabular-nums"
-                        suppressHydrationWarning
-                      >
-                        {formatDate(entry.requiredByDate)}
-                      </TableCell>
-                      <TableCell
-                        className="text-sm tabular-nums"
-                        suppressHydrationWarning
-                      >
-                        {formatDate(entry.lastUpdated)}
                       </TableCell>
                       <TableCell>
                         <StatusBadge
@@ -595,16 +584,16 @@ export function InboxPage({
                           }
                         />
                       </TableCell>
-                      <TableCell className="max-w-[200px] text-xs text-muted-foreground">
+                      <TableCell className="max-w-[180px] text-xs text-muted-foreground">
                         {entry.scenarioTags.length > 0
                           ? entry.scenarioTags.slice(0, 3).join(", ")
                           : emptyCell()}
                       </TableCell>
-                      <TableCell>
-                        <StatusBadge
-                          label={displayRecommendationStatus(entry.recommendationStatus)}
-                          tone={recommendationTone}
-                        />
+                      <TableCell
+                        className="text-sm tabular-nums"
+                        suppressHydrationWarning
+                      >
+                        {formatDate(entry.requiredByDate)}
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col items-start gap-2">

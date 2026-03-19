@@ -184,15 +184,18 @@ def _compute_confidence(
     validation_issues: list,
     ranked_suppliers: list,
 ) -> int:
-    """Compute confidence score (0-100)."""
+    """Compute confidence score (0-100).
+
+    Blocking escalations apply a heavy penalty (25 each) but don't immediately
+    zero-out the score, so the confidence still reflects how many issues exist.
+    """
 
     score = 100
 
     blocking = [e for e in escalations if e.blocking]
-    if blocking:
-        return 0
-
     non_blocking = [e for e in escalations if not e.blocking]
+
+    score -= len(blocking) * 25
     score -= len(non_blocking) * 10
 
     severity_penalty = {"critical": 15, "high": 10, "medium": 5, "low": 2}

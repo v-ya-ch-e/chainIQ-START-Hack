@@ -1479,6 +1479,14 @@ Return all category rules and geography rules that apply to a given category + d
 **Path params:**
 - `request_id` — e.g. `REQ-000004`
 
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `pipeline_mode` | bool | `false` | When `true`, returns raw reference data (used by the Logical Layer pipeline). When `false`, supplier and pricing data is **only** returned for requests that have been processed through the pipeline. For processed requests, the supplier list is additionally filtered to match the pipeline's evaluated shortlist. |
+
+> **Important:** The Logical Layer must always call this endpoint with `pipeline_mode=true` to receive the raw data needed for processing. Frontend clients should use the default (`pipeline_mode=false`) to avoid displaying misleading pre-processing supplier data.
+
 **Response `200`:** `RequestOverviewOut`
 
 ```json
@@ -1528,11 +1536,12 @@ Return all category rules and geography rules that apply to a given category + d
 **Internal logic:**
 1. Resolves primary delivery country (first in `delivery_countries`, falls back to `request.country`)
 2. Maps country to region using: `DE/FR/NL/BE/AT/IT/ES/PL/UK → EU`, `CH → CH`, `US/CA/BR/MX → Americas`, `SG/AU/IN/JP → APAC`, `UAE/ZA → MEA`
-3. Filters suppliers: must serve the category + primary country, must not be restricted
-4. Looks up pricing tiers for each compliant supplier at the resolved region + request quantity
-5. Fetches approval tier for `(currency, budget_amount)`
-6. Returns `approval_tier: null` if `budget_amount` is null or no threshold matches
-7. Returns `pricing: []` if `quantity` is null
+3. **Pipeline-mode gating:** When `pipeline_mode=false` (default), checks for an existing pipeline result. If none exists, returns empty `compliant_suppliers` and `pricing`. If a pipeline result exists, filters the supplier list to only those in the pipeline's `supplier_shortlist`.
+4. Filters suppliers: must serve the category + ALL delivery countries, must not be restricted in ANY country
+5. Looks up pricing tiers for each compliant supplier across ALL unique pricing regions + request quantity
+6. Fetches approval tier for `(currency, budget_amount)`
+7. Returns `approval_tier: null` if `budget_amount` is null or no threshold matches
+8. Returns `pricing: []` if `quantity` is null
 
 **Response `404`:** Request not found
 
@@ -1650,6 +1659,131 @@ GET /api/analytics/request-overview/{request_id}
 ```
 
 This executes steps 1–7 server-side and returns everything in one response.
+
+---
+
+## Pipeline Results
+
+> Full pipeline output persistence for the frontend. The Logical Layer calls the POST endpoint after processing a request, and the frontend reads the GET endpoints to display evaluated requests.
+
+### `POST /api/pipeline-results/`
+
+Save a full pipeline result. Called by the logical layer after processing.
+
+**Request body:**
+
+```json
+{
+  "run_id": "550e8400-e29b-41d4-a716-446655440000",
+  "request_id": "REQ-000042",
+  "status": "processed",
+  "recommendation_status": "cannot_proceed",
+  "processed_at": "2026-03-19T14:30:12",
+  "output": { "...full pipeline output JSON..." }
+}
+```
+
+> `recommendation_status` is auto-extracted from `output.recommendation.status` if not provided.
+
+**Response `201`:** `PipelineResultOut`
+
+```json
+{
+  "id": 1,
+  "run_id": "550e8400-...",
+  "request_id": "REQ-000042",
+  "status": "processed",
+  "recommendation_status": "cannot_proceed",
+  "processed_at": "2026-03-19T14:30:12",
+  "output": { "...full pipeline output..." },
+  "summary": {
+    "supplier_count": 3,
+    "excluded_count": 1,
+    "escalation_count": 3,
+    "blocking_escalation_count": 3,
+    "top_supplier_id": "SUP-0007",
+    "top_supplier_name": "Bechtle Workplace Solutions",
+    "total_issues": 3,
+    "confidence_score": 0
+  },
+  "created_at": "2026-03-19T14:30:12"
+}
+```
+
+**Response `409`:** Pipeline result for this run_id already exists
+
+---
+
+### `GET /api/pipeline-results/`
+
+Paginated list of pipeline results. Omits the full output blob for performance.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `request_id` | string | - | Filter by request ID |
+| `status` | string | - | Filter by pipeline status (`processed`, `error`) |
+| `recommendation_status` | string | - | Filter by recommendation status (`can_proceed`, `cannot_proceed`, etc.) |
+| `skip` | int | 0 | Pagination offset |
+| `limit` | int | 50 | Page size (max 200) |
+
+**Response `200`:**
+
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "run_id": "550e8400-...",
+      "request_id": "REQ-000042",
+      "status": "processed",
+      "recommendation_status": "cannot_proceed",
+      "processed_at": "2026-03-19T14:30:12",
+      "summary": { "...PipelineResultSummary..." },
+      "created_at": "2026-03-19T14:30:12"
+    }
+  ],
+  "total": 42,
+  "skip": 0,
+  "limit": 50
+}
+```
+
+---
+
+### `GET /api/pipeline-results/{run_id}`
+
+Get a single pipeline result by run_id, including the full output JSON.
+
+**Response `200`:** `PipelineResultOut` (with full `output`)
+**Response `404`:** Pipeline result not found
+
+---
+
+### `GET /api/pipeline-results/by-request/{request_id}`
+
+Get all pipeline results for a request, newest first. Includes full output.
+
+**Response `200`:** `PipelineResultOut[]`
+
+---
+
+### `GET /api/pipeline-results/latest/{request_id}`
+
+Get the most recent pipeline result for a request. Includes full output.
+
+**Response `200`:** `PipelineResultOut`
+**Response `404`:** No pipeline results found for this request
+
+---
+
+### `DELETE /api/pipeline-results/{run_id}`
+
+Delete a pipeline result.
+
+**Response `204`:** No content
+**Response `404`:** Pipeline result not found
 
 ---
 
@@ -1952,6 +2086,59 @@ Parse an uploaded file (PDF or image) into a structured purchase request.
 **Response `200`:** `ParseResponse` (same shape as `/text`)
 **Response `415`:** Unsupported file type
 **Response `400`:** Empty file
+
+---
+
+## Intake
+
+> Deterministic (non-LLM) extraction of structured fields from raw procurement text. Uses regex patterns and heuristics.
+
+### `POST /api/intake/extract`
+
+Extract structured purchase request fields from raw text input.
+
+**Request body:**
+
+```json
+{
+  "source_type": "paste",
+  "source_text": "Need 50 laptops, budget EUR 25000, deliver to DE by 2026-06-01",
+  "note": "Optional requester instruction",
+  "request_channel": "portal",
+  "file_names": []
+}
+```
+
+**Response `200`:** `IntakeExtractOut`
+
+```json
+{
+  "draft": {
+    "title": "Need 50 laptops...",
+    "requestText": "Need 50 laptops...",
+    "currency": "EUR",
+    "budgetAmount": 25000.0,
+    "quantity": 50.0,
+    "country": "DE",
+    "requiredByDate": "2026-06-01",
+    "categoryId": null,
+    "deliveryCountries": ["DE"],
+    "dataResidencyConstraint": false,
+    "esgRequirement": false,
+    "status": "new"
+  },
+  "field_status": {
+    "title": {"status": "confident", "confidence": 0.9, "reason": "Directly extracted."},
+    "currency": {"status": "inferred", "confidence": 0.65, "reason": "Derived from request content."},
+    "categoryId": {"status": "missing", "confidence": 0.0, "reason": "Value not found in source input."}
+  },
+  "missing_required": ["categoryId"],
+  "warnings": [
+    {"code": "CATEGORY_MISSING", "severity": "high", "message": "Category could not be extracted. Please select it manually."}
+  ],
+  "extraction_strength": "partial"
+}
+```
 
 ---
 

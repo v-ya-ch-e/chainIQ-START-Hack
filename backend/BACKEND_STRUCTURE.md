@@ -164,7 +164,7 @@ backend/organisational_layer/
 | `GET /api/analytics/check-restricted` | Restriction check for supplier+category+country |
 | `GET /api/analytics/check-preferred` | Preferred status for supplier+category+region |
 | `GET /api/analytics/applicable-rules` | Category and geography rules for a context |
-| `GET /api/analytics/request-overview/{id}` | **Mega-endpoint**: request + compliant suppliers + pricing + rules + approval tier + historical awards (all in one call) |
+| `GET /api/analytics/request-overview/{id}?pipeline_mode=false` | **Mega-endpoint**: request + compliant suppliers + pricing + rules + approval tier + historical awards. Default (`pipeline_mode=false`) gates supplier/pricing behind pipeline result existence. Use `pipeline_mode=true` for raw reference data (Logical Layer). |
 | `GET /api/analytics/spend-by-category` | Aggregated historical spend by category |
 | `GET /api/analytics/spend-by-supplier` | Aggregated historical spend by supplier |
 | `GET /api/analytics/supplier-win-rates` | Win rates from historical awards |
@@ -400,7 +400,7 @@ POLICY        ESCALATIONS
 
 | Endpoint | Step | Purpose |
 |----------|------|---------|
-| `GET /api/analytics/request-overview/{id}` | Step 1 | Primary data: request, compliant suppliers, pricing, rules, tier, awards |
+| `GET /api/analytics/request-overview/{id}?pipeline_mode=true` | Step 1 | Primary data: request, compliant suppliers, pricing, rules, tier, awards (pipeline_mode=true required for raw data) |
 | `GET /api/escalations/by-request/{id}` | Step 1 | Deterministic escalations from Org Layer engine |
 | `GET /api/analytics/check-restricted` | Step 4 | Targeted restriction check for borderline suppliers |
 | `PUT /api/requests/{id}` | Runner | Status updates (in_review → evaluated / escalated / error) |

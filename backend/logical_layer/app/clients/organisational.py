@@ -23,9 +23,10 @@ class OrganisationalClient:
     # ── Data reads ────────────────────────────────────────────
 
     async def get_request_overview(self, request_id: str) -> dict:
-        """GET /api/analytics/request-overview/{request_id}."""
+        """GET /api/analytics/request-overview/{request_id}?pipeline_mode=true."""
         resp = await self._client.get(
             f"{self._base}/api/analytics/request-overview/{request_id}",
+            params={"pipeline_mode": "true"},
             timeout=REQUEST_TIMEOUT,
         )
         resp.raise_for_status()

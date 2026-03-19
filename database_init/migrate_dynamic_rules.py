@@ -370,13 +370,13 @@ SEED_RULES = [
         "eval_config": {
             "field": "risk_score",
             "min": None,
-            "max": 30,
+            "max": 70,
             "condition": {"field": "preferred_supplier", "operator": "==", "value": False},
         },
         "action_on_fail": "exclude",
         "severity": "high",
         "is_blocking": False,
-        "fail_message_template": "Non-preferred supplier risk_score={risk_score} exceeds threshold 30",
+        "fail_message_template": "Non-preferred supplier risk_score={risk_score} exceeds threshold 70",
         "priority": 50,
     },
     {
@@ -405,26 +405,22 @@ SEED_RULES = [
     {
         "rule_id": "ER-001",
         "rule_name": "Missing required info escalation",
-        "description": "Escalate when budget is insufficient to fulfil at any compliant supplier",
+        "description": "Escalate when budget or quantity is null (missing required information)",
         "rule_category": "escalation",
-        "eval_type": "compare",
+        "eval_type": "required",
         "scope": "request",
         "pipeline_stage": "escalate",
         "eval_config": {
-            "left_field": "budget_amount",
-            "operator": ">=",
-            "right_field": "min_ranked_total",
-            "right_constant": None,
-            "condition": {
-                "field": "budget_amount", "operator": "!=", "value": None,
-                "and": {"field": "min_ranked_total", "operator": "!=", "value": None},
-            },
+            "fields": [
+                {"name": "budget_amount", "severity": "critical"},
+                {"name": "quantity", "severity": "critical"},
+            ]
         },
         "action_on_fail": "escalate",
         "severity": "critical",
         "is_blocking": True,
         "escalation_target": "Requester Clarification",
-        "fail_message_template": "Budget insufficient: {currency} {budget_amount} vs minimum total {currency} {min_ranked_total}",
+        "fail_message_template": "Missing required request information: {field_name}",
         "priority": 10,
     },
     {
@@ -511,33 +507,32 @@ SEED_RULES = [
         "action_on_fail": "escalate",
         "severity": "critical",
         "is_blocking": True,
-        "escalation_target": "Data Protection Officer",
+        "escalation_target": "Security/Compliance",
         "fail_message_template": "No compliant supplier supports data residency in {country}",
         "priority": 50,
     },
     {
         "rule_id": "ER-006",
-        "rule_name": "Quantity exceeds all capacity",
-        "description": "Escalate when requested quantity exceeds all suppliers' capacity",
+        "rule_name": "Single supplier capacity risk",
+        "description": "Escalate when only one compliant supplier can meet the requested quantity",
         "rule_category": "escalation",
         "eval_type": "compare",
         "scope": "request",
         "pipeline_stage": "escalate",
         "eval_config": {
-            "left_field": "max_supplier_capacity",
-            "operator": ">=",
-            "right_field": "quantity",
-            "right_constant": None,
+            "left_field": "single_supplier_capacity_risk",
+            "operator": "==",
+            "right_field": None,
+            "right_constant": False,
             "condition": {
                 "field": "quantity", "operator": "!=", "value": None,
-                "and": {"field": "max_supplier_capacity", "operator": "!=", "value": None},
             },
         },
         "action_on_fail": "escalate",
         "severity": "high",
         "is_blocking": False,
         "escalation_target": "Sourcing Excellence Lead",
-        "fail_message_template": "Quantity {quantity} exceeds maximum supplier capacity {max_supplier_capacity}",
+        "fail_message_template": "Only one supplier can meet the requested quantity of {quantity}",
         "priority": 55,
     },
     {
@@ -587,7 +582,7 @@ SEED_RULES = [
     {
         "rule_id": "ER-009",
         "rule_name": "Contradictory request content",
-        "description": "Escalate when LLM detects contradictions or policy conflicts",
+        "description": "Flag when LLM detects genuine contradictions between text and structured fields",
         "rule_category": "escalation",
         "eval_type": "compare",
         "scope": "request",
@@ -600,16 +595,16 @@ SEED_RULES = [
             "condition": None,
         },
         "action_on_fail": "escalate",
-        "severity": "high",
-        "is_blocking": True,
+        "severity": "medium",
+        "is_blocking": False,
         "escalation_target": "Procurement Manager",
-        "fail_message_template": "Request contains contradictions or policy conflicts",
+        "fail_message_template": "Request contains contradictions between text and structured fields",
         "priority": 80,
     },
     {
         "rule_id": "ER-010",
         "rule_name": "Lead time infeasible escalation",
-        "description": "Escalate when no supplier can meet the delivery deadline",
+        "description": "Flag when no supplier can meet the delivery deadline",
         "rule_category": "escalation",
         "eval_type": "compare",
         "scope": "request",
@@ -622,8 +617,8 @@ SEED_RULES = [
             "condition": None,
         },
         "action_on_fail": "escalate",
-        "severity": "critical",
-        "is_blocking": True,
+        "severity": "high",
+        "is_blocking": False,
         "escalation_target": "Head of Category",
         "fail_message_template": "Lead time infeasible: no supplier can meet the delivery deadline",
         "priority": 85,
@@ -737,12 +732,27 @@ def seed_rules(cursor):
     for rule in SEED_RULES:
         config_json = json.dumps(rule["eval_config"])
         cursor.execute("""
-            INSERT IGNORE INTO dynamic_rules
+            INSERT INTO dynamic_rules
             (rule_id, rule_name, description, rule_category, eval_type, scope,
              pipeline_stage, eval_config, action_on_fail, severity, is_blocking,
              escalation_target, fail_message_template, is_active, is_skippable,
              priority, version, created_by)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s)
+            ON DUPLICATE KEY UPDATE
+                rule_name = VALUES(rule_name),
+                description = VALUES(description),
+                rule_category = VALUES(rule_category),
+                eval_type = VALUES(eval_type),
+                scope = VALUES(scope),
+                pipeline_stage = VALUES(pipeline_stage),
+                eval_config = VALUES(eval_config),
+                action_on_fail = VALUES(action_on_fail),
+                severity = VALUES(severity),
+                is_blocking = VALUES(is_blocking),
+                escalation_target = VALUES(escalation_target),
+                fail_message_template = VALUES(fail_message_template),
+                is_skippable = VALUES(is_skippable),
+                priority = VALUES(priority)
         """, (
             rule["rule_id"],
             rule["rule_name"],
@@ -765,14 +775,20 @@ def seed_rules(cursor):
 
 
 def seed_versions(cursor):
-    cursor.execute("SELECT COUNT(*) FROM dynamic_rule_versions")
-    if cursor.fetchone()[0] > 0:
-        return
+    cursor.execute("SELECT rule_id, version FROM dynamic_rules")
+    rules = {row[0]: row[1] for row in cursor.fetchall()}
 
-    cursor.execute("SELECT rule_id FROM dynamic_rules")
-    rule_ids = [row[0] for row in cursor.fetchall()]
+    for rule_id, current_version in rules.items():
+        cursor.execute(
+            "SELECT MAX(version) FROM dynamic_rule_versions WHERE rule_id = %s",
+            (rule_id,),
+        )
+        max_ver_row = cursor.fetchone()
+        max_ver = max_ver_row[0] if max_ver_row and max_ver_row[0] else 0
 
-    for rule_id in rule_ids:
+        if max_ver >= current_version:
+            continue
+
         cursor.execute(
             "SELECT rule_id, rule_name, description, rule_category, eval_type, scope, "
             "pipeline_stage, eval_config, action_on_fail, severity, is_blocking, "
@@ -793,10 +809,24 @@ def seed_versions(cursor):
             "is_active": bool(row[13]), "is_skippable": bool(row[14]), "priority": row[15],
         }
 
+        new_version = max_ver + 1
+        if max_ver > 0:
+            cursor.execute(
+                "UPDATE dynamic_rule_versions SET valid_to = NOW() "
+                "WHERE rule_id = %s AND valid_to IS NULL",
+                (rule_id,),
+            )
+
         cursor.execute(
             "INSERT INTO dynamic_rule_versions (rule_id, version, snapshot, valid_from, changed_by, change_reason) "
-            "VALUES (%s, 1, %s, NOW(), %s, %s)",
-            (rule_id, json.dumps(snapshot), "system_migration", "Initial seed from policies.json"),
+            "VALUES (%s, %s, %s, NOW(), %s, %s)",
+            (rule_id, new_version, json.dumps(snapshot), "system_migration",
+             "Initial seed" if new_version == 1 else "Updated by migration"),
+        )
+
+        cursor.execute(
+            "UPDATE dynamic_rules SET version = %s WHERE rule_id = %s",
+            (new_version, rule_id),
         )
 
 

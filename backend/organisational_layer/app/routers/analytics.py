@@ -19,6 +19,7 @@ from app.models.policies import (
     RestrictedSupplierPolicy,
     RestrictedSupplierScope,
 )
+from app.models.pipeline_results import PipelineResult
 from app.models.reference import (
     Category,
     PricingTier,
@@ -337,10 +338,30 @@ def get_applicable_rules(
 
 
 @router.get("/request-overview/{request_id}", response_model=RequestOverviewOut)
-def get_request_overview(request_id: str, db: Session = Depends(get_db)):
+def get_request_overview(
+    request_id: str,
+    pipeline_mode: bool = Query(
+        False,
+        description=(
+            "When true, returns raw reference data (used by the Logical Layer "
+            "pipeline). When false (default), supplier and pricing data is only "
+            "returned for requests that have been processed through the pipeline, "
+            "and is filtered to match the pipeline's evaluated shortlist."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
     """
-    Comprehensive read-only evaluation of a request: details, compliant suppliers
+    Comprehensive evaluation package for a request: details, compliant suppliers
     with pricing, applicable rules, approval tier, and historical awards.
+
+    **Frontend use (pipeline_mode=false, default):** Supplier and pricing data
+    is only included if the request has been processed. When a pipeline result
+    exists, the compliant supplier list is filtered to only those that survived
+    the pipeline's compliance checks.
+
+    **Logical Layer use (pipeline_mode=true):** Always returns the full raw
+    reference data so the pipeline can process the request.
 
     For multi-country deliveries, suppliers must serve ALL delivery countries,
     restrictions are checked against ALL countries, pricing is looked up for
@@ -398,10 +419,34 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
         "scenario_tags": [t.tag for t in req.scenario_tags],
     }
 
+    # --- Determine whether to include supplier/pricing data ----------------
+    # In frontend mode we only return supplier/pricing data when the request
+    # has been processed through the pipeline.  When a pipeline result exists
+    # we narrow the supplier list to the pipeline's evaluated shortlist so the
+    # frontend displays accurate, post-evaluation data.
+    pipeline_supplier_ids: set[str] | None = None
+    include_suppliers = pipeline_mode
+    if not pipeline_mode:
+        latest_result = (
+            db.query(PipelineResult)
+            .filter(PipelineResult.request_id == request_id)
+            .order_by(PipelineResult.created_at.desc())
+            .first()
+        )
+        if latest_result is not None:
+            include_suppliers = True
+            output = latest_result.output or {}
+            shortlist = output.get("supplier_shortlist") or []
+            pipeline_supplier_ids = {
+                entry.get("supplier_id")
+                for entry in shortlist
+                if isinstance(entry, dict) and entry.get("supplier_id")
+            }
+
     # Compliant suppliers — must serve ALL delivery countries and not be
     # restricted in ANY of them.
     compliant = []
-    if cat:
+    if cat and include_suppliers:
         restricted_ids: set[str] = set()
         for country in countries_to_check:
             sub = (
@@ -441,6 +486,10 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
         for s in candidate_sets[1:]:
             valid_ids &= s
         valid_ids -= restricted_ids
+
+        # When serving the frontend, narrow to the pipeline's evaluated shortlist.
+        if pipeline_supplier_ids is not None:
+            valid_ids &= pipeline_supplier_ids
 
         if valid_ids:
             supplier_rows = (
@@ -485,7 +534,7 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
     # Pricing for compliant suppliers — look up across ALL unique regions.
     pricing = []
     quantity = int(req.quantity) if req.quantity is not None else None
-    if cat and quantity is not None and compliant:
+    if cat and quantity is not None and compliant and include_suppliers:
         for sup in compliant:
             for rgn in regions:
                 pts = (
