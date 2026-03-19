@@ -103,3 +103,13 @@ Default local URLs:
 - Frontend API calls are same-origin (`/api/*`) and proxied to backend through Next rewrites.
 - Frontend server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal networking.
 - Mock fixture pass-through in `frontend/src/lib/data/cases.ts` has been replaced with backend-backed async mapping logic.
+
+## AWS Deployment (No CloudFront)
+
+- Dedicated AWS Compose stack: `docker-compose.aws.yml`
+- Public ingress is Nginx on port 80 using `deploy/nginx/aws.conf`
+- Environment template for AWS: `.env.aws.example`
+- Preferred DB mode is external RDS (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`)
+- Optional fallback profile to run local MySQL in Compose: `--profile localdb`
+- One-shot data bootstrap on AWS:
+  - `docker compose -f docker-compose.aws.yml --env-file .env.aws --profile tools run --rm migrator`

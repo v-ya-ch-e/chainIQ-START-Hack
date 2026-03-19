@@ -82,3 +82,64 @@ docker compose config
 
 - Frontend routes under `/api/*` are proxied to backend using Next rewrites.
 - Server-side data loaders also use `BACKEND_INTERNAL_URL` for container-internal requests.
+
+## AWS deployment (without CloudFront)
+
+This repo includes an AWS-focused compose stack that exposes a single public entrypoint via Nginx.
+
+Files used:
+
+- `docker-compose.aws.yml`
+- `.env.aws.example`
+- `deploy/nginx/aws.conf`
+
+### 1) Prepare EC2
+
+- Install Docker Engine + Docker Compose plugin
+- Open security group inbound:
+  - `22` (SSH) from your IP
+  - `80` (HTTP) from internet (or restricted sources)
+
+### 2) Configure environment
+
+```bash
+cp .env.aws.example .env.aws
+```
+
+Update `.env.aws` with your RDS credentials (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`).
+
+### 3) Start services
+
+```bash
+docker compose -f docker-compose.aws.yml --env-file .env.aws up -d --build
+```
+
+This brings up:
+
+- `nginx` on port 80 (public)
+- `frontend` and `backend` on internal Docker network
+
+### 4) Initialize database (first run)
+
+```bash
+docker compose -f docker-compose.aws.yml --env-file .env.aws --profile tools run --rm migrator
+```
+
+### 5) Verify
+
+```bash
+curl http://<EC2_PUBLIC_IP>/health
+curl http://<EC2_PUBLIC_IP>/api/categories/
+```
+
+### Optional: local DB on EC2 (instead of RDS)
+
+If you want MySQL inside Compose on EC2:
+
+1. Set `DB_HOST=mysql` in `.env.aws`
+2. Start with local DB profile:
+
+```bash
+docker compose -f docker-compose.aws.yml --env-file .env.aws --profile localdb up -d --build
+docker compose -f docker-compose.aws.yml --env-file .env.aws --profile tools --profile localdb run --rm migrator
+```

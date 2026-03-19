@@ -32,6 +32,13 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const evaluatedSuppliers =
     data.supplierShortlist.length + data.excludedSuppliers.length
+  const hasShortlist = data.supplierShortlist.length > 0
+  const lowestPrice = hasShortlist
+    ? Math.min(...data.supplierShortlist.map((entry) => entry.totalPrice))
+    : null
+  const fastestExpeditedLeadTime = hasShortlist
+    ? Math.min(...data.supplierShortlist.map((entry) => entry.expeditedLeadTimeDays))
+    : null
 
   return (
     <div className="space-y-6">
@@ -394,17 +401,16 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
               />
               <MiniMetric
                 label="Lowest compliant price"
-                value={formatCurrency(
-                  Math.min(
-                    ...data.supplierShortlist.map((entry) => entry.totalPrice),
-                  ),
-                  data.recommendation.currency,
-                )}
+                value={formatCurrency(lowestPrice, data.recommendation.currency)}
                 helper="Best commercial baseline"
               />
               <MiniMetric
                 label="Fastest expedited lead time"
-                value={`${Math.min(...data.supplierShortlist.map((entry) => entry.expeditedLeadTimeDays))} days`}
+                value={
+                  fastestExpeditedLeadTime === null
+                    ? "Not available"
+                    : `${fastestExpeditedLeadTime} days`
+                }
                 helper="Closest feasible delivery option"
               />
             </section>

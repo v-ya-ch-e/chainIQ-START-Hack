@@ -9,7 +9,7 @@ export default async function Page({
   params: Promise<{ caseId: string }>
 }) {
   const { caseId } = await params
-  const data = getCaseDetail(caseId)
+  const data = await getCaseDetail(caseId)
 
   if (!data) {
     notFound()
