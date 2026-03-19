@@ -4,3 +4,9 @@ httpx
 pydantic-settings
 python-dotenv
 anthropic
+reportlab
+
+# Test dependencies
+pytest
+pytest-asyncio
+pytest-cov

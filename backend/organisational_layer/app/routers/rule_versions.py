@@ -62,6 +62,11 @@ def _get_active_version(db: Session, rule_id: str) -> RuleVersion | None:
     )
 
 
+def _rule_exists(db: Session, rule_id: str) -> bool:
+    """Check if rule definition exists (avoids FK violation when migrate_rules not run)."""
+    return db.query(RuleDefinition).filter(RuleDefinition.rule_id == rule_id).first() is not None
+
+
 @router.get("/definitions", response_model=list[RuleDefinitionOut])
 def list_rule_definitions(db: Session = Depends(get_db)):
     """List all rule definitions (HR-*, PC-*, ER-*)."""
@@ -624,10 +629,12 @@ def create_evaluation_from_pipeline(
     for e in suppliers_excluded:
         sid = e.get("supplier_id", "")
         reason = (e.get("reason", "") or "").lower()
+        excl_rule = "PC-004" if "restricted" in reason else "HR-003"
+        exclusion_rule_id = excl_rule if _rule_exists(db, excl_rule) else None
         supplier_evaluations.append({
             "supplier_id": sid,
             "excluded": True,
-            "exclusion_rule_id": "PC-004" if "restricted" in reason else "HR-003",
+            "exclusion_rule_id": exclusion_rule_id,
             "exclusion_reason": e.get("reason", ""),
             "hard_checks_total": 0,
             "hard_checks_passed": 0,
@@ -644,6 +651,8 @@ def create_evaluation_from_pipeline(
         rule = esc.get("rule", "ER-001")
         v = _get_active_version(db, rule)
         version_id = v.version_id if v else (pc001 or "")
+        if not version_id:
+            continue  # Skip if rule_versions not seeded (migrate_rules.py required)
         escalations.append({
             "escalation_id": esc.get("escalation_id", f"ESC-{j+1:03d}"),
             "rule_id": rule,

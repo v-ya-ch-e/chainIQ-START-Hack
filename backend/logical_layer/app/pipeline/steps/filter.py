@@ -115,8 +115,11 @@ async def filter_suppliers(
 
 def _match_pricing_tier(tiers: list, quantity: int | None) -> object | None:
     """Find the pricing tier that covers the given quantity."""
-    if not tiers or quantity is None:
-        return tiers[0] if tiers else None
+    if not tiers:
+        return None
+
+    if quantity is None:
+        return None
 
     for tier in tiers:
         min_q = int(tier.min_quantity) if tier.min_quantity is not None else 0

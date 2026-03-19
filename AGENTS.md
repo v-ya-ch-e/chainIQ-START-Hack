@@ -76,7 +76,7 @@ The judges value **correct uncertainty handling** over confident wrong answers. 
 - Frontend stack (`docker-compose.yml` at repo root):
   - `frontend` (Next.js, port 3000)
   - `mysql` (MySQL 8.4, port 3306) — local dev only
-  - `migrator` (one-shot data bootstrap using `database_init/migrate.py`)
+  - `migrator` (one-shot data bootstrap using `database_init/migrate.py` + `migrate_rules.py` + `migrate_dynamic_rules.py`)
 - Root orchestration files:
   - `docker-compose.yml` (frontend + MySQL + migrator)
   - `docker-compose.override.yml` (development hot-reload for frontend)

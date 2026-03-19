@@ -1,6 +1,6 @@
 # DATABASE_BACKEND_API.md — ChainIQ Organisational Layer API
 
-This document is the complete reference for the **Organisational Layer** — a FastAPI microservice that exposes the ChainIQ MySQL database (22 tables) over a REST API. Use it to understand every available endpoint, its parameters, and its response shape.
+This document is the complete reference for the **Organisational Layer** — a FastAPI microservice that exposes the ChainIQ MySQL database (37 tables) over a REST API. Use it to understand every available endpoint, its parameters, and its response shape.
 
 - **Source code:** `backend/organisational_layer/`
 - **Deployment guide:** `backend/organisational_layer/DEPLOYMENT.md`
@@ -54,9 +54,11 @@ None. CORS is open (`*`) — all origins, methods, and headers are accepted. Sui
 | Escalations | `/api/escalations` | 3 |
 | Rule Versions | `/api/rule-versions` | 25 |
 | Analytics | `/api/analytics` | 10 |
+| Pipeline Results | `/api/pipeline-results` | 6 |
 | Pipeline Logs | `/api/logs` | 7 |
 | Audit Logs | `/api/logs/audit` | 5 |
 | Parse | `/api/parse` | 2 |
+| Intake | `/api/intake` | 1 |
 
 ---
 
@@ -441,7 +443,7 @@ Create a new request with nested delivery countries and scenario tags.
 
 ### `PUT /api/requests/{request_id}`
 
-Partial update — only scalar fields (delivery countries and tags not updated via this endpoint).
+Partial update. Supports updating scalar fields, `delivery_countries` (list of country codes — replaces all existing), and `scenario_tags` (list of tag strings — replaces all existing).
 
 **Response `200`:** Updated `RequestOut`  
 **Response `404`:** Request not found

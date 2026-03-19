@@ -49,8 +49,11 @@ class LLMClient:
                 tool_choice={"type": "tool", "name": "structured_output"},
             )
             tool_block = next(
-                b for b in response.content if b.type == "tool_use"
+                (b for b in response.content if b.type == "tool_use"), None
             )
+            if tool_block is None:
+                logger.warning("LLM response contained no tool_use block")
+                return None, True
             result = response_model.model_validate(tool_block.input)
             return result, False
         except Exception as exc:
