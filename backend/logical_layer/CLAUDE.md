@@ -6,7 +6,7 @@
 
 # **SERVICE OVERVIEW**
 
-Procurement decision engine (Logical Layer) for the ChainIQ platform. Receives purchase requests from n8n via HTTP, fetches data from the Organisational Layer API, applies business logic (validation, policy checks, supplier ranking, escalation), and returns structured, auditable sourcing recommendations.
+Procurement decision engine (Logical Layer) for the ChainIQ platform. Provides HTTP API endpoints that n8n workflows call to filter suppliers by product category and rank them by true cost. The full end-to-end processing pipeline (`/api/processRequest`) is a stub — individual steps are exposed as separate endpoints so n8n can orchestrate them.
 
 ## How to run
 
@@ -20,7 +20,7 @@ uvicorn app.main:app --reload --port 8080
 
 Swagger UI: http://localhost:8080/docs
 
-**Requires the Organisational Layer to be running on port 8000.**
+**Requires the Organisational Layer to be running** (default: port 8000).
 
 ## Docker (both services together)
 
@@ -37,45 +37,101 @@ docker compose up --build
 |------|---------|
 | `app/main.py` | FastAPI app entry point, CORS, router registration, `/health` endpoint |
 | `app/config.py` | Pydantic Settings — reads `ORGANISATIONAL_LAYER_URL` from env |
-| `app/clients/organisational.py` | Async HTTP client wrapping all Organisational Layer API calls |
-| `app/schemas/processing.py` | Pydantic request/response models (mirrors `example_output.json` structure) |
-| `app/routers/processing.py` | `POST /api/process-request` — the endpoint n8n calls |
-| `app/services/pipeline.py` | Processing pipeline orchestrator (parse, validate, policy, rank, escalate) |
-| `Dockerfile` | Python 3.14-slim container, installs deps, runs uvicorn on port 8080 |
+| `app/clients/organisational.py` | Async HTTP client wrapping Organisational Layer API calls (for future pipeline use) |
+| `app/routers/processing.py` | `POST /api/processRequest` — stub endpoint (not yet implemented) |
+| `app/routers/scripts.py` | `POST /api/filter-suppliers` and `POST /api/rank-suppliers` — script-backed endpoints |
+| `app/schemas/processing.py` | Pydantic models for the processRequest stub |
+| `app/schemas/scripts.py` | Pydantic models for the filter and rank endpoints |
+| `scripts/filterCompaniesByProduct.py` | Standalone script: filters suppliers by product category via Organisational Layer API |
+| `scripts/rankCompanies.py` | Standalone script: ranks suppliers by true cost (price adjusted for quality/risk/ESG) |
+| `scripts/SCRIPTS_DOCUMENTATION.md` | Detailed documentation for both scripts |
+| `Dockerfile` | Python 3.14-slim container, copies `app/` and `scripts/`, runs uvicorn on port 8080 |
 | `requirements.txt` | fastapi, uvicorn, httpx, pydantic-settings, python-dotenv |
 | `.env.example` | Template: `ORGANISATIONAL_LAYER_URL=http://organisational-layer:8000` |
 
 ## API endpoints
 
-- `GET /health` — liveness check
-- `POST /api/process-request` — main processing endpoint; accepts `{"request_id": "REQ-000004"}`, returns full procurement decision
+| Method | Path | Status | Description |
+|--------|------|--------|-------------|
+| `GET` | `/health` | Active | Liveness check |
+| `POST` | `/api/filter-suppliers` | Active | Filter suppliers by product category |
+| `POST` | `/api/rank-suppliers` | Active | Rank suppliers by true cost |
+| `POST` | `/api/processRequest` | Stub | Full pipeline (not yet implemented) |
+
+### POST /api/filter-suppliers
+
+Accepts a purchase request with `category_l1` and `category_l2`, queries the Organisational Layer to find all suppliers serving that exact category, and returns matching supplier-category rows.
+
+**Request body:**
+```json
+{
+  "category_l1": "IT",
+  "category_l2": "Hardware"
+}
+```
+
+**Response:** `{ "suppliers": [...], "category_l1": "...", "category_l2": "...", "count": N }`
+
+### POST /api/rank-suppliers
+
+Accepts a purchase request dict and a list of supplier rows (typically from `/api/filter-suppliers`), computes a true-cost score adjusted for quality, risk, and optionally ESG, and returns suppliers ranked best-to-worst.
+
+**Request body:**
+```json
+{
+  "request": {
+    "category_l1": "IT",
+    "category_l2": "Hardware",
+    "quantity": 50,
+    "esg_requirement": false,
+    "delivery_countries": ["DE"]
+  },
+  "suppliers": [ ... ]
+}
+```
+
+**Response:** `{ "ranked": [...], "category_l1": "...", "category_l2": "...", "count": N }`
+
+### POST /api/processRequest
+
+Stub endpoint. Accepts `{"request_id": "REQ-000004"}` and returns `{"request_id": "...", "status": "not_implemented", "message": "..."}`. Will be implemented later as the full procurement decision pipeline.
 
 ## Architecture
 
 ```
-n8n → POST /api/process-request → Logical Layer (8080)
-                                        ↓ HTTP
-                                  Organisational Layer (8000)
-                                        ↓ SQL
-                                  AWS RDS MySQL
+n8n workflow
+  │
+  ├─ POST /api/filter-suppliers  ──→  Logical Layer (8080)
+  │                                        │ urllib
+  │                                        ▼
+  │                                  Organisational Layer (8000)
+  │                                        │ SQL
+  │                                        ▼
+  │                                  AWS RDS MySQL
+  │
+  └─ POST /api/rank-suppliers    ──→  Logical Layer (8080)
+                                           │ urllib
+                                           ▼
+                                     Organisational Layer (8000)
 ```
 
-## Pipeline stages (in `app/services/pipeline.py`)
+n8n orchestrates the two-step flow: first filter, then rank. The Logical Layer delegates all data access to the Organisational Layer via HTTP.
 
-1. **Fetch** — calls `GET /api/analytics/request-overview/{id}` on org layer
-2. **Interpret** — extracts structured fields from request data (TODO: add LLM for text parsing)
-3. **Validate** — checks completeness, budget sufficiency, lead-time feasibility (TODO: full implementation)
-4. **Policy** — evaluates approval thresholds, preferred/restricted suppliers, rules (TODO: full implementation)
-5. **Rank** — scores and ranks compliant suppliers (TODO: weighted scoring algorithm)
-6. **Escalate** — checks all 8 escalation rules (TODO: full ER-001..ER-008 implementation)
-7. **Recommend** — produces final status: proceed / proceed_with_conditions / cannot_proceed
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORGANISATIONAL_LAYER_URL` | `http://organisational-layer:8000` (Docker) / `http://3.68.96.236:8000` (scripts standalone) | Base URL of the Organisational Layer API |
+
+The FastAPI app reads this via `app/config.py` (Pydantic Settings). The standalone scripts in `scripts/` also read this env var (falling back to the hardcoded production URL if unset).
 
 ## Tech stack
 
 - **Python 3.14** / FastAPI / httpx / Pydantic
+- Scripts use only Python standard library (`urllib`, `json`, `os`, `sys`)
 - Talks to Organisational Layer via HTTP (no direct DB connection)
 - Docker / docker-compose for deployment (unified compose at `backend/docker-compose.yml`)
 
 ## Deployment
 
-See `backend/DEPLOYMENT.md` for full deployment guide.
+See root `DEPLOYMENT.md` for full deployment guide.

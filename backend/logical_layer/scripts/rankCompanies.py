@@ -5,12 +5,13 @@ Still supports the original CLI file-based mode for backward compatibility.
 """
 
 import json
+import os
 import sys
 import urllib.request
 import urllib.error
 import urllib.parse
 
-BASE_URL = "http://3.68.96.236:8000"
+BASE_URL = os.environ.get("ORGANISATIONAL_LAYER_URL", "http://3.68.96.236:8000")
 
 COUNTRY_TO_REGION = {
     "DE": "EU", "FR": "EU", "NL": "EU", "BE": "EU", "AT": "EU",

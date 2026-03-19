@@ -2,22 +2,57 @@
 
 Both scripts expose their core logic as **importable Python functions** and support **stdin/stdout JSON** for easy API integration, while remaining backward-compatible with the original file-based CLI mode.
 
+They are also exposed as **HTTP endpoints** through the Logical Layer FastAPI service.
+
+## Configuration
+
+Both scripts read the Organisational Layer base URL from the `ORGANISATIONAL_LAYER_URL` environment variable, falling back to `http://3.68.96.236:8000` if unset.
+
+```bash
+# Override for local development
+export ORGANISATIONAL_LAYER_URL=http://localhost:8000
+
+# In Docker (set via .env or docker-compose env_file)
+ORGANISATIONAL_LAYER_URL=http://organisational-layer:8000
+```
+
 ## Integration Patterns
 
-### 1. Import as a module (recommended for FastAPI / in-process)
+### 1. HTTP API via Logical Layer (recommended for n8n / external callers)
+
+The Logical Layer exposes both scripts as POST endpoints at `http://localhost:8080`.
+
+```bash
+# Step 1: filter
+curl -X POST http://localhost:8080/api/filter-suppliers \
+  -H "Content-Type: application/json" \
+  -d '{"category_l1": "IT", "category_l2": "Hardware"}'
+
+# Step 2: rank (pass the suppliers array from step 1)
+curl -X POST http://localhost:8080/api/rank-suppliers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request": {"category_l1": "IT", "category_l2": "Hardware", "quantity": 50},
+    "suppliers": [ ... ]
+  }'
+```
+
+Full Swagger documentation is available at `http://localhost:8080/docs`.
+
+### 2. Import as a module (for in-process Python use)
 
 ```python
 from scripts.filterCompaniesByProduct import filter_suppliers
 from scripts.rankCompanies import rank_suppliers
 
 # Step 1: filter
-filter_result = filter_suppliers(request_data)   # dict in → dict out
+filter_result = filter_suppliers(request_data)   # dict in -> dict out
 
 # Step 2: rank
-rank_result = rank_suppliers(request_data, filter_result["suppliers"])  # dicts in → dict out
+rank_result = rank_suppliers(request_data, filter_result["suppliers"])  # dicts in -> dict out
 ```
 
-### 2. Subprocess with stdin/stdout (for process isolation)
+### 3. Subprocess with stdin/stdout (for process isolation)
 
 ```python
 import subprocess, json
@@ -39,7 +74,7 @@ proc = subprocess.run(
 rank_result = json.loads(proc.stdout)
 ```
 
-### 3. Original file-based CLI (still works)
+### 4. Original file-based CLI (still works)
 
 ```bash
 python3 scripts/filterCompaniesByProduct.py request.json suppliers.json
@@ -51,6 +86,24 @@ python3 scripts/rankCompanies.py request.json suppliers.json ranked.json
 ## filterCompaniesByProduct.py
 
 Filters suppliers from the ChainIQ database to only those serving the same product category as a given purchase request.
+
+### HTTP Endpoint
+
+`POST /api/filter-suppliers`
+
+**Request body:** JSON object with at least `category_l1` and `category_l2`. Extra fields are allowed and ignored.
+
+**Response:**
+```json
+{
+  "suppliers": [ ...supplier_category rows... ],
+  "category_l1": "IT",
+  "category_l2": "Hardware",
+  "count": 5
+}
+```
+
+**Error responses:** `400` if category_l1/category_l2 are missing or the category is not found. `502` if the Organisational Layer is unreachable.
 
 ### Function API
 
@@ -105,17 +158,47 @@ filter_suppliers(request_data: dict) -> dict
 
 ### Dependencies
 
-None -- uses only Python standard library (`json`, `sys`, `urllib`).
+None -- uses only Python standard library (`json`, `os`, `sys`, `urllib`).
 
 ### API
 
-Queries the ChainIQ Organisational Layer API at `http://3.68.96.236:8000`. See `DATABASE_BACKEND_API.md` for full endpoint documentation.
+Queries the ChainIQ Organisational Layer API. URL is configurable via the `ORGANISATIONAL_LAYER_URL` environment variable (default: `http://3.68.96.236:8000`). See `DATABASE_BACKEND_API.md` for full endpoint documentation.
 
 ---
 
 ## rankCompanies.py
 
 Ranks filtered suppliers by computing a "true cost" -- the effective price inflated by quality gaps and risk exposure. The score answers: "how much am I really paying once I account for imperfect quality and risk?"
+
+### HTTP Endpoint
+
+`POST /api/rank-suppliers`
+
+**Request body:**
+```json
+{
+  "request": {
+    "category_l1": "IT",
+    "category_l2": "Hardware",
+    "quantity": 50,
+    "esg_requirement": false,
+    "delivery_countries": ["DE"]
+  },
+  "suppliers": [ ...supplier rows from filter-suppliers... ]
+}
+```
+
+**Response:**
+```json
+{
+  "ranked": [ ...ranked supplier rows... ],
+  "category_l1": "IT",
+  "category_l2": "Hardware",
+  "count": 5
+}
+```
+
+**Error responses:** `400` if required fields are missing. `502` if the Organisational Layer is unreachable.
 
 ### Function API
 
@@ -194,8 +277,8 @@ When `quantity` is null in the request, pricing is skipped and suppliers are sor
 
 ### Dependencies
 
-None -- uses only Python standard library (`json`, `sys`, `urllib`).
+None -- uses only Python standard library (`json`, `os`, `sys`, `urllib`).
 
 ### API
 
-Queries the ChainIQ Organisational Layer API at `http://3.68.96.236:8000`. See `DATABASE_BACKEND_API.md` for full endpoint documentation.
+Queries the ChainIQ Organisational Layer API. URL is configurable via the `ORGANISATIONAL_LAYER_URL` environment variable (default: `http://3.68.96.236:8000`). See `DATABASE_BACKEND_API.md` for full endpoint documentation.
