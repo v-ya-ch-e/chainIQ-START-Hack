@@ -3,10 +3,10 @@ import { NextRequest, NextResponse } from "next/server";
 const PIPELINE_TIMEOUT_MS = 120_000; // 2 minutes for LLM-heavy pipeline
 
 export async function POST(request: NextRequest) {
-  const logicalLayerUrl = process.env.LOGICAL_LAYER_URL;
+  const logicalLayerUrl = process.env.LOGICAL_BACKEND_INTERNAL_URL;
   if (!logicalLayerUrl) {
     return NextResponse.json(
-      { detail: "LOGICAL_LAYER_URL not configured" },
+      { detail: "LOGICAL_BACKEND_INTERNAL_URL not configured" },
       { status: 500 }
     );
   }

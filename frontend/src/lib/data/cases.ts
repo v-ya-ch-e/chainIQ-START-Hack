@@ -1,4 +1,5 @@
 import { chainIqApi } from "@/lib/api/client"
+import type { PipelineResultOut } from "@/lib/api/types"
 import type {
   AuditFeedEvent,
   AuditFeedMeta,
@@ -319,6 +320,7 @@ function recommendationStatusFrom(
   hasEscalation: boolean,
   status: CaseStatus,
 ): RecommendationStatus {
+  if (status === "received" || status === "parsed") return "not_evaluated"
   if (hasBlocking) return "cannot_proceed"
   if (hasEscalation || status === "pending_review" || status === "escalated") {
     return "proceed_with_conditions"
@@ -766,10 +768,10 @@ async function buildDashboardMetricsFromData({
       value: toNumber(topWinRate?.win_rate ?? null) ?? 0,
       valueLabel: topSupplier?.supplier_name
         ? `${topSupplier.supplier_name}`
-        : "No data",
+        : "—",
       helper: topWinRate?.win_rate
         ? `Win rate ${(Number(topWinRate.win_rate) * 100).toFixed(1)}%`
-        : "Supplier win-rate data unavailable",
+        : "—",
       tone: "info",
     },
   ]
@@ -822,14 +824,14 @@ function buildCaseListFromData({
     return {
       requestId: request.request_id,
       title: request.title,
-      category: categoriesMap.get(request.category_id) ?? "Unmapped category",
+      category: categoriesMap.get(request.category_id) ?? "",
       businessUnit: request.business_unit,
       countryLabel: request.country,
       budgetAmount: toNumber(request.budget_amount),
       currency: request.currency,
       requiredByDate: request.required_by_date,
       status,
-      scenarioTags: normalizedTags.length > 0 ? normalizedTags : ["standard"],
+      scenarioTags: normalizedTags,
       recommendationStatus,
       escalationStatus: hasBlockingEscalation
         ? "blocking"
@@ -846,12 +848,12 @@ function buildCaseListFromData({
         winner?.supplier_name ??
         fallbackSupplier?.supplier_name ??
         request.incumbent_supplier ??
-        "No recommendation yet",
+        "",
       needsAttention:
         hasBlockingEscalation ||
         status === "pending_review" ||
         status === "escalated" ||
-        recommendationStatus !== "proceed",
+        (recommendationStatus !== "proceed" && recommendationStatus !== "not_evaluated"),
     }
   })
 }
@@ -1095,6 +1097,110 @@ export async function getCaseList(): Promise<CaseListItem[]> {
   return buildCaseListFromData(rawData)
 }
 
+export interface CaseListPage {
+  items: CaseListItem[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export async function getCaseListPage(params: {
+  skip?: number
+  limit?: number
+  status?: string
+}): Promise<CaseListPage> {
+  const skip = params.skip ?? 0
+  const limit = params.limit ?? 25
+
+  const [requestsPage, categoriesMap, escalationRows] = await Promise.all([
+    chainIqApi.requests.list({
+      skip,
+      limit,
+      ...(params.status ? { status: params.status } : {}),
+    }) as Promise<{ items: RequestRow[]; total: number; skip: number; limit: number }>,
+    getCategoriesMap(),
+    fetchEscalationQueueRows(),
+  ])
+
+  const escalationsByRequest = new Map<string, QueueEscalationItem[]>()
+  for (const escalation of escalationRows) {
+    const bucket = escalationsByRequest.get(escalation.caseId) ?? []
+    bucket.push(escalation)
+    escalationsByRequest.set(escalation.caseId, bucket)
+  }
+
+  const pipelineResults = await Promise.all(
+    requestsPage.items.map((request) =>
+      chainIqApi.pipelineResults
+        .latest(request.request_id)
+        .catch((): PipelineResultOut | null => null),
+    ),
+  )
+
+  const items: CaseListItem[] = requestsPage.items.map((request, index) => {
+    const pipelineResult = pipelineResults[index] ?? null
+    const requestEscalations = escalationsByRequest.get(request.request_id) ?? []
+    const status = normalizeStatus(request.status)
+
+    const hasBlockingEscalation = requestEscalations.some(
+      (entry) => entry.blocking && entry.status !== "resolved",
+    )
+    const hasEscalation = requestEscalations.some(
+      (entry) => entry.status !== "resolved",
+    )
+
+    let recommendationStatus: RecommendationStatus
+    if (pipelineResult?.recommendation_status) {
+      const raw = pipelineResult.recommendation_status
+      if (raw === "proceed" || raw === "proceed_with_conditions" || raw === "cannot_proceed") {
+        recommendationStatus = raw
+      } else {
+        recommendationStatus = recommendationStatusFrom(hasBlockingEscalation, hasEscalation, status)
+      }
+    } else {
+      recommendationStatus = recommendationStatusFrom(hasBlockingEscalation, hasEscalation, status)
+    }
+
+    const supplierLabel =
+      pipelineResult?.summary?.top_supplier_name ??
+      request.incumbent_supplier ??
+      ""
+
+    return {
+      requestId: request.request_id,
+      title: request.title,
+      category: categoriesMap.get(request.category_id) ?? "",
+      businessUnit: request.business_unit,
+      countryLabel: request.country,
+      budgetAmount: toNumber(request.budget_amount),
+      currency: request.currency,
+      requiredByDate: request.required_by_date,
+      status,
+      scenarioTags: normalizeTags(request.scenario_tags ?? []),
+      recommendationStatus,
+      escalationStatus: hasBlockingEscalation
+        ? "blocking"
+        : hasEscalation
+          ? "advisory"
+          : "none",
+      lastUpdated: pipelineResult?.processed_at ?? request.created_at,
+      supplierLabel,
+      needsAttention:
+        hasBlockingEscalation ||
+        status === "pending_review" ||
+        status === "escalated" ||
+        (recommendationStatus !== "proceed" && recommendationStatus !== "not_evaluated"),
+    }
+  })
+
+  return {
+    items,
+    total: requestsPage.total,
+    skip: requestsPage.skip,
+    limit: requestsPage.limit,
+  }
+}
+
 export async function getCaseDetailByRunId(
   runId: string,
 ): Promise<{ caseDetail: CaseDetail; runId: string } | null> {
@@ -1178,41 +1284,46 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       hardExclusion: !entry.policy_compliant || entry.escalation_required,
     }))
 
-  const escalationIssues = auditLogs.items
-    .filter((entry) => entry.category === "escalation")
+  const latestRunId = auditLogs.items.length > 0
+    ? auditLogs.items.reduce((latest, entry) => {
+        if (!entry.run_id) return latest
+        if (!latest) return entry
+        return new Date(entry.timestamp) > new Date(latest.timestamp) ? entry : latest
+      }, null as (typeof auditLogs.items)[number] | null)?.run_id ?? null
+    : null
+
+  const latestRunItems = latestRunId
+    ? auditLogs.items.filter((entry) => entry.run_id === latestRunId)
+    : auditLogs.items
+
+  const validationIssues = latestRunItems
+    .filter((entry) => entry.category === "validation")
     .map((entry, index) => {
       const details = asRecord(entry.details)
+      const severity = details?.severity as string | undefined
+      const issueType = (details?.issue_type as string | undefined)?.trim()
+      const issueField = (details?.field as string | undefined)?.trim()
+      const issueLabel = issueType ? issueType.toUpperCase() : `VAL-${index + 1}`
+      const issueId = issueField ? `${issueLabel} · ${issueField}` : issueLabel
       return {
-        issueId: `ESC-${index + 1}`,
-        severity: "critical" as Severity,
-        type: "escalation",
+        issueKey: `validation-${entry.id}`,
+        issueId,
+        severity: severityFrom(severity),
+        type: entry.category,
         description: entry.message,
-        actionRequired: `Escalate to ${(details?.escalate_to as string | undefined) ?? "assigned stakeholder"}.`,
-        blocking: Boolean(details?.blocking ?? true),
+        actionRequired:
+          (details?.action_required as string | undefined) ??
+          "Review validation findings and update request input.",
+        blocking: severity === "critical" || severity === "high",
+        auditRowId: entry.id,
+        runId: entry.run_id,
+        timestamp: entry.timestamp,
+        stepName: entry.step_name,
+        level: entry.level,
+        source: entry.source,
+        details: details,
       }
     })
-
-  const validationIssues = [
-    ...auditLogs.items
-      .filter((entry) => entry.category === "validation")
-      .map((entry, index) => {
-        const details = asRecord(entry.details)
-        const severity = details?.severity as string | undefined
-        return {
-          issueId:
-            (details?.issue_type as string | undefined)?.toUpperCase() ??
-            `VAL-${index + 1}`,
-          severity: severityFrom(severity),
-          type: entry.category,
-          description: entry.message,
-          actionRequired:
-            (details?.action_required as string | undefined) ??
-            "Review validation findings and update request input.",
-          blocking: severity === "critical" || severity === "high",
-        }
-      }),
-    ...escalationIssues,
-  ]
 
   const escalations: CaseDetail["escalations"] = escalationRows.map((entry) => ({
     escalationId: entry.escalationId,
@@ -1335,11 +1446,13 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     id: caseId,
     title: detail.title,
     outcomeLabel:
-      recommendationStatus === "proceed"
-        ? "Proceed"
-        : recommendationStatus === "proceed_with_conditions"
-          ? "Proceed with conditions"
-          : "Cannot proceed",
+      recommendationStatus === "not_evaluated"
+        ? "Not evaluated"
+        : recommendationStatus === "proceed"
+          ? "Proceed"
+          : recommendationStatus === "proceed_with_conditions"
+            ? "Proceed with conditions"
+            : "Cannot proceed",
     rawRequest: {
       requestId: detail.request_id,
       categoryId: detail.category_id,
@@ -1376,9 +1489,11 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     recommendation: {
       status: recommendationStatus,
       reason:
-        recommendationStatus === "proceed"
-          ? "Supplier shortlist satisfies the current policy checks."
-          : "Case requires additional human validation before final award.",
+        recommendationStatus === "not_evaluated"
+          ? "This request has not been processed through the pipeline yet."
+          : recommendationStatus === "proceed"
+            ? "Supplier shortlist satisfies the current policy checks."
+            : "Case requires additional human validation before final award.",
       recommendedSupplier: winner?.supplier_name ?? topSupplier?.supplierName ?? null,
       preferredSupplierIfResolved:
         overview.compliant_suppliers.find((entry) => entry.preferred_supplier)
@@ -1398,11 +1513,13 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       policyNote: overview.approval_tier?.policy_note ?? null,
       quotesRequired: overview.approval_tier?.min_supplier_quotes ?? 0,
       complianceStatus:
-        recommendationStatus === "cannot_proceed"
-          ? "Blocked"
-          : recommendationStatus === "proceed_with_conditions"
-            ? "Conditional"
-            : "Compliant",
+        recommendationStatus === "not_evaluated"
+          ? "Not evaluated"
+          : recommendationStatus === "cannot_proceed"
+            ? "Blocked"
+            : recommendationStatus === "proceed_with_conditions"
+              ? "Conditional"
+              : "Compliant",
     },
     interpretedRequirements,
     validationIssues,
@@ -1435,8 +1552,8 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
           ? `${awards.length} historical award rows referenced.`
           : "No historical awards for this request.",
       reasoningTrace:
-        auditLogs.items.length > 0
-          ? auditLogs.items.slice(0, 8).map((entry) => entry.message)
+        latestRunItems.length > 0
+          ? latestRunItems.slice(0, 8).map((entry) => entry.message)
           : [
               "Parse and validate request fields (budget, quantity, delivery scope).",
               "Apply category and geography policy constraints.",
@@ -1653,7 +1770,7 @@ function defaultDraftFromIntake(input: CaseIntakeInput): CaseDraftPayload {
     dataResidencyConstraint: false,
     esgRequirement: false,
     requesterInstruction: input.note?.trim() || null,
-    scenarioTags: ["standard"],
+    scenarioTags: [],
     status: "new",
   }
 }

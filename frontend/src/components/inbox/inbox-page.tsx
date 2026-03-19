@@ -1,16 +1,31 @@
 "use client"
 
 import Link from "next/link"
-import { useRouter } from "next/navigation"
-import { useMemo, useState } from "react"
-import { ArrowRight, Loader2, Play, Search, Sparkles } from "lucide-react"
+import { useRouter, useSearchParams } from "next/navigation"
+import {
+  memo,
+  useCallback,
+  useDeferredValue,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  useTransition,
+} from "react"
+import {
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Play,
+  Plus,
+  Search,
+} from "lucide-react"
 
-import { SectionHeading } from "@/components/shared/section-heading"
+import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { CaseIntakeWizard } from "@/components/case-intake/case-intake-wizard"
-import { JsonViewer } from "@/components/shared/json-viewer"
-import { Button, buttonVariants } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -21,12 +36,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select"
 import {
   Table,
@@ -36,7 +51,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatCurrency, formatDate, formatDateTime } from "@/lib/data/formatters"
+import {
+  displayCaseStatus,
+  displayRecommendationStatus,
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+  titleCase,
+} from "@/lib/data/formatters"
 import { chainIqApi } from "@/lib/api/client"
 import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
 import {
@@ -48,15 +70,22 @@ import { cn } from "@/lib/utils"
 
 interface InboxPageProps {
   cases: CaseListItem[]
+  total: number
+  page: number
+  pageSize: number
+  statusParam: string
   dataLoadError?: string | null
 }
 
 const statusOptions = [
   { value: "all", label: "All statuses" },
+  { value: "new", label: "New" },
+  { value: "submitted", label: "Submitted" },
   { value: "pending_review", label: "Pending review" },
-  { value: "recommended", label: "Recommended" },
   { value: "evaluated", label: "Evaluated" },
+  { value: "recommended", label: "Recommended" },
   { value: "escalated", label: "Escalated" },
+  { value: "resolved", label: "Resolved" },
 ]
 
 const escalationOptions = [
@@ -66,8 +95,15 @@ const escalationOptions = [
   { value: "blocking", label: "Blocking" },
 ]
 
+function displayEscalationStatus(raw: string) {
+  const match = escalationOptions.find((o) => o.value === raw && o.value !== "all")
+  return match?.label ?? titleCase(raw)
+}
+
 function labelForLivePhase(phase: PipelineLivePhase) {
   switch (phase) {
+    case "idle":
+      return "Not started"
     case "queued":
       return "Queued"
     case "running":
@@ -94,33 +130,166 @@ function toneForLivePhase(phase: PipelineLivePhase) {
       return "info" as const
     case "queued":
       return "warning" as const
+    case "idle":
+      return "neutral" as const
     default:
       return "neutral" as const
   }
 }
 
-export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
+function emptyCell() {
+  return <span className="text-muted-foreground">—</span>
+}
+
+const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
+  query,
+  onQueryChange,
+  statusValue,
+  onStatusChange,
+  escalationFilter,
+  onEscalationChange,
+  attentionOnly,
+  onAttentionChange,
+  onNewRequest,
+}: {
+  query: string
+  onQueryChange: (value: string) => void
+  statusValue: string
+  onStatusChange: (value: string | null) => void
+  escalationFilter: string
+  onEscalationChange: (value: string | null) => void
+  attentionOnly: boolean
+  onAttentionChange: (checked: boolean) => void
+  onNewRequest: () => void
+}) {
+  return (
+    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
+      <div className="relative min-w-[min(100%,12rem)] max-w-[min(100%,20rem)] flex-1">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Filter by ID, title, supplier, unit, country…"
+          className="h-8 border-input/80 pl-8 text-sm transition-colors focus-visible:border-ring"
+        />
+      </div>
+      <Select value={statusValue} onValueChange={onStatusChange}>
+        <SelectTrigger
+          size="sm"
+          className="w-[min(100%,9.5rem)] transition-[color,box-shadow,opacity] duration-150"
+        >
+          <SelectValue placeholder="All statuses" />
+        </SelectTrigger>
+        <SelectContent>
+          {statusOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select
+        value={escalationFilter}
+        onValueChange={onEscalationChange}
+      >
+        <SelectTrigger
+          size="sm"
+          className="w-[min(100%,10rem)] transition-[color,box-shadow,opacity] duration-150"
+        >
+          <SelectValue placeholder="All escalations" />
+        </SelectTrigger>
+        <SelectContent>
+          {escalationOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <Checkbox
+          checked={attentionOnly}
+          onCheckedChange={(checked) => onAttentionChange(checked === true)}
+        />
+        Needs attention only
+      </label>
+      <Button size="sm" onClick={onNewRequest}>
+        <Plus className="mr-1.5 size-4" />
+        New Request
+      </Button>
+    </div>
+  )
+})
+
+export function InboxPage({
+  cases,
+  total,
+  page,
+  pageSize,
+  statusParam,
+  dataLoadError,
+}: InboxPageProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [query, setQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState("all")
   const [escalationFilter, setEscalationFilter] = useState("all")
   const [newRequestOpen, setNewRequestOpen] = useState(false)
   const [attentionOnly, setAttentionOnly] = useState(false)
-  const [batchIds, setBatchIds] = useState("")
-  const [concurrency, setConcurrency] = useState("5")
-  const [batchResult, setBatchResult] = useState<unknown>(null)
+  const [isFilterNavPending, startFilterTransition] = useTransition()
+  const deferredQuery = useDeferredValue(query)
   const {
     requestLiveState,
     startPolling,
     patchRequestState,
     clearRequestState,
   } = useRequestStatusPoller()
-  const { loadingAction, error, fallback, message, runAction } =
+  const { loadingAction, runAction } =
     usePipelineActionRunner()
 
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  const updateSearchParams = useCallback(
+    (updates: Record<string, string | undefined>) => {
+      startFilterTransition(() => {
+        const params = new URLSearchParams(searchParams.toString())
+        for (const [key, value] of Object.entries(updates)) {
+          if (value === undefined || value === "all") {
+            params.delete(key)
+          } else {
+            params.set(key, value)
+          }
+        }
+        const qs = params.toString()
+        const href = `/inbox${qs ? `?${qs}` : ""}`
+        router.replace(href, { scroll: false })
+      })
+    },
+    [router, searchParams, startFilterTransition],
+  )
+
+  const handleStatusChange = useCallback(
+    (value: string | null) => {
+      const v = value ?? "all"
+      updateSearchParams({ status: v === "all" ? undefined : v, page: undefined })
+    },
+    [updateSearchParams],
+  )
+
+  const handleEscalationFilterChange = useCallback((value: string | null) => {
+    setEscalationFilter(value ?? "all")
+  }, [])
+
+  const openNewRequest = useCallback(() => {
+    setNewRequestOpen(true)
+  }, [])
+
+  function handlePageChange(newPage: number) {
+    updateSearchParams({ page: newPage <= 1 ? undefined : String(newPage) })
+  }
+
   const filteredCases = useMemo(() => {
+    const normalizedQuery = deferredQuery.trim().toLowerCase()
     return cases.filter((entry) => {
-      const normalizedQuery = query.trim().toLowerCase()
       const matchesQuery =
         !normalizedQuery ||
         entry.requestId.toLowerCase().includes(normalizedQuery) ||
@@ -129,9 +298,6 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
         entry.countryLabel.toLowerCase().includes(normalizedQuery) ||
         entry.supplierLabel.toLowerCase().includes(normalizedQuery)
 
-      const matchesStatus =
-        statusFilter === "all" ? true : entry.status === statusFilter
-
       const matchesEscalation =
         escalationFilter === "all"
           ? true
@@ -139,17 +305,50 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
 
       const matchesAttention = attentionOnly ? entry.needsAttention : true
 
-      return (
-        matchesQuery && matchesStatus && matchesEscalation && matchesAttention
-      )
+      return matchesQuery && matchesEscalation && matchesAttention
     })
-  }, [attentionOnly, cases, escalationFilter, query, statusFilter])
-  const selectedStatusLabel =
-    statusOptions.find((option) => option.value === statusFilter)?.label ??
-    "All statuses"
-  const selectedEscalationLabel =
-    escalationOptions.find((option) => option.value === escalationFilter)?.label ??
-    "All escalations"
+  }, [attentionOnly, cases, deferredQuery, escalationFilter])
+
+  const isSearchDeferring = query !== deferredQuery
+
+  const statusValue = useMemo(
+    () =>
+      statusOptions.some((option) => option.value === statusParam)
+        ? statusParam
+        : "all",
+    [statusParam],
+  )
+
+  const setHeaderActions = useSetWorkspaceHeaderActions()
+
+  useLayoutEffect(
+    () => {
+      setHeaderActions(
+        <InboxWorkspaceToolbar
+          query={query}
+          onQueryChange={setQuery}
+          statusValue={statusValue}
+          onStatusChange={handleStatusChange}
+          escalationFilter={escalationFilter}
+          onEscalationChange={handleEscalationFilterChange}
+          attentionOnly={attentionOnly}
+          onAttentionChange={setAttentionOnly}
+          onNewRequest={openNewRequest}
+        />,
+      )
+      return () => setHeaderActions(null)
+    },
+    [
+      setHeaderActions,
+      statusValue,
+      query,
+      escalationFilter,
+      attentionOnly,
+      handleStatusChange,
+      handleEscalationFilterChange,
+      openNewRequest,
+    ],
+  )
 
   function triggerRequest(requestId: string) {
     const startedAt = new Date().toISOString()
@@ -164,7 +363,8 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
     void runAction({
       label: `trigger:${requestId}`,
       request: () => chainIqApi.pipeline.process({ request_id: requestId }),
-      successMessage: `Pipeline trigger started for ${requestId}.`,
+      successMessage: "Pipeline trigger started",
+      successDescription: requestId,
     })
       .then(async () => {
         const phase = await startPolling(requestId, {
@@ -187,79 +387,8 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
       })
   }
 
-  function processBatch() {
-    const requestIds = batchIds
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-    if (requestIds.length === 0) return
-    const startedAt = new Date().toISOString()
-    for (const requestId of requestIds) {
-      patchRequestState(requestId, {
-        phase: "queued",
-        startedAt,
-        lastCheckedAt: startedAt,
-        finishedAt: undefined,
-        error: undefined,
-      })
-    }
-
-    void runAction({
-      label: "batch",
-      request: () =>
-        chainIqApi.pipeline.processBatch({
-          request_ids: requestIds,
-          concurrency: Number(concurrency) || 5,
-        }),
-      onSuccess: setBatchResult,
-      successMessage: "Batch process submitted.",
-    })
-      .then(async () => {
-        await Promise.allSettled(
-          requestIds.map(async (requestId) => {
-            const phase = await startPolling(requestId, {
-              initialPhase: "queued",
-              intervalMs: 2000,
-              timeoutMs: 45_000,
-            })
-            if (
-              phase === "completed" ||
-              phase === "failed" ||
-              phase === "timed_out"
-            ) {
-              window.setTimeout(() => clearRequestState(requestId), 10_000)
-            }
-          }),
-        )
-        router.refresh()
-      })
-      .catch(() => {
-        const failedAt = new Date().toISOString()
-        for (const requestId of requestIds) {
-          patchRequestState(requestId, {
-            phase: "failed",
-            lastCheckedAt: failedAt,
-            finishedAt: failedAt,
-          })
-          window.setTimeout(() => clearRequestState(requestId), 10_000)
-        }
-      })
-  }
-
   return (
     <div className="space-y-6">
-      <div className="animate-fade-in-up flex items-start justify-between">
-        <SectionHeading
-          eyebrow="Inbox"
-          title="Case triage queue"
-          description="Search, filter, and drill into individual sourcing cases."
-        />
-        <Button onClick={() => setNewRequestOpen(true)}>
-          <Sparkles className="mr-2 size-4" />
-          New Request
-        </Button>
-      </div>
-
       <Dialog open={newRequestOpen} onOpenChange={setNewRequestOpen}>
         <DialogContent className="w-[min(100vw-2rem,80rem)] max-w-none p-0" showCloseButton={false}>
           <DialogHeader className="border-b px-5 py-4">
@@ -281,23 +410,6 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
           </CardContent>
         </Card>
       ) : null}
-      {message ? (
-        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
-          <CardContent className="py-3 text-sm">{message}</CardContent>
-        </Card>
-      ) : null}
-      {error ? (
-        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
-          <CardContent className="py-3 text-sm">{error}</CardContent>
-        </Card>
-      ) : null}
-      {fallback ? (
-        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
-          <CardContent className="py-3 text-sm">
-            Runs endpoint degraded. Other trigger actions remain usable. {fallback}
-          </CardContent>
-        </Card>
-      ) : null}
       {Object.keys(requestLiveState).length > 0 ? (
         <Card className="border-blue-200 bg-blue-50/70 text-blue-900">
           <CardContent className="py-3 text-sm">
@@ -308,66 +420,28 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
         </Card>
       ) : null}
 
-      <Card className="animate-fade-in-up" style={{ animationDelay: "80ms" }}>
-        <CardHeader className="border-b pb-4">
-          <CardTitle className="sr-only">Filters</CardTitle>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search request ID, title, supplier, business unit, country..."
-                className="h-9 pl-9"
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Select
-                value={statusFilter}
-                onValueChange={(v) => setStatusFilter(v ?? "all")}
-              >
-                <SelectTrigger className="w-[160px]">
-                  <span className="truncate">{selectedStatusLabel}</span>
-                </SelectTrigger>
-                <SelectContent>
-                  {statusOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={escalationFilter}
-                onValueChange={(value) => setEscalationFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-[160px]">
-                  <span className="truncate">{selectedEscalationLabel}</span>
-                </SelectTrigger>
-                <SelectContent>
-                  {escalationOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={attentionOnly}
-                  onCheckedChange={(checked) =>
-                    setAttentionOnly(checked === true)
-                  }
-                />
-                Needs attention only
-              </label>
-            </div>
-          </div>
-        </CardHeader>
-
+      <Card
+        aria-busy={isFilterNavPending}
+        className={cn(
+          "animate-fade-in-up relative overflow-hidden transition-opacity duration-200",
+          isFilterNavPending && "opacity-[0.98]",
+        )}
+        style={{ animationDelay: "80ms" }}
+      >
+        {isFilterNavPending ? (
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 bg-primary/75 motion-safe:animate-pulse"
+            aria-hidden
+          />
+        ) : null}
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
-            <Table>
+          <div
+            className={cn(
+              "overflow-x-auto transition-opacity duration-150",
+              isSearchDeferring && "opacity-[0.9]",
+            )}
+          >
+            <Table className="motion-safe:transition-[opacity] motion-safe:duration-150">
               <TableHeader>
                 <TableRow>
                   <TableHead className="min-w-[200px] px-4">
@@ -389,17 +463,28 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {filteredCases.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={12} className="py-8 text-center text-sm text-muted-foreground">
+                      {cases.length === 0
+                        ? "No cases for the current view."
+                        : "No cases match your filters on this page."}
+                    </TableCell>
+                  </TableRow>
+                ) : null}
                 {filteredCases.map((entry) => {
                   const liveState = requestLiveState[entry.requestId]
                   const isLiveRunning =
                     liveState?.phase === "queued" || liveState?.phase === "running"
                   const recommendationTone =
-                    entry.recommendationStatus === "proceed"
-                      ? "success"
-                      : entry.recommendationStatus ===
-                          "proceed_with_conditions"
-                        ? "warning"
-                        : "destructive"
+                    entry.recommendationStatus === "not_evaluated"
+                      ? "neutral"
+                      : entry.recommendationStatus === "proceed"
+                        ? "success"
+                        : entry.recommendationStatus ===
+                            "proceed_with_conditions"
+                          ? "warning"
+                          : "destructive"
 
                   return (
                     <TableRow
@@ -429,7 +514,7 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
                         </Link>
                       </TableCell>
                       <TableCell className="text-sm">
-                        {entry.category}
+                        {entry.category || emptyCell()}
                       </TableCell>
                       <TableCell className="text-sm">
                         {entry.businessUnit}
@@ -454,13 +539,13 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
                       </TableCell>
                       <TableCell>
                         <StatusBadge
-                          label={entry.status.replaceAll("_", " ")}
+                          label={displayCaseStatus(entry.status)}
                           tone={entry.needsAttention ? "warning" : "neutral"}
                         />
                       </TableCell>
                       <TableCell>
                         <StatusBadge
-                          label={entry.escalationStatus}
+                          label={displayEscalationStatus(entry.escalationStatus)}
                           tone={
                             entry.escalationStatus === "blocking"
                               ? "destructive"
@@ -471,14 +556,13 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
                         />
                       </TableCell>
                       <TableCell className="max-w-[200px] text-xs text-muted-foreground">
-                        {(entry.scenarioTags ?? []).slice(0, 3).join(", ") || "standard"}
+                        {entry.scenarioTags.length > 0
+                          ? entry.scenarioTags.slice(0, 3).join(", ")
+                          : emptyCell()}
                       </TableCell>
                       <TableCell>
                         <StatusBadge
-                          label={entry.recommendationStatus.replaceAll(
-                            "_",
-                            " ",
-                          )}
+                          label={displayRecommendationStatus(entry.recommendationStatus)}
                           tone={recommendationTone}
                         />
                       </TableCell>
@@ -537,58 +621,39 @@ export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
               </TableBody>
             </Table>
           </div>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Advanced actions</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-sm text-muted-foreground">
-            Bulk trigger requests from Inbox (moved from Pipeline Ops).
-          </p>
-          <Textarea
-            value={batchIds}
-            onChange={(event) => setBatchIds(event.target.value)}
-            placeholder="REQ-000001,REQ-000004"
-            className="min-h-20"
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            <Input
-              value={concurrency}
-              onChange={(event) => setConcurrency(event.target.value)}
-              placeholder="Concurrency (1-20)"
-              type="number"
-              className="w-[220px]"
-            />
-            <Button
-              onClick={processBatch}
-              disabled={loadingAction === "batch" || batchIds.trim().length === 0}
-            >
-              {loadingAction === "batch" ? (
-                <>
-                  <Loader2 className="size-3.5 animate-spin" />
-                  Submitting...
-                </>
-              ) : (
-                <>
-                  <Play className="size-3.5" />
-                  Process batch
-                </>
-              )}
-            </Button>
-            <Link
-              href="/audit"
-              className={buttonVariants({ variant: "outline" })}
-            >
-              View audit diagnostics
-            </Link>
+          <div className="flex items-center justify-between border-t px-4 py-3">
+            <p className="text-sm text-muted-foreground">
+              {total === 0
+                ? "No results"
+                : `Showing ${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
+            </p>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page <= 1 || isFilterNavPending}
+                onClick={() => handlePageChange(page - 1)}
+              >
+                <ChevronLeft className="size-4" />
+                Previous
+              </Button>
+              <span className="px-2 text-sm tabular-nums text-muted-foreground">
+                {page} / {totalPages}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page >= totalPages || isFilterNavPending}
+                onClick={() => handlePageChange(page + 1)}
+              >
+                Next
+                <ChevronRight className="size-4" />
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
-
-      {batchResult ? <JsonViewer title="Batch Result" value={batchResult} /> : null}
     </div>
   )
 }

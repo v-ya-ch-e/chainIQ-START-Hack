@@ -11,6 +11,12 @@ export interface PaginatedResponse<T> {
   limit: number
 }
 
+export interface BlobResponse {
+  blob: Blob
+  contentType: string | null
+  contentDisposition: string | null
+}
+
 export class ApiError extends Error {
   status: number
   path: string
@@ -183,6 +189,51 @@ export async function requestNoContent(
   options?: { retries?: number; retryDelayMs?: number },
 ): Promise<void> {
   await requestJson<unknown>(kind, path, init, options)
+}
+
+export async function requestBlob(
+  kind: BackendKind,
+  path: string,
+  init?: RequestInit,
+  options?: { retries?: number; retryDelayMs?: number },
+): Promise<BlobResponse> {
+  const retries = options?.retries ?? 1
+  const retryDelayMs = options?.retryDelayMs ?? 250
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`
+  const url = `${getBaseUrl(kind)}${normalizedPath}`
+
+  let attempt = 0
+  for (;;) {
+    try {
+      const response = await fetch(url, {
+        cache: "no-store",
+        ...init,
+      })
+
+      if (!response.ok) {
+        const payload = await parseResponseBody(response)
+        throw new ApiError(
+          normalizedPath,
+          response.status,
+          toErrorMessage(response.status, normalizedPath, payload),
+          payload,
+        )
+      }
+
+      return {
+        blob: await response.blob(),
+        contentType: response.headers.get("content-type"),
+        contentDisposition: response.headers.get("content-disposition"),
+      }
+    } catch (error) {
+      if (attempt >= retries || !shouldRetry(error)) {
+        throw error
+      }
+
+      attempt += 1
+      await sleep(retryDelayMs * attempt)
+    }
+  }
 }
 
 export async function fetchAllPages<T>(

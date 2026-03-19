@@ -1,9 +1,16 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo, useState } from "react"
-import { AlertTriangle, ArrowRight, BarChart3, Filter } from "lucide-react"
+import {
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react"
+import { AlertTriangle, ArrowRight, BarChart3 } from "lucide-react"
 
+import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { formatCurrency, formatDateTime } from "@/lib/data/formatters"
 import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
@@ -49,6 +56,100 @@ function getStatusTone(status: CaseStatus) {
   if (status === "pending_review" || status === "escalated") return "warning"
   return "neutral"
 }
+
+const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
+  statusFilter,
+  categoryFilter,
+  countryFilter,
+  attentionOnly,
+  filterOptions,
+  onStatusChange,
+  onCategoryChange,
+  onCountryChange,
+  onAttentionChange,
+  onReset,
+  canReset,
+}: {
+  statusFilter: string
+  categoryFilter: string
+  countryFilter: string
+  attentionOnly: boolean
+  filterOptions: DashboardInsights["filterOptions"]
+  onStatusChange: (value: string | null) => void
+  onCategoryChange: (value: string | null) => void
+  onCountryChange: (value: string | null) => void
+  onAttentionChange: (checked: boolean) => void
+  onReset: () => void
+  canReset: boolean
+}) {
+  return (
+    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
+      <Select value={statusFilter} onValueChange={onStatusChange}>
+        <SelectTrigger
+          size="sm"
+          className="w-[min(100%,10rem)] transition-[color,box-shadow,opacity] duration-150"
+        >
+          <SelectValue placeholder="Status" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All statuses</SelectItem>
+          {filterOptions.statuses.map((status) => (
+            <SelectItem key={status} value={status}>
+              {statusLabelMap[status]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={categoryFilter} onValueChange={onCategoryChange}>
+        <SelectTrigger
+          size="sm"
+          className="w-[min(100%,11rem)] transition-[color,box-shadow,opacity] duration-150"
+        >
+          <SelectValue placeholder="Category" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All categories</SelectItem>
+          {filterOptions.categories.map((category) => (
+            <SelectItem key={category} value={category}>
+              {category}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={countryFilter} onValueChange={onCountryChange}>
+        <SelectTrigger
+          size="sm"
+          className="w-[min(100%,10rem)] transition-[color,box-shadow,opacity] duration-150"
+        >
+          <SelectValue placeholder="Country" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All countries</SelectItem>
+          {filterOptions.countries.map((country) => (
+            <SelectItem key={country} value={country}>
+              {country}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground transition-colors hover:text-foreground">
+        <Checkbox
+          checked={attentionOnly}
+          onCheckedChange={(checked) => onAttentionChange(checked === true)}
+        />
+        Needs attention
+      </label>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onReset}
+        disabled={!canReset}
+      >
+        Reset
+      </Button>
+    </div>
+  )
+})
 
 export function OverviewPage({
   metrics,
@@ -105,12 +206,24 @@ export function OverviewPage({
       .sort((a, b) => b.count - a.count)
   }, [filteredCases, insights.filterOptions.statuses])
 
-  const resetFilters = () => {
+  const resetFilters = useCallback(() => {
     setStatusFilter("all")
     setCategoryFilter("all")
     setCountryFilter("all")
     setAttentionOnly(false)
-  }
+  }, [])
+
+  const handleStatusFilterChange = useCallback((value: string | null) => {
+    setStatusFilter(value ?? "all")
+  }, [])
+
+  const handleCategoryFilterChange = useCallback((value: string | null) => {
+    setCategoryFilter(value ?? "all")
+  }, [])
+
+  const handleCountryFilterChange = useCallback((value: string | null) => {
+    setCountryFilter(value ?? "all")
+  }, [])
 
   const activeFiltersCount =
     Number(statusFilter !== "all") +
@@ -118,13 +231,49 @@ export function OverviewPage({
     Number(countryFilter !== "all") +
     Number(attentionOnly)
 
+  const setHeaderActions = useSetWorkspaceHeaderActions()
+
+  useLayoutEffect(
+    () => {
+      setHeaderActions(
+        <OverviewWorkspaceToolbar
+          statusFilter={statusFilter}
+          categoryFilter={categoryFilter}
+          countryFilter={countryFilter}
+          attentionOnly={attentionOnly}
+          filterOptions={insights.filterOptions}
+          onStatusChange={handleStatusFilterChange}
+          onCategoryChange={handleCategoryFilterChange}
+          onCountryChange={handleCountryFilterChange}
+          onAttentionChange={setAttentionOnly}
+          onReset={resetFilters}
+          canReset={activeFiltersCount > 0}
+        />,
+      )
+      return () => setHeaderActions(null)
+    },
+    [
+      setHeaderActions,
+      statusFilter,
+      categoryFilter,
+      countryFilter,
+      attentionOnly,
+      activeFiltersCount,
+      insights.filterOptions,
+      handleStatusFilterChange,
+      handleCategoryFilterChange,
+      handleCountryFilterChange,
+      resetFilters,
+    ],
+  )
+
   return (
     <div className="space-y-8">
       <div className="animate-fade-in-up flex flex-col gap-2 @xl/main:flex-row @xl/main:items-end @xl/main:justify-between">
         <SectionHeading
           eyebrow="Overview"
           title="Sourcing overview"
-          description="Quick operational snapshot with filters and focused queues for action."
+          description="Quick operational snapshot and focused queues for action."
         />
         <div className="text-xs text-muted-foreground">
           <p suppressHydrationWarning>
@@ -168,90 +317,6 @@ export function OverviewPage({
           />
         ))}
       </section>
-
-      <Card
-        className="animate-fade-in-up"
-        style={{ animationDelay: "120ms" }}
-      >
-        <CardHeader className="border-b pb-4">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Filter className="size-4 text-muted-foreground" />
-            Filters
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <div className="flex flex-col gap-3 @2xl/main:flex-row @2xl/main:items-center">
-            <div className="grid flex-1 gap-3 @2xl/main:grid-cols-3">
-              <Select
-                value={statusFilter}
-                onValueChange={(value) => setStatusFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  {insights.filterOptions.statuses.map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {statusLabelMap[status]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={categoryFilter}
-                onValueChange={(value) => setCategoryFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All categories</SelectItem>
-                  {insights.filterOptions.categories.map((category) => (
-                    <SelectItem key={category} value={category}>
-                      {category}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={countryFilter}
-                onValueChange={(value) => setCountryFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Country" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All countries</SelectItem>
-                  {insights.filterOptions.countries.map((country) => (
-                    <SelectItem key={country} value={country}>
-                      {country}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={attentionOnly}
-                  onCheckedChange={(checked) => setAttentionOnly(checked === true)}
-                />
-                Needs attention
-              </label>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={resetFilters}
-                disabled={activeFiltersCount === 0}
-              >
-                Reset
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       <section
         className="animate-fade-in-up grid gap-6 @3xl/main:grid-cols-2"
@@ -436,7 +501,7 @@ export function OverviewPage({
                       suppressHydrationWarning
                     >
                       {(entry.scenarioTags ?? []).slice(0, 3).join(", ") ||
-                        "standard"}{" "}
+                        "—"}{" "}
                       · updated {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>

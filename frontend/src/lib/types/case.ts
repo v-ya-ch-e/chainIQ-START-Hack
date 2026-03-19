@@ -11,6 +11,7 @@ export type RecommendationStatus =
   | "proceed"
   | "proceed_with_conditions"
   | "cannot_proceed"
+  | "not_evaluated"
 
 export type ScenarioTag =
   | "standard"
@@ -68,12 +69,20 @@ export interface InterpretedRequirement {
 }
 
 export interface ValidationIssue {
+  issueKey: string
   issueId: string
   severity: Severity
   type: string
   description: string
   actionRequired: string
   blocking: boolean
+  auditRowId: number
+  runId: string | null
+  timestamp: string
+  stepName: string | null
+  level: string
+  source: string
+  details: Record<string, unknown> | null
 }
 
 export interface PolicyCardData {

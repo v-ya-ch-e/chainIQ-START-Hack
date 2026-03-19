@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeProvider } from "@/components/theme/theme-provider";
+import { ThemedToaster } from "@/components/theme/themed-toaster";
 import { RuntimeChunkGuard } from "@/components/shared/runtime-chunk-guard";
 import "./globals.css";
 
@@ -28,6 +30,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full`}
     >
       <body
@@ -35,7 +38,10 @@ export default function RootLayout({
         className="h-full bg-background text-foreground"
       >
         <RuntimeChunkGuard />
-        <TooltipProvider>{children}</TooltipProvider>
+        <ThemeProvider>
+          <TooltipProvider>{children}</TooltipProvider>
+          <ThemedToaster />
+        </ThemeProvider>
       </body>
     </html>
   );

@@ -50,7 +50,7 @@ const EMPTY_EXTRACTION: ExtractionResult = {
     dataResidencyConstraint: false,
     esgRequirement: false,
     requesterInstruction: null,
-    scenarioTags: ["standard"],
+    scenarioTags: [],
     status: "new",
   },
   fieldStatus: {},

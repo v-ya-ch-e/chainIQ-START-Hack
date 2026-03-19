@@ -32,7 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatDateTime } from "@/lib/data/formatters"
+import { displayRecommendationStatus, formatDateTime } from "@/lib/data/formatters"
 import type { QueueEscalationItem } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
@@ -360,7 +360,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                   <DetailRow label="Escalate to" value={selectedItem.escalateTo} />
                   <DetailRow
                     label="Recommendation state"
-                    value={selectedItem.recommendationStatus.replaceAll("_", " ")}
+                    value={displayRecommendationStatus(selectedItem.recommendationStatus)}
                   />
                   <DetailRow
                     label="Suggested next action"
