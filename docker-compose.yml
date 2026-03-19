@@ -58,7 +58,7 @@ services:
     volumes:
       - .:/workspace
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt && python migrate.py"
+      sh -c "pip install --no-cache-dir -r requirements.txt && python migrate.py && python migrate_rules.py && python migrate_dynamic_rules.py"
     depends_on:
       mysql:
         condition: service_healthy
