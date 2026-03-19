@@ -1,18 +1,24 @@
 import Link from "next/link"
-import { ArrowRight } from "lucide-react"
+import { AlertTriangle, ArrowRight } from "lucide-react"
 
+import { formatDateTime } from "@/lib/data/formatters"
 import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import type { CaseListItem, DashboardMetric } from "@/lib/types/case"
+import type {
+  CaseListItem,
+  DashboardDataState,
+  DashboardMetric,
+} from "@/lib/types/case"
 
 interface OverviewPageProps {
   metrics: DashboardMetric[]
   cases: CaseListItem[]
+  dataState: DashboardDataState
 }
 
-export function OverviewPage({ metrics, cases }: OverviewPageProps) {
+export function OverviewPage({ metrics, cases, dataState }: OverviewPageProps) {
   const escalatedCases = cases.filter(
     (entry) => entry.escalationStatus !== "none",
   )
@@ -29,6 +35,21 @@ export function OverviewPage({ metrics, cases }: OverviewPageProps) {
           description="Operational summary across all sourcing cases. Drill into the Inbox for triage or Escalations for blocked cases."
         />
       </div>
+
+      {dataState.mode === "stale" ? (
+        <Card className="animate-fade-in-up border-amber-300 bg-amber-50/70 text-amber-900" style={{ animationDelay: "40ms" }}>
+          <CardContent className="flex flex-col gap-1 pt-4">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle className="size-4" />
+              Backend temporarily unavailable. Showing last successful snapshot.
+            </p>
+            <p className="text-xs text-amber-800">
+              Snapshot as of {formatDateTime(dataState.asOf)}.
+              {dataState.reason ? ` ${dataState.reason}` : ""}
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <section className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-4" style={{ animationDelay: "80ms" }}>
         {metrics.map((metric) => (

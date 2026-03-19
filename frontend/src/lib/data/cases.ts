@@ -3,6 +3,7 @@ import type {
   CaseDetail,
   CaseListItem,
   CaseStatus,
+  DashboardPageData,
   DashboardMetric,
   QueueEscalationItem,
   RecommendationStatus,
@@ -188,6 +189,7 @@ if (!backendInternalUrl) {
 }
 
 const BASE_API_URL = backendInternalUrl.replace(/\/$/, "")
+const DASHBOARD_CACHE_TTL_MS = 15_000
 
 const STATUS_MAP: Record<string, CaseStatus> = {
   new: "received",
@@ -317,6 +319,23 @@ async function getAllAwards() {
   return await fetchAllPagedItems<HistoricalAwardListResponse, HistoricalAward>("/api/awards/")
 }
 
+type DashboardRawData = {
+  requests: RequestRow[]
+  awards: HistoricalAward[]
+  categoriesMap: Map<number, string>
+  escalationRows: QueueEscalationItem[]
+}
+
+type DashboardSnapshot = {
+  metrics: DashboardMetric[]
+  cases: CaseListItem[]
+  asOf: string
+  cachedAtMs: number
+}
+
+let dashboardSnapshot: DashboardSnapshot | null = null
+let dashboardSnapshotPromise: Promise<DashboardSnapshot> | null = null
+
 function mapEscalationQueueRow(row: EscalationQueueApiRow): QueueEscalationItem {
   return {
     escalationId: row.escalation_id,
@@ -351,33 +370,27 @@ async function fetchEscalationRowsByRequest(
   return rows.map(mapEscalationQueueRow)
 }
 
-function toAuditFeedEvent(
-  award: HistoricalAward,
-  titleByRequestId: Map<string, string>,
-): AuditFeedEvent {
-  const kind = award.escalation_required
-    ? "escalation"
-    : award.policy_compliant
-      ? "policy"
-      : "audit"
+async function fetchDashboardRawData(): Promise<DashboardRawData> {
+  const [requests, awards, categoriesMap, escalationRows] = await Promise.all([
+    getAllRequests(),
+    getAllAwards(),
+    getCategoriesMap(),
+    fetchEscalationQueueRows(),
+  ])
 
   return {
-    id: award.award_id,
-    timestamp: award.award_date,
-    kind,
-    title: `${award.supplier_name} ranked #${award.award_rank}`,
-    description: award.decision_rationale,
-    caseId: award.request_id,
-    caseTitle: titleByRequestId.get(award.request_id) ?? "Sourcing request",
+    requests,
+    awards,
+    categoriesMap,
+    escalationRows,
   }
 }
 
-export async function getDashboardMetrics(): Promise<DashboardMetric[]> {
-  const [requests, awards, escalationRows] = await Promise.all([
-    getAllRequests(),
-    getAllAwards(),
-    fetchEscalationQueueRows(),
-  ])
+function buildDashboardMetricsFromData({
+  requests,
+  awards,
+  escalationRows,
+}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">): DashboardMetric[] {
   const blockingCases = new Set(
     escalationRows
       .filter((entry) => entry.blocking && entry.status !== "resolved")
@@ -416,20 +429,19 @@ export async function getDashboardMetrics(): Promise<DashboardMetric[]> {
   ]
 }
 
-export async function getCaseList(): Promise<CaseListItem[]> {
-  const [requests, awards, categoriesMap, escalationRows] = await Promise.all([
-    getAllRequests(),
-    getAllAwards(),
-    getCategoriesMap(),
-    fetchEscalationQueueRows(),
-  ])
-
+function buildCaseListFromData({
+  requests,
+  awards,
+  categoriesMap,
+  escalationRows,
+}: DashboardRawData): CaseListItem[] {
   const awardsByRequest = new Map<string, HistoricalAward[]>()
   for (const award of awards) {
     const bucket = awardsByRequest.get(award.request_id) ?? []
     bucket.push(award)
     awardsByRequest.set(award.request_id, bucket)
   }
+
   const escalationsByRequest = new Map<string, QueueEscalationItem[]>()
   for (const escalation of escalationRows) {
     const bucket = escalationsByRequest.get(escalation.caseId) ?? []
@@ -486,6 +498,113 @@ export async function getCaseList(): Promise<CaseListItem[]> {
         recommendationStatus !== "proceed",
     }
   })
+}
+
+function isDashboardSnapshotFresh(
+  snapshot: DashboardSnapshot,
+  nowMs: number,
+): boolean {
+  return nowMs - snapshot.cachedAtMs < DASHBOARD_CACHE_TTL_MS
+}
+
+function fallbackReasonFromError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+
+  return "Unable to refresh dashboard data from backend."
+}
+
+function toDashboardPageData(
+  snapshot: DashboardSnapshot,
+  mode: "fresh" | "stale",
+  reason?: string,
+): DashboardPageData {
+  return {
+    metrics: snapshot.metrics,
+    cases: snapshot.cases,
+    dataState: {
+      mode,
+      asOf: snapshot.asOf,
+      ...(reason ? { reason } : {}),
+    },
+  }
+}
+
+async function refreshDashboardSnapshot(): Promise<DashboardSnapshot> {
+  const rawData = await fetchDashboardRawData()
+  const snapshot: DashboardSnapshot = {
+    metrics: buildDashboardMetricsFromData(rawData),
+    cases: buildCaseListFromData(rawData),
+    asOf: new Date().toISOString(),
+    cachedAtMs: Date.now(),
+  }
+  dashboardSnapshot = snapshot
+
+  return snapshot
+}
+
+async function loadDashboardSnapshotWithDeduping(): Promise<DashboardSnapshot> {
+  if (!dashboardSnapshotPromise) {
+    dashboardSnapshotPromise = refreshDashboardSnapshot()
+      .finally(() => {
+        dashboardSnapshotPromise = null
+      })
+  }
+
+  return await dashboardSnapshotPromise
+}
+
+function toAuditFeedEvent(
+  award: HistoricalAward,
+  titleByRequestId: Map<string, string>,
+): AuditFeedEvent {
+  const kind = award.escalation_required
+    ? "escalation"
+    : award.policy_compliant
+      ? "policy"
+      : "audit"
+
+  return {
+    id: award.award_id,
+    timestamp: award.award_date,
+    kind,
+    title: `${award.supplier_name} ranked #${award.award_rank}`,
+    description: award.decision_rationale,
+    caseId: award.request_id,
+    caseTitle: titleByRequestId.get(award.request_id) ?? "Sourcing request",
+  }
+}
+
+export async function getDashboardPageData(): Promise<DashboardPageData> {
+  const nowMs = Date.now()
+  if (dashboardSnapshot && isDashboardSnapshotFresh(dashboardSnapshot, nowMs)) {
+    return toDashboardPageData(dashboardSnapshot, "fresh")
+  }
+
+  try {
+    const snapshot = await loadDashboardSnapshotWithDeduping()
+    return toDashboardPageData(snapshot, "fresh")
+  } catch (error) {
+    if (dashboardSnapshot) {
+      return toDashboardPageData(
+        dashboardSnapshot,
+        "stale",
+        fallbackReasonFromError(error),
+      )
+    }
+    throw error
+  }
+}
+
+export async function getDashboardMetrics(): Promise<DashboardMetric[]> {
+  const rawData = await fetchDashboardRawData()
+  return buildDashboardMetricsFromData(rawData)
+}
+
+export async function getCaseList(): Promise<CaseListItem[]> {
+  const rawData = await fetchDashboardRawData()
+  return buildCaseListFromData(rawData)
 }
 
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {

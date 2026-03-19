@@ -29,7 +29,10 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full`}
     >
-      <body className="h-full bg-background text-foreground">
+      <body
+        suppressHydrationWarning
+        className="h-full bg-background text-foreground"
+      >
         <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>

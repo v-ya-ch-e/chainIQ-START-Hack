@@ -223,3 +223,15 @@ export interface DashboardMetric {
   tone?: "default" | "success" | "warning" | "destructive" | "info"
   helper: string
 }
+
+export interface DashboardDataState {
+  mode: "fresh" | "stale"
+  asOf: string
+  reason?: string
+}
+
+export interface DashboardPageData {
+  metrics: DashboardMetric[]
+  cases: CaseListItem[]
+  dataState: DashboardDataState
+}

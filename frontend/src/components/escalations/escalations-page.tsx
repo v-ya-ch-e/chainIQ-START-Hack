@@ -115,7 +115,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                 value={statusFilter}
                 onValueChange={(value) => setStatusFilter(value ?? "all")}
               >
-                <SelectTrigger className="h-9 w-[160px]">
+                <SelectTrigger className="w-[160px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -128,7 +128,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                 value={blockingFilter}
                 onValueChange={(value) => setBlockingFilter(value ?? "all")}
               >
-                <SelectTrigger className="h-9 w-[160px]">
+                <SelectTrigger className="w-[160px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -251,7 +251,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
       <Sheet open={isReviewOpen} onOpenChange={setIsReviewOpen}>
         <SheetContent
           side="right"
-          className="w-full sm:max-w-2xl bg-white shadow-2xl"
+          className="data-[side=right]:w-full data-[side=right]:sm:max-w-4xl bg-white shadow-2xl"
         >
           <SheetHeader>
             <SheetTitle>

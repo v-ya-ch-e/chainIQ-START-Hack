@@ -1,6 +1,7 @@
 services:
   mysql:
     image: mysql:8.4
+    profiles: ["localdb", "tools"]
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-chainiq}
@@ -30,7 +31,7 @@ services:
       dockerfile: Dockerfile
       target: runner
     environment:
-      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://organisational-layer:8000}
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       NODE_ENV: production
     ports:

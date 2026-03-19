@@ -14,8 +14,8 @@ The project runs as **two independent Docker Compose stacks** on a shared networ
 **Frontend stack** (`docker-compose.yml` at repo root):
 
 - `frontend` (Next.js): `http://localhost:3000` — Web UI
-- `mysql` (MySQL 8.4): `localhost:3306` — Database (local dev only)
-- `migrator` (one-shot): loads `data/` into MySQL via `database_init/migrate.py`
+- `mysql` (MySQL 8.4): `localhost:3306` — Optional local database (`localdb` profile)
+- `migrator` (one-shot): loads `data/` into MySQL via `database_init/migrate.py` (`tools` profile)
 
 ## Prerequisites
 
@@ -32,15 +32,18 @@ cp .env.example .env
 cp backend/organisational_layer/.env.example backend/organisational_layer/.env
 cp backend/logical_layer/.env.example backend/logical_layer/.env
 
+# Set BACKEND_INTERNAL_URL in .env to your deployed organisational-layer URL
+
 # 3. Start backend services
 cd backend
 docker compose up --build -d
 cd ..
 
-# 4. Start frontend + MySQL (dev mode with hot reload)
+# 4. Start frontend only (dev mode with hot reload)
 docker compose up --build
 
-# 5. Bootstrap database (first run only, in a separate terminal)
+# 5. Optional: run local DB + migration instead of deployed backend
+docker compose --profile localdb up -d mysql
 docker compose --profile tools run --rm migrator
 ```
 

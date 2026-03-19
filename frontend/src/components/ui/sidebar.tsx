@@ -32,9 +32,9 @@ const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
-function getInitialSidebarOpen(defaultOpen: boolean) {
+function getPersistedSidebarOpen(): boolean | null {
   if (typeof document === "undefined") {
-    return defaultOpen
+    return null
   }
 
   const cookieValue = document.cookie
@@ -44,7 +44,7 @@ function getInitialSidebarOpen(defaultOpen: boolean) {
 
   if (cookieValue === "true") return true
   if (cookieValue === "false") return false
-  return defaultOpen
+  return null
 }
 
 type SidebarContextProps = {
@@ -86,8 +86,19 @@ function SidebarProvider({
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(() => getInitialSidebarOpen(defaultOpen))
+  const [_open, _setOpen] = React.useState(defaultOpen)
   const open = openProp ?? _open
+
+  React.useEffect(() => {
+    if (openProp !== undefined) return
+
+    const persistedOpen = getPersistedSidebarOpen()
+    if (persistedOpen === null) return
+
+    _setOpen((currentOpen) =>
+      currentOpen === persistedOpen ? currentOpen : persistedOpen,
+    )
+  }, [openProp])
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value
@@ -322,7 +333,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        "relative flex w-full flex-1 flex-col bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-[var(--layout-outer-radius)] md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
         className
       )}
       {...props}
@@ -619,10 +630,7 @@ function SidebarMenuSkeleton({
 }: React.ComponentProps<"div"> & {
   showIcon?: boolean
 }) {
-  // Random width between 50 to 90%.
-  const [width] = React.useState(() => {
-    return `${Math.floor(Math.random() * 40) + 50}%`
-  })
+  const width = "72%"
 
   return (
     <div
