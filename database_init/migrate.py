@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import mysql.connector
@@ -372,6 +373,15 @@ def batch_insert(cursor, sql: str, rows: list[tuple], batch_size: int = 500):
         cursor.executemany(sql, rows[i : i + batch_size])
 
 
+def normalize_mysql_datetime(value: str) -> str:
+    """
+    Normalize ISO datetime strings to MySQL DATETIME format.
+    Example: 2026-04-14T10:33:00Z -> 2026-04-14 10:33:00
+    """
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
 # ---------------------------------------------------------------------------
 # Data loaders — each returns normalised tuples ready for INSERT
 # ---------------------------------------------------------------------------
@@ -463,7 +473,7 @@ def load_requests(raw: list[dict]) -> tuple[list[tuple], list[tuple], list[tuple
     for r in raw:
         reqs.append((
             r["request_id"],
-            r["created_at"],
+            normalize_mysql_datetime(r["created_at"]),
             r["request_channel"],
             r["request_language"],
             r["business_unit"],

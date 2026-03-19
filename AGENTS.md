@@ -66,3 +66,40 @@ The judges value **correct uncertainty handling** over confident wrong answers. 
 
 - Azure credits available
 - Any language, framework, AI tooling, or rules engine is allowed
+
+## Current Full-Stack Wiring (Implemented)
+
+- Frontend and backend are now integrated and run together via Docker Compose.
+- Compose services:
+  - `frontend` (Next.js)
+  - `backend` (FastAPI)
+  - `mysql` (MySQL 8.4)
+  - `migrator` (one-shot data bootstrap using `database_init/migrate.py`)
+- Root orchestration files:
+  - `docker-compose.yml` (production-like defaults)
+  - `docker-compose.override.yml` (development hot-reload)
+  - `.env.example` (shared env contract)
+- Container files:
+  - `frontend/Dockerfile`, `frontend/.dockerignore`
+  - `backend/organisational_layer/Dockerfile`, `backend/organisational_layer/.dockerignore`
+
+## Local Runbook
+
+1. Copy env:
+   - `cp .env.example .env`
+2. Start stack (dev mode):
+   - `docker compose up --build`
+3. Bootstrap database (first run / after reset):
+   - `docker compose --profile tools run --rm migrator`
+
+Default local URLs:
+
+- Frontend: `http://localhost:3000`
+- Backend: `http://localhost:8000`
+- MySQL: `localhost:3306`
+
+## Integration Notes
+
+- Frontend API calls are same-origin (`/api/*`) and proxied to backend through Next rewrites.
+- Frontend server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal networking.
+- Mock fixture pass-through in `frontend/src/lib/data/cases.ts` has been replaced with backend-backed async mapping logic.

@@ -1,0 +1,91 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chainiq}
+      MYSQL_USER: ${MYSQL_USER:-chainiq}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-chainiq}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -uroot -p${MYSQL_ROOT_PASSWORD:-root}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 25
+      start_period: 15s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend/organisational_layer
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-chainiq}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-chainiq}
+      DB_NAME: ${MYSQL_DATABASE:-chainiq}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+    environment:
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://backend:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+      NODE_ENV: production
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  migrator:
+    image: python:3.14-slim
+    working_dir: /workspace/database_init
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-chainiq}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-chainiq}
+      DB_NAME: ${MYSQL_DATABASE:-chainiq}
+    volumes:
+      - .:/workspace
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && python migrate.py"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    profiles: ["tools"]
+    restart: "no"
+
+volumes:
+  mysql_data:
