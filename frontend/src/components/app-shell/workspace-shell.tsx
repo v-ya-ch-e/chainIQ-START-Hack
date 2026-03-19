@@ -210,12 +210,24 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
     return [{ label: "Inbox" }]
   }
 
+  if (normalizedPath === "/intake") {
+    return [{ label: "Intake" }]
+  }
+
+  if (normalizedPath === "/pipeline") {
+    return [{ label: "Pipeline" }]
+  }
+
   if (normalizedPath === "/escalations") {
     return [{ label: "Escalations" }]
   }
 
   if (normalizedPath === "/audit") {
     return [{ label: "Audit" }]
+  }
+
+  if (normalizedPath === "/data") {
+    return [{ label: "Data" }]
   }
 
   if (normalizedPath.startsWith("/cases/")) {

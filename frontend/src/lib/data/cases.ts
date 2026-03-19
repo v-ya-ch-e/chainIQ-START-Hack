@@ -1,28 +1,16 @@
+import { chainIqApi } from "@/lib/api/client"
 import type {
   AuditFeedEvent,
   CaseDetail,
   CaseListItem,
   CaseStatus,
-  DashboardPageData,
   DashboardMetric,
+  DashboardPageData,
   QueueEscalationItem,
   RecommendationStatus,
   ScenarioTag,
+  Severity,
 } from "@/lib/types/case"
-
-type RequestListResponse = {
-  items: RequestRow[]
-  total: number
-  skip: number
-  limit: number
-}
-
-type HistoricalAwardListResponse = {
-  items: HistoricalAward[]
-  total: number
-  skip: number
-  limit: number
-}
 
 type RequestRow = {
   request_id: string
@@ -52,35 +40,46 @@ type RequestRow = {
   scenario_tags?: string[]
 }
 
-type RequestDetail = Omit<RequestRow, "scenario_tags"> & {
+type RequestDetail = RequestRow & {
   delivery_countries: Array<{ id: number; country_code: string }>
   scenario_tags: Array<{ id: number; tag: string }>
   category_l1: string | null
   category_l2: string | null
 }
 
-type CategoryRow = {
-  id: number
-  category_l1: string
-  category_l2: string
-}
-
 type HistoricalAward = {
   award_id: string
   request_id: string
   award_date: string
+  category_id: number
+  country: string
+  business_unit: string
   supplier_id: string
   supplier_name: string
   total_value: string | number
   currency: string
+  quantity: string | number
+  required_by_date: string
   awarded: boolean
   award_rank: number
   decision_rationale: string
   policy_compliant: boolean
+  preferred_supplier_used: boolean
   escalation_required: boolean
   escalated_to: string | null
   savings_pct: string | number
   lead_time_days: number
+  risk_score_at_award: number
+  notes: string | null
+}
+
+type CategoryRow = {
+  id: number
+  category_l1: string
+  category_l2: string
+  category_description: string
+  typical_unit: string
+  pricing_model: string
 }
 
 type RequestOverview = {
@@ -130,39 +129,48 @@ type RequestOverview = {
     moq: number
   }>
   applicable_rules: {
-    category_rules: Array<{
-      rule_id: string
-      rule_type: string
-      rule_text: string
-    }>
-    geography_rules: Array<{
-      rule_id: string
-      rule_type: string | null
-      rule_text: string
-      region: string | null
-      country: string | null
-    }>
+    category_rules: Array<Record<string, unknown>>
+    geography_rules: Array<Record<string, unknown>>
   }
   approval_tier: {
     threshold_id: string
     currency: string
+    min_amount: string
+    max_amount: string | null
     min_supplier_quotes: number
     policy_note: string | null
     managers: string[]
     deviation_approvers: string[]
   } | null
-  historical_awards: Array<{
-    award_id: string
-    supplier_id: string
-    supplier_name: string
-    total_value: string | number
-    currency: string
-    awarded: boolean
-    award_rank: number
-    decision_rationale: string
-    savings_pct: string | number
-    lead_time_days: number
+  historical_awards: Array<Record<string, unknown>>
+}
+
+type AuditListOut = {
+  items: Array<{
+    id: number
+    request_id: string
+    run_id: string | null
+    timestamp: string
+    level: string
+    category: string
+    step_name: string | null
+    message: string
+    details: Record<string, unknown> | null
+    source: string
   }>
+  total: number
+}
+
+type AuditSummaryOut = {
+  request_id: string
+  total_entries: number
+  by_level: Array<{ level: string; count: number }>
+  by_category: Array<{ category: string; count: number }>
+  distinct_policies: string[]
+  distinct_suppliers: string[]
+  escalation_count: number
+  first_event?: string | null
+  last_event?: string | null
 }
 
 type EscalationQueueApiRow = {
@@ -183,142 +191,6 @@ type EscalationQueueApiRow = {
   recommendation_status: RecommendationStatus
 }
 
-const backendInternalUrl = process.env.BACKEND_INTERNAL_URL
-if (!backendInternalUrl) {
-  throw new Error("BACKEND_INTERNAL_URL is required for backend data fetching.")
-}
-
-const BASE_API_URL = backendInternalUrl.replace(/\/$/, "")
-const DASHBOARD_CACHE_TTL_MS = 15_000
-
-const STATUS_MAP: Record<string, CaseStatus> = {
-  new: "received",
-  submitted: "parsed",
-  pending_review: "pending_review",
-  evaluated: "evaluated",
-  recommended: "recommended",
-  escalated: "escalated",
-  resolved: "resolved",
-  received: "received",
-  parsed: "parsed",
-}
-
-const SCENARIO_TAGS = new Set<ScenarioTag>([
-  "standard",
-  "threshold",
-  "lead_time",
-  "missing_info",
-  "contradictory",
-  "restricted",
-  "multilingual",
-  "capacity",
-  "multi_country",
-])
-
-class BackendApiError extends Error {
-  status: number
-  path: string
-
-  constructor(path: string, status: number, detail: string) {
-    super(`Backend request failed (${status}) for ${path}: ${detail}`)
-    this.name = "BackendApiError"
-    this.status = status
-    this.path = path
-  }
-}
-
-function toNumber(value: string | number | null | undefined): number | null {
-  if (value === null || value === undefined) return null
-  const parsed = typeof value === "number" ? value : Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function normalizeStatus(status: string): CaseStatus {
-  return STATUS_MAP[status] ?? "received"
-}
-
-function normalizeTag(tag: string): ScenarioTag | null {
-  return SCENARIO_TAGS.has(tag as ScenarioTag) ? (tag as ScenarioTag) : null
-}
-
-function normalizeTags(tags: string[]): ScenarioTag[] {
-  return tags
-    .map(normalizeTag)
-    .filter((tag): tag is ScenarioTag => tag !== null)
-}
-
-function recommendationStatusFrom(
-  hasBlocking: boolean,
-  hasEscalation: boolean,
-  status: CaseStatus,
-): RecommendationStatus {
-  if (hasBlocking) return "cannot_proceed"
-  if (hasEscalation || status === "pending_review" || status === "escalated") {
-    return "proceed_with_conditions"
-  }
-  return "proceed"
-}
-
-function getRequestUrl(path: string): string {
-  return `${BASE_API_URL}${path}`
-}
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const url = getRequestUrl(path)
-  const response = await fetch(url, { cache: "no-store" })
-  if (!response.ok) {
-    let detail = response.statusText || "Unknown backend error"
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      if (payload.detail) {
-        detail = payload.detail
-      }
-    } catch {
-      // Keep status text when backend response is not JSON.
-    }
-    throw new BackendApiError(path, response.status, detail)
-  }
-
-  return response.json() as Promise<T>
-}
-
-async function fetchAllPagedItems<T extends { total: number; skip: number; limit: number; items: U[] }, U>(
-  basePath: string,
-  limit = 200,
-): Promise<U[]> {
-  let skip = 0
-  let total = 0
-  const items: U[] = []
-
-  do {
-    const separator = basePath.includes("?") ? "&" : "?"
-    const page = await fetchJson<T>(`${basePath}${separator}skip=${skip}&limit=${limit}`)
-    items.push(...page.items)
-    total = page.total
-    skip += page.limit
-  } while (skip < total)
-
-  return items
-}
-
-async function getCategoriesMap() {
-  const categories = await fetchJson<CategoryRow[]>("/api/categories/")
-  return new Map<number, string>(
-    categories.map((category) => [
-      category.id,
-      `${category.category_l1} / ${category.category_l2}`,
-    ]),
-  )
-}
-
-async function getAllRequests() {
-  return await fetchAllPagedItems<RequestListResponse, RequestRow>("/api/requests/")
-}
-
-async function getAllAwards() {
-  return await fetchAllPagedItems<HistoricalAwardListResponse, HistoricalAward>("/api/awards/")
-}
-
 type DashboardRawData = {
   requests: RequestRow[]
   awards: HistoricalAward[]
@@ -333,8 +205,48 @@ type DashboardSnapshot = {
   cachedAtMs: number
 }
 
+const DASHBOARD_CACHE_TTL_MS = 15_000
+
+const STATUS_MAP: Record<string, CaseStatus> = {
+  new: "received",
+  submitted: "parsed",
+  pending_review: "pending_review",
+  evaluated: "evaluated",
+  recommended: "recommended",
+  escalated: "escalated",
+  resolved: "resolved",
+  received: "received",
+  parsed: "parsed",
+}
+
 let dashboardSnapshot: DashboardSnapshot | null = null
 let dashboardSnapshotPromise: Promise<DashboardSnapshot> | null = null
+
+function toNumber(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null
+  const parsed = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeStatus(status: string): CaseStatus {
+  return STATUS_MAP[status] ?? "received"
+}
+
+function normalizeTags(tags: string[]): ScenarioTag[] {
+  return tags.filter(Boolean)
+}
+
+function recommendationStatusFrom(
+  hasBlocking: boolean,
+  hasEscalation: boolean,
+  status: CaseStatus,
+): RecommendationStatus {
+  if (hasBlocking) return "cannot_proceed"
+  if (hasEscalation || status === "pending_review" || status === "escalated") {
+    return "proceed_with_conditions"
+  }
+  return "proceed"
+}
 
 function mapEscalationQueueRow(row: EscalationQueueApiRow): QueueEscalationItem {
   return {
@@ -356,17 +268,102 @@ function mapEscalationQueueRow(row: EscalationQueueApiRow): QueueEscalationItem 
   }
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return (
+    error.message.includes("404") ||
+    error.message.includes("Not Found") ||
+    error.message.includes("not found")
+  )
+}
+
+function fallbackReasonFromError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return "Unable to refresh dashboard data from backend."
+}
+
+function parseAuditKind(category: string): AuditFeedEvent["kind"] {
+  if (category === "escalation") return "escalation"
+  if (category === "policy") return "policy"
+  if (category === "supplier_filter" || category === "compliance") return "supplier"
+  if (category === "validation" || category === "recommendation") return "interpretation"
+  if (category === "data_access") return "source"
+  return "audit"
+}
+
+function severityFrom(value: unknown): Severity {
+  if (value === "critical" || value === "high" || value === "medium") {
+    return value
+  }
+  return "low"
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return null
+}
+
+async function getAllRequests(): Promise<RequestRow[]> {
+  const limit = 200
+  let skip = 0
+  const items: RequestRow[] = []
+
+  while (true) {
+    const page = (await chainIqApi.requests.list({
+      skip,
+      limit,
+    })) as { items: RequestRow[]; total: number; limit: number }
+    items.push(...page.items)
+    skip += page.limit
+    if (skip >= page.total) break
+  }
+
+  return items
+}
+
+async function getAllAwards(): Promise<HistoricalAward[]> {
+  const limit = 200
+  let skip = 0
+  const items: HistoricalAward[] = []
+
+  while (true) {
+    const page = (await chainIqApi.awards.list({
+      skip,
+      limit,
+    })) as { items: HistoricalAward[]; total: number; limit: number }
+    items.push(...page.items)
+    skip += page.limit
+    if (skip >= page.total) break
+  }
+
+  return items
+}
+
+async function getCategoriesMap() {
+  const categories = (await chainIqApi.categories.list()) as CategoryRow[]
+  return new Map<number, string>(
+    categories.map((category) => [
+      category.id,
+      `${category.category_l1} / ${category.category_l2}`,
+    ]),
+  )
+}
+
 async function fetchEscalationQueueRows(): Promise<QueueEscalationItem[]> {
-  const rows = await fetchJson<EscalationQueueApiRow[]>("/api/escalations/queue")
+  const rows = (await chainIqApi.escalations.queue()) as EscalationQueueApiRow[]
   return rows.map(mapEscalationQueueRow)
 }
 
 async function fetchEscalationRowsByRequest(
   requestId: string,
 ): Promise<QueueEscalationItem[]> {
-  const rows = await fetchJson<EscalationQueueApiRow[]>(
-    `/api/escalations/by-request/${requestId}`,
-  )
+  const rows = (await chainIqApi.escalations.byRequest(
+    requestId,
+  )) as EscalationQueueApiRow[]
   return rows.map(mapEscalationQueueRow)
 }
 
@@ -386,16 +383,34 @@ async function fetchDashboardRawData(): Promise<DashboardRawData> {
   }
 }
 
-function buildDashboardMetricsFromData({
+async function buildDashboardMetricsFromData({
   requests,
   awards,
   escalationRows,
-}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">): DashboardMetric[] {
+}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">): Promise<
+  DashboardMetric[]
+> {
+  const [spendByCategory, spendBySupplier, supplierWinRates] = await Promise.all([
+    chainIqApi.analytics.spendByCategory().catch(() => []),
+    chainIqApi.analytics.spendBySupplier().catch(() => []),
+    chainIqApi.analytics.supplierWinRates().catch(() => []),
+  ])
+
   const blockingCases = new Set(
     escalationRows
       .filter((entry) => entry.blocking && entry.status !== "resolved")
       .map((entry) => entry.caseId),
   )
+
+  const totalSpend = (spendByCategory as Array<{ total_spend?: string }>)
+    .map((row) => toNumber(row.total_spend ?? null) ?? 0)
+    .reduce((acc, value) => acc + value, 0)
+
+  const topSupplier = (spendBySupplier as Array<{
+    supplier_name?: string
+    total_spend?: string
+  }>)[0]
+  const topWinRate = (supplierWinRates as Array<{ win_rate?: string }>)[0]
 
   return [
     {
@@ -425,6 +440,26 @@ function buildDashboardMetricsFromData({
       value: awards.filter((entry) => entry.awarded).length,
       helper: "Historical decisions with a selected supplier",
       tone: "success",
+    },
+    {
+      label: "Awarded Spend",
+      value: totalSpend,
+      valueLabel: `EUR ${new Intl.NumberFormat("en-GB", {
+        maximumFractionDigits: 0,
+      }).format(totalSpend)}`,
+      helper: "Aggregated winner spend across categories",
+      tone: "info",
+    },
+    {
+      label: "Top Supplier",
+      value: toNumber(topWinRate?.win_rate ?? null) ?? 0,
+      valueLabel: topSupplier?.supplier_name
+        ? `${topSupplier.supplier_name}`
+        : "No data",
+      helper: topWinRate?.win_rate
+        ? `Win rate ${(Number(topWinRate.win_rate) * 100).toFixed(1)}%`
+        : "Supplier win-rate data unavailable",
+      tone: "info",
     },
   ]
 }
@@ -465,8 +500,13 @@ function buildCaseListFromData({
       hasEscalation,
       status,
     )
-    const winner = requestAwards.find((entry) => entry.awarded && entry.award_rank === 1)
+    const winner = requestAwards.find(
+      (entry) => entry.awarded && entry.award_rank === 1,
+    )
     const fallbackSupplier = requestAwards.find((entry) => entry.award_rank === 1)
+    const lastEscalationUpdate = requestEscalations
+      .map((entry) => new Date(entry.lastUpdated).getTime())
+      .sort((a, b) => b - a)[0]
 
     return {
       requestId: request.request_id,
@@ -485,7 +525,12 @@ function buildCaseListFromData({
         : hasEscalation
           ? "advisory"
           : "none",
-      lastUpdated: request.created_at,
+      lastUpdated: new Date(
+        Math.max(
+          new Date(request.created_at).getTime(),
+          lastEscalationUpdate ?? 0,
+        ),
+      ).toISOString(),
       supplierLabel:
         winner?.supplier_name ??
         fallbackSupplier?.supplier_name ??
@@ -507,14 +552,6 @@ function isDashboardSnapshotFresh(
   return nowMs - snapshot.cachedAtMs < DASHBOARD_CACHE_TTL_MS
 }
 
-function fallbackReasonFromError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
-  }
-
-  return "Unable to refresh dashboard data from backend."
-}
-
 function toDashboardPageData(
   snapshot: DashboardSnapshot,
   mode: "fresh" | "stale",
@@ -533,8 +570,9 @@ function toDashboardPageData(
 
 async function refreshDashboardSnapshot(): Promise<DashboardSnapshot> {
   const rawData = await fetchDashboardRawData()
+  const metrics = await buildDashboardMetricsFromData(rawData)
   const snapshot: DashboardSnapshot = {
-    metrics: buildDashboardMetricsFromData(rawData),
+    metrics,
     cases: buildCaseListFromData(rawData),
     asOf: new Date().toISOString(),
     cachedAtMs: Date.now(),
@@ -546,33 +584,33 @@ async function refreshDashboardSnapshot(): Promise<DashboardSnapshot> {
 
 async function loadDashboardSnapshotWithDeduping(): Promise<DashboardSnapshot> {
   if (!dashboardSnapshotPromise) {
-    dashboardSnapshotPromise = refreshDashboardSnapshot()
-      .finally(() => {
-        dashboardSnapshotPromise = null
-      })
+    dashboardSnapshotPromise = refreshDashboardSnapshot().finally(() => {
+      dashboardSnapshotPromise = null
+    })
   }
 
   return await dashboardSnapshotPromise
 }
 
-function toAuditFeedEvent(
-  award: HistoricalAward,
+function mapAuditEvent(
+  entry: AuditListOut["items"][number],
   titleByRequestId: Map<string, string>,
 ): AuditFeedEvent {
-  const kind = award.escalation_required
-    ? "escalation"
-    : award.policy_compliant
-      ? "policy"
-      : "audit"
-
   return {
-    id: award.award_id,
-    timestamp: award.award_date,
-    kind,
-    title: `${award.supplier_name} ranked #${award.award_rank}`,
-    description: award.decision_rationale,
-    caseId: award.request_id,
-    caseTitle: titleByRequestId.get(award.request_id) ?? "Sourcing request",
+    id: `${entry.request_id}-${entry.id}`,
+    timestamp: entry.timestamp,
+    kind: parseAuditKind(entry.category),
+    title: entry.message,
+    description: entry.step_name
+      ? `${entry.category} · ${entry.step_name}`
+      : `${entry.category}`,
+    caseId: entry.request_id,
+    caseTitle: titleByRequestId.get(entry.request_id) ?? "Sourcing request",
+    level: entry.level,
+    category: entry.category,
+    stepName: entry.step_name,
+    source: entry.source,
+    details: entry.details,
   }
 }
 
@@ -610,19 +648,32 @@ export async function getCaseList(): Promise<CaseListItem[]> {
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {
   let detail: RequestDetail
   try {
-    detail = await fetchJson<RequestDetail>(`/api/requests/${caseId}`)
+    detail = (await chainIqApi.requests.get(caseId)) as RequestDetail
   } catch (error) {
-    if (error instanceof BackendApiError && error.status === 404) {
+    if (isNotFoundError(error)) {
       return null
     }
     throw error
   }
 
-  const [overview, awards, escalationRows] = await Promise.all([
-    fetchJson<RequestOverview>(`/api/analytics/request-overview/${caseId}`),
-    fetchJson<HistoricalAward[]>(`/api/awards/by-request/${caseId}`),
-    fetchEscalationRowsByRequest(caseId),
-  ])
+  const [overview, awards, escalationRows, auditLogs, auditSummary] =
+    await Promise.all([
+      chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
+      chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
+      fetchEscalationRowsByRequest(caseId),
+      chainIqApi.orgLogs.audit
+        .byRequest(caseId, { limit: 500 })
+        .catch(async () =>
+          (await chainIqApi.pipeline.audit(caseId, {
+            limit: 500,
+          })) as AuditListOut,
+        ),
+      chainIqApi.orgLogs.audit
+        .summary(caseId)
+        .catch(async () =>
+          (await chainIqApi.pipeline.auditSummary(caseId)) as AuditSummaryOut,
+        ),
+    ])
 
   const pricingBySupplier = new Map(
     overview.pricing.map((entry) => [entry.supplier_id, entry]),
@@ -636,9 +687,15 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       return {
         supplierId: supplier.supplier_id,
         supplierName: supplier.supplier_name,
+        countryHq: supplier.country_hq,
+        currency: supplier.currency,
         preferred: supplier.preferred_supplier,
         incumbent: supplier.supplier_name === detail.incumbent_supplier,
         pricingTierApplied: pricing.pricing_id,
+        region: pricing.region,
+        minQuantity: pricing.min_quantity,
+        maxQuantity: pricing.max_quantity,
+        moq: pricing.moq,
         unitPrice: toNumber(pricing.unit_price) ?? 0,
         totalPrice: toNumber(pricing.total_price) ?? 0,
         standardLeadTimeDays: pricing.standard_lead_time_days,
@@ -650,6 +707,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
         esgScore: supplier.esg_score,
         policyCompliant: true,
         coversDeliveryCountry: true,
+        dataResidencySupported: supplier.data_residency_supported,
         recommendationNote:
           "Eligible supplier after policy and region checks.",
       }
@@ -668,7 +726,41 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       hardExclusion: !entry.policy_compliant || entry.escalation_required,
     }))
 
-  const hasBlockingValidation = (detail.budget_amount ?? null) === null || (detail.quantity ?? null) === null
+  const escalationIssues = auditLogs.items
+    .filter((entry) => entry.category === "escalation")
+    .map((entry, index) => {
+      const details = asRecord(entry.details)
+      return {
+        issueId: `ESC-${index + 1}`,
+        severity: "critical" as Severity,
+        type: "escalation",
+        description: entry.message,
+        actionRequired: `Escalate to ${(details?.escalate_to as string | undefined) ?? "assigned stakeholder"}.`,
+        blocking: Boolean(details?.blocking ?? true),
+      }
+    })
+
+  const validationIssues = [
+    ...auditLogs.items
+      .filter((entry) => entry.category === "validation")
+      .map((entry, index) => {
+        const details = asRecord(entry.details)
+        const severity = details?.severity as string | undefined
+        return {
+          issueId:
+            (details?.issue_type as string | undefined)?.toUpperCase() ??
+            `VAL-${index + 1}`,
+          severity: severityFrom(severity),
+          type: entry.category,
+          description: entry.message,
+          actionRequired:
+            (details?.action_required as string | undefined) ??
+            "Review validation findings and update request input.",
+          blocking: severity === "critical" || severity === "high",
+        }
+      }),
+    ...escalationIssues,
+  ]
 
   const escalations: CaseDetail["escalations"] = escalationRows.map((entry) => ({
     escalationId: entry.escalationId,
@@ -686,6 +778,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
           : `Document advisory input from ${entry.escalateTo}.`,
   }))
 
+  const hasBlockingValidation = validationIssues.some((issue) => issue.blocking)
   const hasBlockingEscalation = escalations.some(
     (entry) => entry.blocking && entry.status !== "resolved",
   )
@@ -697,64 +790,34 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     status,
   )
 
-  const topSupplier = shortlist[0]
   const winner = awards.find((entry) => entry.awarded && entry.award_rank === 1)
+  const topSupplier = shortlist[0]
 
   const policyCards = [
-    ...overview.applicable_rules.category_rules.map((rule) => ({
+    ...overview.applicable_rules.category_rules.map((rule, index) => ({
       title: "Category Policy",
-      ruleId: rule.rule_id,
+      ruleId: String(rule.rule_id ?? `CATEGORY-${index + 1}`),
       status: "informative" as const,
-      summary: rule.rule_text,
-      detail: [{ label: "Rule Type", value: rule.rule_type }],
-    })),
-    ...overview.applicable_rules.geography_rules.map((rule) => ({
-      title: "Geography Policy",
-      ruleId: rule.rule_id,
-      status: "informative" as const,
-      summary: rule.rule_text,
+      summary: String(rule.rule_text ?? "Category rule applied."),
       detail: [
-        { label: "Country", value: rule.country ?? "Regional" },
-        { label: "Region", value: rule.region ?? "N/A" },
+        {
+          label: "Rule Type",
+          value: String(rule.rule_type ?? "category_policy"),
+        },
+      ],
+    })),
+    ...overview.applicable_rules.geography_rules.map((rule, index) => ({
+      title: "Geography Policy",
+      ruleId: String(rule.rule_id ?? `GEO-${index + 1}`),
+      status: "informative" as const,
+      summary: String(rule.rule_text ?? "Geography rule applied."),
+      detail: [
+        { label: "Country", value: String(rule.country ?? "Regional") },
+        { label: "Region", value: String(rule.region ?? "N/A") },
       ],
     })),
   ]
 
-  const timeline = [
-    {
-      id: `${caseId}-source`,
-      timestamp: detail.created_at,
-      title: "Request ingested",
-      description: "Procurement request persisted in organisational data layer.",
-      kind: "source" as const,
-    },
-    {
-      id: `${caseId}-policy`,
-      timestamp: detail.created_at,
-      title: "Policy and geography rules applied",
-      description: `${policyCards.length} relevant rules evaluated for this context.`,
-      kind: "policy" as const,
-    },
-    {
-      id: `${caseId}-suppliers`,
-      timestamp: detail.created_at,
-      title: "Supplier shortlist generated",
-      description: `${shortlist.length} compliant suppliers with pricing matched.`,
-      kind: "supplier" as const,
-    },
-    ...escalations.map((entry) => ({
-      id: `${entry.escalationId}-timeline`,
-      timestamp:
-        escalationRows.find((row) => row.escalationId === entry.escalationId)
-          ?.createdAt ?? detail.created_at,
-      title: `Escalation opened (${entry.rule})`,
-      description: entry.trigger,
-      kind: "escalation" as const,
-    })),
-  ]
-
-  const approvalTier = overview.approval_tier?.threshold_id ?? "Threshold unavailable"
-  const quotesRequired = overview.approval_tier?.min_supplier_quotes ?? 0
   const deliveryCountries =
     detail.delivery_countries.map((entry) => entry.country_code) || []
 
@@ -791,44 +854,28 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     },
   ]
 
-  const validationIssues = [
-    ...(detail.budget_amount === null
-      ? [
-          {
-            issueId: "VAL-BUDGET-MISSING",
-            severity: "high" as const,
-            type: "missing_info",
-            description: "No explicit budget amount provided in request data.",
-            actionRequired: "Requester must provide budget to proceed autonomously.",
-            blocking: true,
-          },
-        ]
-      : []),
-    ...(detail.quantity === null
-      ? [
-          {
-            issueId: "VAL-QUANTITY-MISSING",
-            severity: "high" as const,
-            type: "missing_info",
-            description: "Quantity is missing, so pricing tier cannot be validated robustly.",
-            actionRequired: "Requester must confirm quantity for final supplier ranking.",
-            blocking: true,
-          },
-        ]
-      : []),
-    ...(shortlist.length === 0
-      ? [
-          {
-            issueId: "VAL-NO-COMPLIANT-SUPPLIER",
-            severity: "critical" as const,
-            type: "restricted",
-            description: "No compliant supplier with valid pricing could be shortlisted.",
-            actionRequired: "Escalate to sourcing manager for exception handling.",
-            blocking: true,
-          },
-        ]
-      : []),
-  ]
+  const timeline = auditLogs.items
+    .map((entry) => ({
+      id: `${entry.request_id}-${entry.id}`,
+      timestamp: entry.timestamp,
+      title: entry.message,
+      description: entry.step_name
+        ? `${entry.category} · ${entry.step_name}`
+        : entry.category,
+      kind: parseAuditKind(entry.category),
+      level: entry.level,
+      category: entry.category,
+      stepName: entry.step_name,
+      source: entry.source,
+      details: asRecord(entry.details),
+    }))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+  const scenarioTags = detail.scenario_tags
+    .map((entry) =>
+      typeof entry === "string" ? entry : (entry as { tag?: string }).tag ?? "",
+    )
+    .filter(Boolean)
 
   return {
     id: caseId,
@@ -841,6 +888,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
           : "Cannot proceed",
     rawRequest: {
       requestId: detail.request_id,
+      categoryId: detail.category_id,
       createdAt: detail.created_at,
       requestChannel:
         detail.request_channel === "teams" || detail.request_channel === "email"
@@ -850,10 +898,11 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       businessUnit: detail.business_unit,
       country: detail.country,
       site: detail.site,
+      requesterId: detail.requester_id,
       requesterRole: detail.requester_role ?? "Not specified",
       submittedForId: detail.submitted_for_id,
       status,
-      scenarioTags: normalizeTags(detail.scenario_tags.map((entry) => entry.tag)),
+      scenarioTags: normalizeTags(scenarioTags),
       categoryL1: detail.category_l1 ?? "Unknown",
       categoryL2: detail.category_l2 ?? "Unknown",
       title: detail.title,
@@ -887,8 +936,13 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       totalPrice: winner ? toNumber(winner.total_value) : topSupplier?.totalPrice ?? null,
       minimumBudgetRequired: topSupplier?.totalPrice ?? null,
       currency: detail.currency,
-      approvalTier,
-      quotesRequired,
+      approvalTier: overview.approval_tier?.threshold_id ?? "Threshold unavailable",
+      minAmount: toNumber(overview.approval_tier?.min_amount),
+      maxAmount: toNumber(overview.approval_tier?.max_amount ?? null),
+      managers: overview.approval_tier?.managers ?? [],
+      deviationApprovers: overview.approval_tier?.deviation_approvers ?? [],
+      policyNote: overview.approval_tier?.policy_note ?? null,
+      quotesRequired: overview.approval_tier?.min_supplier_quotes ?? 0,
       complianceStatus:
         recommendationStatus === "cannot_proceed"
           ? "Blocked"
@@ -903,31 +957,38 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     excludedSuppliers,
     escalations,
     auditTrail: {
-      policiesChecked: policyCards.map((entry) => entry.ruleId),
-      supplierIdsEvaluated: overview.compliant_suppliers.map((entry) => entry.supplier_id),
+      policiesChecked:
+        auditSummary.distinct_policies.length > 0
+          ? auditSummary.distinct_policies
+          : policyCards.map((entry) => entry.ruleId),
+      supplierIdsEvaluated:
+        auditSummary.distinct_suppliers.length > 0
+          ? auditSummary.distinct_suppliers
+          : overview.compliant_suppliers.map((entry) => entry.supplier_id),
       pricingTiersApplied:
         overview.pricing.map((entry) => entry.pricing_id).join(", ") || "None",
       dataSourcesUsed: [
         "requests",
         "analytics.request-overview",
         "awards",
-        "categories",
+        "escalations",
+        "logs.audit",
       ],
       historicalAwardsConsulted: awards.length > 0,
       historicalAwardNote:
         awards.length > 0
           ? `${awards.length} historical award rows referenced.`
           : "No historical awards for this request.",
-      reasoningTrace: [
-        "Parse and validate request fields (budget, quantity, delivery scope).",
-        "Apply category and geography policy constraints.",
-        "Build compliant supplier shortlist and price by tier.",
-        "Determine approval tier and escalation requirements.",
-      ],
-      timeline: timeline.sort(
-        (a, b) =>
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-      ),
+      reasoningTrace:
+        auditLogs.items.length > 0
+          ? auditLogs.items.slice(0, 8).map((entry) => entry.message)
+          : [
+              "Parse and validate request fields (budget, quantity, delivery scope).",
+              "Apply category and geography policy constraints.",
+              "Build compliant supplier shortlist and price by tier.",
+              "Determine approval tier and escalation requirements.",
+            ],
+      timeline,
     },
     historicalPrecedent:
       awards.length > 0
@@ -951,41 +1012,49 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
             ],
           }
         : undefined,
-    lastUpdated: new Date().toISOString(),
+    lastUpdated:
+      auditSummary.last_event ??
+      timeline.at(-1)?.timestamp ??
+      new Date().toISOString(),
   }
 }
 
 export async function getEscalationQueue(): Promise<QueueEscalationItem[]> {
   const escalationRows = await fetchEscalationQueueRows()
   return escalationRows.sort(
-    (a, b) =>
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   )
 }
 
 export async function getAuditFeed(): Promise<AuditFeedEvent[]> {
-  const [requests, awards] = await Promise.all([getAllRequests(), getAllAwards()])
+  const [requests, audit] = await Promise.all([
+    getAllRequests(),
+    chainIqApi.orgLogs.audit.list({ limit: 500 }),
+  ])
   const titleByRequestId = new Map(
     requests.map((entry) => [entry.request_id, entry.title]),
   )
 
-  return awards
-    .map((award) => toAuditFeedEvent(award, titleByRequestId))
-    .sort(
-      (a, b) =>
-        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    )
+  const typedAudit = audit as AuditListOut
+
+  return typedAudit.items
+    .map((entry) => mapAuditEvent(entry, titleByRequestId))
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 }
 
 export async function getAuditOverview(): Promise<{
   summary: Array<{ label: string; value: string; helper: string }>
 }> {
-  const [requests, awards, escalationRows] = await Promise.all([
+  const [requests, escalationRows, audit] = await Promise.all([
     getAllRequests(),
-    getAllAwards(),
     fetchEscalationQueueRows(),
+    chainIqApi.orgLogs.audit.list({ limit: 500 }).catch(() => ({ items: [], total: 0 })),
   ])
-  const policyConflicts = awards.filter((entry) => !entry.policy_compliant)
+
+  const typedAudit = audit as AuditListOut
+  const policyConflicts = typedAudit.items.filter(
+    (entry) => entry.category === "policy" && entry.level === "error",
+  )
 
   return {
     summary: [
@@ -995,19 +1064,19 @@ export async function getAuditOverview(): Promise<{
         helper: "Requests represented in the backend dataset",
       },
       {
-        label: "Award Decisions",
-        value: awards.length.toString(),
-        helper: "Historical supplier-evaluation rows available for audit",
+        label: "Audit Entries",
+        value: typedAudit.total.toString(),
+        helper: "Structured pipeline events available for review",
       },
       {
         label: "Escalation Events",
         value: escalationRows.length.toString(),
-        helper: "Deterministic escalation objects generated by current policy logic",
+        helper: "Deterministic escalation objects generated by policy logic",
       },
       {
         label: "Policy Conflicts",
         value: policyConflicts.length.toString(),
-        helper: "Audit entries with non-compliant outcomes",
+        helper: "Audit entries flagged as policy-level errors",
       },
     ],
   }

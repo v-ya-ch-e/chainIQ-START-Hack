@@ -54,6 +54,11 @@ export function AuditPage({ summary, feed }: AuditPageProps) {
           <CardTitle>Recent activity</CardTitle>
         </CardHeader>
         <CardContent>
+          {feed.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No audit entries available.
+            </p>
+          ) : null}
           <div className="relative space-y-0">
             {feed.map((event, index) => (
               <div key={event.id} className="relative flex gap-4 pb-6 last:pb-0">
@@ -76,6 +81,21 @@ export function AuditPage({ summary, feed }: AuditPageProps) {
                       label={event.kind}
                       tone={kindTone[event.kind] ?? "neutral"}
                     />
+                    {event.level ? (
+                      <StatusBadge
+                        label={event.level}
+                        tone={
+                          event.level === "error"
+                            ? "destructive"
+                            : event.level === "warn"
+                              ? "warning"
+                              : "neutral"
+                        }
+                      />
+                    ) : null}
+                    {event.category ? (
+                      <StatusBadge label={event.category} tone="info" />
+                    ) : null}
                     <span className="text-xs tabular-nums text-muted-foreground">
                       {formatDateTime(event.timestamp)}
                     </span>
