@@ -86,22 +86,6 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 | `app/routers/rules.py` | Read endpoints for category, geography, and escalation rules |
 | `app/routers/escalations.py` | Deterministic escalation queue endpoints + stored escalation updates |
 | `app/routers/rule_versions.py` | Rule definitions CRUD, rule versions CRUD, evaluations, hard-rule-checks, policy-checks, change logs |
-#CONFLICT:
-FRONTEND:
-| `app/routers/parse.py` | Parse text/file into structured purchase requests |
-| `app/routers/analytics.py` | Domain-specific analytics: compliant suppliers, pricing lookup, approval tiers, restriction/preferred checks, applicable rules, request overview, spend aggregations, supplier win rates |
-| `app/routers/logs.py` | Pipeline logging + audit logging endpoints |
-| `app/models/logs.py` | SQLAlchemy models: `PipelineRun`, `PipelineLogEntry`, `AuditLog` |
-| `app/models/evaluations.py` | SQLAlchemy models: `RuleDefinition`, `RuleVersion`, `RuleChangeLog`, `EvaluationRun`, `HardRuleCheck`, `PolicyCheck`, `SupplierEvaluation`, `Escalation`, audit trail tables |
-| `app/schemas/logs.py` | Pydantic schemas for pipeline logging and audit logging |
-| `app/schemas/rule_versions.py` | Pydantic schemas for rule definitions, versions, evaluations, checks, change logs |
-| `app/services/escalations.py` | Escalation evaluation engine (ER rules + AT conflict detection) |
-| `app/services/transaction_workflows.py` | ACID transaction workflows: escalation changes, evaluation triggers, rule updates, policy check overrides |
-| `LOGGING_API.md` | Full documentation for the pipeline logging and audit logging APIs |
-| `Dockerfile` | Python 3.14-slim container, installs deps, runs uvicorn |
-| `requirements.txt` | fastapi, uvicorn, sqlalchemy, pymysql, pydantic-settings, python-dotenv, cryptography |
-=======
-DEV:
 | `app/routers/parse.py` | Parse text/file into structured purchase requests (uses Anthropic) |
 | `app/routers/analytics.py` | Domain-specific analytics: compliant suppliers, pricing lookup, approval tiers, restriction/preferred checks, applicable rules, request overview, spend aggregations, supplier win rates |
 | `app/routers/logs.py` | Pipeline logging + audit logging endpoints |
@@ -115,7 +99,6 @@ DEV:
 | `LOGGING_API.md` | Full documentation for pipeline and audit logging APIs |
 | `Dockerfile` | Python 3.14-slim container, multi-stage (dev + runtime) |
 | `requirements.txt` | fastapi, uvicorn, sqlalchemy, pymysql, pydantic-settings, python-dotenv, cryptography, anthropic, pytest, httpx |
-#ENDOFCONFLICT
 | `.env.example` | Template for DB connection env vars |
 | `tests/conftest.py` | Shared pytest fixtures (TestClient, DB session) |
 
@@ -129,34 +112,13 @@ DEV:
 - `GET/POST /api/suppliers/`, `GET/PUT/DELETE /api/suppliers/{id}`, `GET /api/suppliers/{id}/categories|regions|pricing`
 - `GET/POST /api/requests/`, `GET/PUT/DELETE /api/requests/{id}` (PUT supports `delivery_countries` and `scenario_tags` replacement)
 - `GET /api/awards/`, `GET /api/awards/{id}`, `GET /api/awards/by-request/{id}`
-#CONFLICT:
-FRONTEND:
-- `GET /api/policies/approval-thresholds`, `GET /api/policies/preferred-suppliers`, `GET /api/policies/restricted-suppliers`
-- `GET /api/rules/category`, `GET /api/rules/geography`, `GET /api/rules/escalation`
-=======
-DEV:
 - `GET /api/policies/approval-thresholds[/{id}]`, `GET /api/policies/preferred-suppliers[/{id}]`, `GET /api/policies/restricted-suppliers[/{id}]`
 - `GET /api/rules/category[/{id}]`, `GET /api/rules/geography[/{id}]`, `GET /api/rules/escalation[/{id}]`
-#ENDOFCONFLICT
 - `GET /api/escalations/queue`, `GET /api/escalations/by-request/{id}`, `PATCH /api/escalations/{id}`
 
 ### Rule Definitions & Versions (`/api/rule-versions/`)
 - `GET/POST /api/rule-versions/definitions`, `GET/PATCH/DELETE /api/rule-versions/definitions/{rule_id}`
 - `GET/POST /api/rule-versions/versions`, `GET/PATCH /api/rule-versions/versions/{version_id}`, `GET /api/rule-versions/versions/active/{rule_id}`
-
-#CONFLICT:
-FRONTEND:
-- `GET /api/rule-versions/logs/rule-change`, `GET /api/rule-versions/logs/rule-change/{log_id}`
-- Evaluations: `GET/POST /api/rule-versions/evaluations/{run_id}`, `POST /api/rule-versions/evaluations/full`, `POST /api/rule-versions/evaluations/from-pipeline`, `POST /api/rule-versions/evaluations/reeval/{request_id}`, `GET /api/rule-versions/evaluations/by-request/{request_id}`
-- Hard rule checks: `GET /api/rule-versions/hard-rule-checks`, `GET /api/rule-versions/hard-rule-checks/{check_id}`, `POST /api/rule-versions/evaluations/{run_id}/hard-rule-checks`
-- Policy checks: `GET /api/rule-versions/policy-checks`, `GET/PATCH /api/rule-versions/policy-checks/{check_id}`, `POST /api/rule-versions/evaluations/{run_id}/policy-checks`
-- Audit logs: `GET /api/rule-versions/logs/evaluation-run/{run_id}`, `GET /api/rule-versions/logs/escalation/{escalation_id}`, `GET /api/rule-versions/logs/policy-change/{escalation_id}`, `GET /api/rule-versions/logs/policy-check`
-
-### Parse
-- `POST /api/parse/text` — parse raw procurement text into structured request
-- `POST /api/parse/file` — parse uploaded file (PDF/image) into structured request
-======
-DEV:
 - `GET /api/rule-versions/logs/rule-change[/{log_id}]`
 - Evaluations: `GET /api/rule-versions/evaluations/{run_id}`, `POST /api/rule-versions/evaluations`, `POST /api/rule-versions/evaluations/full`, `POST /api/rule-versions/evaluations/from-pipeline`, `POST /api/rule-versions/evaluations/reeval/{request_id}`, `GET /api/rule-versions/evaluations/by-request/{request_id}`
 - Hard rule checks: `GET /api/rule-versions/hard-rule-checks[/{check_id}]`, `POST /api/rule-versions/evaluations/{run_id}/hard-rule-checks`
@@ -174,7 +136,6 @@ DEV:
 - `GET /api/pipeline-results/by-request/{request_id}` — all results for a request
 - `GET /api/pipeline-results/latest/{request_id}` — most recent result for a request
 - `DELETE /api/pipeline-results/{run_id}` — delete a result
-#ENDOFCONFLICT
 
 ### Pipeline Logging
 - `POST /api/logs/runs`, `PATCH /api/logs/runs/{run_id}`, `GET /api/logs/runs[/{run_id}]`, `GET /api/logs/by-request/{request_id}`

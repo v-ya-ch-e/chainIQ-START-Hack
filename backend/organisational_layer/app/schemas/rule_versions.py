@@ -199,8 +199,6 @@ class EvaluationDetailOut(BaseModel):
     started_at: datetime
     finished_at: datetime | None
     supplier_breakdowns: list[SupplierRuleBreakdownOut] = []
-    supplier_shortlist: list[dict[str, Any]] = []
-    suppliers_excluded: list[dict[str, Any]] = []
 
 
 # --- Create schemas for persisting evaluations ---

@@ -344,16 +344,10 @@ def get_evaluation_detail(
     for i, sb in enumerate(supplier_breakdowns):
         sup = db.query(Supplier).filter(Supplier.supplier_id == sb.supplier_id).first()
         if sup:
-            d = sb.model_dump()
-            d["supplier_name"] = sup.supplier_name
-            supplier_breakdowns[i] = SupplierRuleBreakdownOut(**d)
-
-    snapshot = run.output_snapshot or {}
-    supplier_shortlist = snapshot.get("supplier_shortlist", [])
-    suppliers_excluded = [
-        e if isinstance(e, dict) else {"supplier_id": "", "supplier_name": "", "reason": ""}
-        for e in snapshot.get("suppliers_excluded", [])
-    ]
+            supplier_breakdowns[i] = SupplierRuleBreakdownOut(
+                **sb.model_dump(),
+                supplier_name=sup.supplier_name,
+            )
 
     return EvaluationDetailOut(
         run_id=run.run_id,
@@ -362,8 +356,6 @@ def get_evaluation_detail(
         started_at=run.started_at,
         finished_at=run.finished_at,
         supplier_breakdowns=supplier_breakdowns,
-        supplier_shortlist=supplier_shortlist,
-        suppliers_excluded=suppliers_excluded,
     )
 
 
