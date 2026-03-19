@@ -458,6 +458,45 @@ async function fetchEscalationRowsByRequest(
   return rows.map(mapEscalationQueueRow)
 }
 
+function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
+  return {
+    runId: raw.run_id,
+    requestId: raw.request_id,
+    status: raw.status,
+    startedAt: raw.started_at,
+    finishedAt: raw.finished_at,
+    supplierBreakdowns: raw.supplier_breakdowns.map((entry) => ({
+      supplierId: entry.supplier_id,
+      supplierName: entry.supplier_name,
+      excluded: entry.excluded,
+      exclusionRuleId: entry.exclusion_rule_id,
+      exclusionReason: entry.exclusion_reason,
+      hardRuleChecks: entry.hard_rule_checks.map((check) => ({
+        checkId: check.check_id,
+        ruleId: check.rule_id,
+        versionId: check.version_id,
+        supplierId: check.supplier_id,
+        result: (check.skipped ? "skipped" : check.result) ?? "skipped",
+        checkedAt: check.checked_at,
+        skipped: check.skipped ?? null,
+        skipReason: check.skip_reason ?? null,
+        evidence: check.evidence ?? null,
+      })),
+      policyChecks: entry.policy_checks.map((check) => ({
+        checkId: check.check_id,
+        ruleId: check.rule_id,
+        versionId: check.version_id,
+        supplierId: check.supplier_id,
+        result: check.result,
+        checkedAt: check.checked_at,
+        skipped: check.skipped ?? null,
+        skipReason: check.skip_reason ?? null,
+        evidence: check.evidence ?? null,
+      })),
+    })),
+  }
+}
+
 async function fetchDashboardRawData(): Promise<DashboardRawData> {
   const [requests, awards, categoriesMap, escalationRows] = await Promise.all([
     getAllRequests(),
@@ -1102,6 +1141,8 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     )
     .filter(Boolean)
 
+  const evaluationRuns = evaluationRunsRaw.map(mapEvaluationRunDetail)
+
   return {
     id: caseId,
     title: detail.title,
@@ -1180,6 +1221,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     policyCards,
     supplierShortlist: shortlist,
     excludedSuppliers,
+    evaluationRuns,
     escalations,
     auditTrail: {
       policiesChecked:

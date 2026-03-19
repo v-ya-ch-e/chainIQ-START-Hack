@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     DB_USER: str = "admin"
     DB_PASSWORD: str = ""
     DB_NAME: str = "chainiq-data"
+    LOGICAL_LAYER_URL: str | None = None  # e.g. http://localhost:8080 for reeval trigger
 
     @property
     def database_url(self) -> str:

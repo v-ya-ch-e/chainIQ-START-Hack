@@ -216,3 +216,30 @@ class OrganisationalClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    # ── Evaluation persistence ────────────────────────────────────────────
+
+    async def persist_evaluation_run(
+        self,
+        request_id: str,
+        run_id: str,
+        output_snapshot: dict,
+        triggered_by: str = "agent",
+        agent_version: str = "1.0",
+        trigger_reason: str | None = "manual_recheck",
+    ) -> dict:
+        """POST /api/rule-versions/evaluations/from-pipeline. Persists evaluation with checks."""
+        resp = await self._client.post(
+            f"{self._base}/api/rule-versions/evaluations/from-pipeline",
+            json={
+                "request_id": request_id,
+                "run_id": run_id,
+                "triggered_by": triggered_by,
+                "agent_version": agent_version,
+                "trigger_reason": trigger_reason,
+                "output_snapshot": output_snapshot,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
