@@ -217,7 +217,7 @@ export function CaseWorkspace({
       {/* Page header */}
       <div className="animate-fade-in-up flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 width-full">
             <StatusBadge
               label={data.rawRequest.status.replaceAll("_", " ")}
               tone="neutral"
@@ -260,14 +260,14 @@ export function CaseWorkspace({
           />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-nowrap items-center gap-2">
           {showReturnToLatest ? (
             <Link
               href={`/cases/${data.id}`}
               className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
             >
               <ArrowLeft className="size-3.5" />
-              Return to latest decision
+              Return to latest evaluation
             </Link>
           ) : null}
           <Button
@@ -655,7 +655,20 @@ export function CaseWorkspace({
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="overflow-x-auto rounded-lg border">
-                    <Table>
+                    <Table className="min-w-[720px] table-fixed">
+                      <colgroup>
+                        <col className="w-[4%]" />
+                        <col className="w-[18%]" />
+                        <col className="w-[11%]" />
+                        <col className="w-[12%]" />
+                        <col className="w-[10%]" />
+                        <col className="w-[7%]" />
+                        <col className="w-[7%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[13%]" />
+                      </colgroup>
                       <TableHeader>
                         <TableRow>
                           <TableHead className="px-3">Rank</TableHead>
@@ -675,6 +688,12 @@ export function CaseWorkspace({
                         {visibleSuppliers.map(({ supplier, breakdown }) => {
                           const { hardPassed, hardTotal, policyPassed, policyTotal } =
                             getRuleCounts(breakdown)
+                          const flagCount = Math.min(
+                            (supplier.preferred ? 1 : 0) +
+                              (supplier.incumbent ? 1 : 0) +
+                              1,
+                            2,
+                          )
                           const rulesLabel =
                             data.evaluationRuns.length > 0
                               ? `${hardPassed}/${hardTotal}`
@@ -710,14 +729,9 @@ export function CaseWorkspace({
                               }}
                             >
                               <TableCell className="px-3">
-                                <div className="space-y-1">
-                                  <p className="text-base font-semibold tabular-nums">
-                                    #{supplier.rank}
-                                  </p>
-                                  {supplier.rank === 1 ? (
-                                    <StatusBadge label="Top option" tone="success" />
-                                  ) : null}
-                                </div>
+                                <p className="text-base font-semibold tabular-nums">
+                                  #{supplier.rank}
+                                </p>
                               </TableCell>
                               <TableCell className="align-top">
                                 <div className="space-y-0.5">
@@ -772,8 +786,18 @@ export function CaseWorkspace({
                               <TableCell className={scoreTone(supplier.esgScore)}>
                                 {supplier.esgScore}
                               </TableCell>
-                              <TableCell className="align-top py-2">
-                                <div className="flex max-w-[100px] flex-col items-start gap-0.5">
+                              <TableCell
+                                className={cn(
+                                  "py-2",
+                                  flagCount === 1 ? "align-middle" : "align-top",
+                                )}
+                              >
+                                <div
+                                  className={cn(
+                                    "flex max-w-[100px] flex-col gap-0.5",
+                                    flagCount === 1 ? "items-center" : "items-start",
+                                  )}
+                                >
                                   {[
                                     supplier.preferred && (
                                       <StatusBadge
@@ -826,6 +850,15 @@ export function CaseWorkspace({
                     >
                       Extend — show {compliantFirst.length - visibleCount} more
                     </Button>
+                  ) : suppliersExpanded && compliantFirst.length > 3 ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSuppliersExpanded(false)}
+                      className="w-full"
+                    >
+                      Minimize
+                    </Button>
                   ) : null}
                 </CardContent>
               </Card>
@@ -867,7 +900,12 @@ export function CaseWorkspace({
                     <CardTitle>Excluded suppliers</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    {effectiveExcluded.map((supplier) => (
+                    {effectiveExcluded.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        No supplier was excluded.
+                      </p>
+                    ) : (
+                    effectiveExcluded.map((supplier) => (
                       <div
                         key={supplier.supplierId}
                         className="rounded-lg border bg-background/80 p-3.5"
@@ -895,7 +933,8 @@ export function CaseWorkspace({
                           {supplier.reason}
                         </p>
                       </div>
-                    ))}
+                    ))
+                    )}
                   </CardContent>
                 </Card>
 
@@ -941,7 +980,7 @@ export function CaseWorkspace({
                           label={`Runs: ${data.evaluationRuns.length}`}
                           tone="neutral"
                         />
-                        <div className="flex flex-wrap gap-2">
+                        {/* <div className="flex flex-wrap gap-2">
                           {data.evaluationRuns.slice(0, 4).map((run) => (
                             <Button
                               key={run.runId}
@@ -956,7 +995,7 @@ export function CaseWorkspace({
                           {data.evaluationRuns.length > 4 ? (
                             <StatusBadge label="More in API" tone="info" />
                           ) : null}
-                        </div>
+                        </div> */}
                       </div>
 
                       {selectedRun ? (
@@ -1162,7 +1201,7 @@ export function CaseWorkspace({
                       {isRunEvent ? (
                         <Link
                           href={`/cases/eval/${event.runId}`}
-                          className="block rounded-lg border border-transparent p-4 transition-colors hover:border-primary/30 hover:bg-muted/50"
+                          className="block"
                         >
                           {content}
                         </Link>
