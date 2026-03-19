@@ -188,10 +188,10 @@ function buildCreatePayload(form: RequestFormState): Record<string, unknown> {
   }
 }
 
-function defaultFormState(suggestedId: string): RequestFormState {
+function defaultFormState(suggestedId: string, createdAt = ""): RequestFormState {
   return {
     request_id: suggestedId,
-    created_at: nowIsoWithoutMs(),
+    created_at: createdAt,
     request_channel: "portal",
     request_language: "en",
     business_unit: "",
@@ -265,6 +265,17 @@ export function IntakePage() {
   const [fallbackDetail, setFallbackDetail] = useState<string | null>(null)
 
   useEffect(() => {
+    setForm((prev) =>
+      prev.created_at
+        ? prev
+        : {
+            ...prev,
+            created_at: nowIsoWithoutMs(),
+          },
+    )
+  }, [])
+
+  useEffect(() => {
     let active = true
 
     async function loadBootstrapData() {
@@ -334,7 +345,13 @@ export function IntakePage() {
     try {
       const payload = await client.parse.parseText({ text: inputText.trim() })
       setParsed(payload)
-      setForm(mapParsedRequestToForm(payload.request, categories, suggestedId))
+      setForm((prev) => {
+        const mapped = mapParsedRequestToForm(payload.request, categories, suggestedId)
+        return {
+          ...mapped,
+          created_at: mapped.created_at || prev.created_at || nowIsoWithoutMs(),
+        }
+      })
     } catch (parseError) {
       setError(errorMessage(parseError))
     } finally {
@@ -355,7 +372,13 @@ export function IntakePage() {
     try {
       const payload = await client.parse.parseFile(uploadFile)
       setParsed(payload)
-      setForm(mapParsedRequestToForm(payload.request, categories, suggestedId))
+      setForm((prev) => {
+        const mapped = mapParsedRequestToForm(payload.request, categories, suggestedId)
+        return {
+          ...mapped,
+          created_at: mapped.created_at || prev.created_at || nowIsoWithoutMs(),
+        }
+      })
     } catch (parseError) {
       setError(errorMessage(parseError))
     } finally {
@@ -544,7 +567,7 @@ export function IntakePage() {
             </Button>
             <Button
               variant="outline"
-              onClick={() => setForm(defaultFormState(suggestedId))}
+              onClick={() => setForm(defaultFormState(suggestedId, nowIsoWithoutMs()))}
               disabled={isSubmitting}
             >
               Reset Form

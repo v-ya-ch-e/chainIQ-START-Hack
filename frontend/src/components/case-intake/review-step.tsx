@@ -67,9 +67,9 @@ export function ReviewStep({
   return (
     <div className="space-y-4">
       {error ? <Alert variant="destructive">{error}</Alert> : null}
-      {warnings.map((warning) => (
+      {warnings.map((warning, index) => (
         <Alert
-          key={warning.code}
+          key={`${warning.code}-${index}`}
           variant={warning.severity === "critical" || warning.severity === "high" ? "destructive" : "warning"}
         >
           {warning.message}

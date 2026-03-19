@@ -410,6 +410,7 @@ export interface ExtractionResult {
   missingRequired: Array<keyof CaseDraftPayload>
   warnings: ExtractionWarning[]
   extractionStrength: "strong" | "partial" | "low"
+  fallbackUsed: boolean
 }
 
 export type CreateCasePayload = CaseDraftPayload

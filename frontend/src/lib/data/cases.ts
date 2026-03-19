@@ -1643,6 +1643,7 @@ export async function extractCaseInput(
           : computeMissingRequiredFields(mergedDraft),
       warnings: response.warnings,
       extractionStrength: response.extraction_strength,
+      fallbackUsed: false,
     }
   } catch {
     return {
@@ -1664,6 +1665,7 @@ export async function extractCaseInput(
         },
       ],
       extractionStrength: "low",
+      fallbackUsed: true,
     }
   }
 }
