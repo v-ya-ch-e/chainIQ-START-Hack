@@ -71,8 +71,17 @@ def _compute_days_until_required(created_at: str | None, required_by_date: str |
         return None
 
 
+def _normalize_delivery_countries(raw: list) -> list[str]:
+    """Accept both ["DE"] and [{"country_code": "DE"}] formats."""
+    if not raw:
+        return []
+    if isinstance(raw[0], dict):
+        return [c.get("country_code", "") for c in raw]
+    return raw
+
+
 def _build_interpretation(data: dict) -> dict:
-    delivery_countries = data.get("delivery_countries") or []
+    delivery_countries = _normalize_delivery_countries(data.get("delivery_countries") or [])
     delivery_country = delivery_countries[0] if delivery_countries else data.get("country")
 
     return {

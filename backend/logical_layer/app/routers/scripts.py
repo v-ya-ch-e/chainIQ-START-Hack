@@ -37,11 +37,11 @@ router = APIRouter(prefix="/api", tags=["Scripts"])
 async def filter_suppliers_endpoint(body: FilterSuppliersRequest) -> FilterSuppliersResponse:
     try:
         result = await asyncio.to_thread(filter_suppliers, body.model_dump())
+        return FilterSuppliersResponse(**result)
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Organisational layer error: {exc}")
-    return FilterSuppliersResponse(**result)
 
 
 @router.post(
@@ -58,11 +58,11 @@ async def filter_suppliers_endpoint(body: FilterSuppliersRequest) -> FilterSuppl
 async def rank_suppliers_endpoint(body: RankSuppliersRequest) -> RankSuppliersResponse:
     try:
         result = await asyncio.to_thread(rank_suppliers, body.request, body.suppliers)
+        return RankSuppliersResponse(**result)
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Organisational layer error: {exc}")
-    return RankSuppliersResponse(**result)
 
 
 @router.post(
@@ -79,8 +79,8 @@ async def rank_suppliers_endpoint(body: RankSuppliersRequest) -> RankSuppliersRe
 async def validate_request_endpoint(body: ValidateRequestRequest) -> ValidateRequestResponse:
     try:
         result = await asyncio.to_thread(validate_request, body.model_dump())
+        return ValidateRequestResponse(**result)
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Validation error: {exc}")
-    return ValidateRequestResponse(**result)

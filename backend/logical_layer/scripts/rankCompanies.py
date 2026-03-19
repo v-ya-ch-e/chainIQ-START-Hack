@@ -34,6 +34,8 @@ def api_get(path, params=None):
 
 def resolve_region(request_data):
     delivery_countries = request_data.get("delivery_countries", [])
+    if delivery_countries and isinstance(delivery_countries[0], dict):
+        delivery_countries = [c.get("country_code", "") for c in delivery_countries]
     country = delivery_countries[0] if delivery_countries else request_data.get("country", "")
     return COUNTRY_TO_REGION.get(country, "EU")
 
