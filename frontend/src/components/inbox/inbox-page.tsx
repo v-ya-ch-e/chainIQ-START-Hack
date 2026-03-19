@@ -40,9 +40,17 @@ const statusOptions = [
   { value: "escalated", label: "Escalated" },
 ]
 
+const escalationOptions = [
+  { value: "all", label: "All escalations" },
+  { value: "none", label: "No escalation" },
+  { value: "advisory", label: "Advisory" },
+  { value: "blocking", label: "Blocking" },
+]
+
 export function InboxPage({ cases }: InboxPageProps) {
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
+  const [escalationFilter, setEscalationFilter] = useState("all")
   const [attentionOnly, setAttentionOnly] = useState(false)
 
   const filteredCases = useMemo(() => {
@@ -59,11 +67,18 @@ export function InboxPage({ cases }: InboxPageProps) {
       const matchesStatus =
         statusFilter === "all" ? true : entry.status === statusFilter
 
+      const matchesEscalation =
+        escalationFilter === "all"
+          ? true
+          : entry.escalationStatus === escalationFilter
+
       const matchesAttention = attentionOnly ? entry.needsAttention : true
 
-      return matchesQuery && matchesStatus && matchesAttention
+      return (
+        matchesQuery && matchesStatus && matchesEscalation && matchesAttention
+      )
     })
-  }, [attentionOnly, cases, query, statusFilter])
+  }, [attentionOnly, cases, escalationFilter, query, statusFilter])
 
   return (
     <div className="space-y-6">
@@ -104,6 +119,21 @@ export function InboxPage({ cases }: InboxPageProps) {
                   ))}
                 </SelectContent>
               </Select>
+              <Select
+                value={escalationFilter}
+                onValueChange={(value) => setEscalationFilter(value ?? "all")}
+              >
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {escalationOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={attentionOnly}
@@ -126,10 +156,14 @@ export function InboxPage({ cases }: InboxPageProps) {
                     Request
                   </TableHead>
                   <TableHead className="min-w-[120px]">Category</TableHead>
+                  <TableHead className="min-w-[120px]">Business Unit</TableHead>
                   <TableHead className="min-w-[80px]">Country</TableHead>
                   <TableHead className="min-w-[100px]">Budget</TableHead>
                   <TableHead className="min-w-[100px]">Required By</TableHead>
+                  <TableHead className="min-w-[120px]">Last Updated</TableHead>
                   <TableHead className="min-w-[100px]">Status</TableHead>
+                  <TableHead className="min-w-[120px]">Escalation</TableHead>
+                  <TableHead className="min-w-[160px]">Scenario</TableHead>
                   <TableHead className="min-w-[120px]">
                     Recommendation
                   </TableHead>
@@ -172,6 +206,9 @@ export function InboxPage({ cases }: InboxPageProps) {
                         {entry.category}
                       </TableCell>
                       <TableCell className="text-sm">
+                        {entry.businessUnit}
+                      </TableCell>
+                      <TableCell className="text-sm">
                         {entry.countryLabel}
                       </TableCell>
                       <TableCell className="text-sm font-medium tabular-nums">
@@ -180,11 +217,29 @@ export function InboxPage({ cases }: InboxPageProps) {
                       <TableCell className="text-sm tabular-nums">
                         {formatDate(entry.requiredByDate)}
                       </TableCell>
+                      <TableCell className="text-sm tabular-nums">
+                        {formatDate(entry.lastUpdated)}
+                      </TableCell>
                       <TableCell>
                         <StatusBadge
                           label={entry.status.replaceAll("_", " ")}
                           tone={entry.needsAttention ? "warning" : "neutral"}
                         />
+                      </TableCell>
+                      <TableCell>
+                        <StatusBadge
+                          label={entry.escalationStatus}
+                          tone={
+                            entry.escalationStatus === "blocking"
+                              ? "destructive"
+                              : entry.escalationStatus === "advisory"
+                                ? "warning"
+                                : "neutral"
+                          }
+                        />
+                      </TableCell>
+                      <TableCell className="max-w-[200px] text-xs text-muted-foreground">
+                        {entry.scenarioTags.slice(0, 3).join(", ") || "standard"}
                       </TableCell>
                       <TableCell>
                         <StatusBadge

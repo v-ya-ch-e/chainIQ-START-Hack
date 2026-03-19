@@ -2,6 +2,7 @@
 
 import { Download, Play, ShieldCheck, TimerReset } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useRouter } from "next/navigation"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
@@ -25,6 +26,7 @@ import {
 } from "@/lib/data/formatters"
 import type { CaseDetail } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
+import { chainIqApi } from "@/lib/api/client"
 
 interface CaseWorkspaceProps {
   data: CaseDetail
@@ -34,8 +36,12 @@ interface CaseWorkspaceProps {
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
 
 export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspaceProps) {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [actionMessage, setActionMessage] = useState<string | null>(null)
+  const [rerunPending, setRerunPending] = useState(false)
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const evaluatedSuppliers =
@@ -79,6 +85,43 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
     }
   }, [activeTab, data.id])
 
+  async function handleRerun() {
+    try {
+      setRerunPending(true)
+      setActionError(null)
+      const result = await chainIqApi.pipeline.process({
+        request_id: data.id,
+      })
+      setActionMessage(
+        `Pipeline re-run started for ${data.id}${result && typeof result === "object" && "run_id" in result ? ` (run ${(result as { run_id?: string }).run_id ?? "created"})` : ""}.`,
+      )
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "Failed to trigger re-run.",
+      )
+    } finally {
+      setRerunPending(false)
+    }
+  }
+
+  function handleExport() {
+    const payload = JSON.stringify(data, null, 2)
+    const blob = new Blob([payload], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${data.id}-audit-export.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setActionMessage(`Exported ${data.id} payload as JSON.`)
+  }
+
+  function handleEscalate() {
+    router.push(`/escalations?caseId=${data.id}`)
+  }
+
   return (
     <div className="space-y-6">
       {/* Page header */}
@@ -112,24 +155,45 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRerun}
+            disabled={rerunPending}
+          >
             <Play className="size-3.5" />
-            Re-run
+            {rerunPending ? "Re-running..." : "Re-run"}
           </Button>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="size-3.5" />
             Export
           </Button>
-          <Button variant="outline" size="sm">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setActiveTab("audit")}
+          >
             <ShieldCheck className="size-3.5" />
             Audit
           </Button>
-          <Button size="sm">
+          <Button size="sm" onClick={handleEscalate}>
             <TimerReset className="size-3.5" />
             Escalate
           </Button>
         </div>
       </div>
+
+      {actionError ? (
+        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
+          <CardContent className="py-3 text-sm">{actionError}</CardContent>
+        </Card>
+      ) : null}
+
+      {actionMessage ? (
+        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
+          <CardContent className="py-3 text-sm">{actionMessage}</CardContent>
+        </Card>
+      ) : null}
 
       {/* Primary summary strip */}
       <section className="animate-fade-in-up grid gap-4 xl:grid-cols-[1.2fr_0.8fr]" style={{ animationDelay: "80ms" }}>
@@ -228,8 +292,28 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
               value={`${data.recommendation.quotesRequired}`}
             />
             <FieldCell
+              label="Managers"
+              value={
+                data.recommendation.managers?.length
+                  ? data.recommendation.managers.join(", ")
+                  : "Not specified"
+              }
+            />
+            <FieldCell
+              label="Deviation Approvers"
+              value={
+                data.recommendation.deviationApprovers?.length
+                  ? data.recommendation.deviationApprovers.join(", ")
+                  : "Not specified"
+              }
+            />
+            <FieldCell
               label="Country Scope"
               value={data.rawRequest.deliveryCountries.join(", ")}
+            />
+            <FieldCell
+              label="Scenario Tags"
+              value={data.rawRequest.scenarioTags.join(", ") || "standard"}
             />
             <FieldCell
               label="Budget"
@@ -237,6 +321,11 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                 data.rawRequest.budgetAmount,
                 data.rawRequest.currency,
               )}
+              variant="default"
+            />
+            <FieldCell
+              label="Tier Range"
+              value={`${formatCurrency(data.recommendation.minAmount ?? null, data.recommendation.currency)} - ${formatCurrency(data.recommendation.maxAmount ?? null, data.recommendation.currency)}`}
               variant="default"
             />
             <FieldCell
@@ -299,12 +388,20 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                     value={data.rawRequest.requestChannel}
                   />
                   <FieldCell
+                    label="Request ID"
+                    value={data.rawRequest.requestId}
+                  />
+                  <FieldCell
                     label="Request language"
                     value={data.rawRequest.requestLanguage}
                   />
                   <FieldCell
                     label="Business unit"
                     value={data.rawRequest.businessUnit}
+                  />
+                  <FieldCell
+                    label="Requester ID"
+                    value={data.rawRequest.requesterId ?? "Not specified"}
                   />
                   <FieldCell label="Site" value={data.rawRequest.site} />
                   <FieldCell
@@ -324,6 +421,10 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                   <FieldCell
                     label="Incumbent supplier"
                     value={data.rawRequest.incumbentSupplier ?? "Not stated"}
+                  />
+                  <FieldCell
+                    label="Contract type"
+                    value={data.rawRequest.contractTypeRequested}
                   />
                 </div>
               </CardContent>
@@ -528,13 +629,24 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                                 <p className="text-xs uppercase tracking-wider text-muted-foreground">
                                   {supplier.supplierId}
                                 </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {supplier.countryHq ?? "N/A"} ·{" "}
+                                  {supplier.currency ?? data.recommendation.currency}
+                                </p>
                                 <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
                                   {supplier.recommendationNote}
                                 </p>
                               </div>
                             </TableCell>
                             <TableCell className="text-sm">
-                              {supplier.pricingTierApplied}
+                              <p>{supplier.pricingTierApplied}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {supplier.region ?? "N/A"} · qty{" "}
+                                {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                MOQ {supplier.moq ?? "N/A"}
+                              </p>
                             </TableCell>
                             <TableCell className="font-medium tabular-nums">
                               <div>
@@ -544,9 +656,23 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                                 )}
                               </div>
                               <div className="text-xs text-muted-foreground">
+                                Unit{" "}
+                                {formatCurrency(
+                                  supplier.unitPrice,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
                                 Exp.{" "}
                                 {formatCurrency(
                                   supplier.expeditedTotal,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                Exp unit{" "}
+                                {formatCurrency(
+                                  supplier.expeditedUnitPrice,
                                   data.recommendation.currency,
                                 )}
                               </div>
@@ -583,6 +709,12 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                                 ) : (
                                   <StatusBadge label="Conflict" tone="destructive" />
                                 )}
+                                {supplier.dataResidencySupported ? (
+                                  <StatusBadge label="Data residency" tone="info" />
+                                ) : null}
+                                {supplier.coversDeliveryCountry ? (
+                                  <StatusBadge label="Covers country" tone="neutral" />
+                                ) : null}
                               </div>
                             </TableCell>
                           </TableRow>
@@ -839,6 +971,24 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                     <p className="text-xs font-medium text-muted-foreground">
                       {formatDateTime(event.timestamp)}
                     </p>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <StatusBadge label={event.kind} tone="info" />
+                      {event.level ? (
+                        <StatusBadge
+                          label={event.level}
+                          tone={
+                            event.level === "error"
+                              ? "destructive"
+                              : event.level === "warn"
+                                ? "warning"
+                                : "neutral"
+                          }
+                        />
+                      ) : null}
+                      {event.stepName ? (
+                        <StatusBadge label={event.stepName} tone="neutral" />
+                      ) : null}
+                    </div>
                     <h3 className="mt-1 text-sm font-semibold">
                       {event.title}
                     </h3>

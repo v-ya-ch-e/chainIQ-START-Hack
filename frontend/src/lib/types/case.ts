@@ -22,6 +22,7 @@ export type ScenarioTag =
   | "multilingual"
   | "capacity"
   | "multi_country"
+  | string
 
 export type Severity = "critical" | "high" | "medium" | "low"
 
@@ -29,12 +30,14 @@ export type RequestChannel = "portal" | "teams" | "email"
 
 export interface RawRequest {
   requestId: string
+  categoryId?: number
   createdAt: string
   requestChannel: RequestChannel
   requestLanguage: string
   businessUnit: string
   country: string
   site: string
+  requesterId?: string
   requesterRole: string
   submittedForId: string
   status: CaseStatus
@@ -85,9 +88,15 @@ export interface SupplierRow {
   rank: number
   supplierId: string
   supplierName: string
+  countryHq?: string
+  currency?: string
   preferred: boolean
   incumbent: boolean
   pricingTierApplied: string
+  region?: string
+  minQuantity?: number
+  maxQuantity?: number
+  moq?: number
   unitPrice: number
   totalPrice: number
   standardLeadTimeDays: number
@@ -99,6 +108,7 @@ export interface SupplierRow {
   esgScore: number
   policyCompliant: boolean
   coversDeliveryCountry: boolean
+  dataResidencySupported?: boolean
   recommendationNote: string
 }
 
@@ -130,6 +140,11 @@ export interface RecommendationSummary {
   minimumBudgetRequired?: number | null
   currency: string
   approvalTier: string
+  minAmount?: number | null
+  maxAmount?: number | null
+  managers?: string[]
+  deviationApprovers?: string[]
+  policyNote?: string | null
   quotesRequired: number
   complianceStatus: string
 }
@@ -140,6 +155,11 @@ export interface AuditTimelineEvent {
   title: string
   description: string
   kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit"
+  level?: string
+  category?: string
+  stepName?: string | null
+  source?: string
+  details?: Record<string, unknown> | null
 }
 
 export interface AuditFeedEvent extends AuditTimelineEvent {
@@ -220,6 +240,7 @@ export interface QueueEscalationItem {
 export interface DashboardMetric {
   label: string
   value: number
+  valueLabel?: string
   tone?: "default" | "success" | "warning" | "destructive" | "info"
   helper: string
 }

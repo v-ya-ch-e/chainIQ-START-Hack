@@ -6,8 +6,10 @@ services:
       target: dev
       args:
         BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
+        LOGICAL_BACKEND_INTERNAL_URL: ${LOGICAL_BACKEND_INTERNAL_URL}
     environment:
       BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL}
+      LOGICAL_BACKEND_INTERNAL_URL: ${LOGICAL_BACKEND_INTERNAL_URL}
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       NODE_ENV: development
     command: npm run dev -- --hostname 0.0.0.0 --port 3000

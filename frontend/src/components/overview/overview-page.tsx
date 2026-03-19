@@ -56,7 +56,7 @@ export function OverviewPage({ metrics, cases, dataState }: OverviewPageProps) {
           <MetricCard
             key={metric.label}
             label={metric.label}
-            value={metric.value}
+            value={metric.valueLabel ?? metric.value}
             helper={metric.helper}
             tone={metric.tone}
           />
@@ -89,6 +89,10 @@ export function OverviewPage({ metrics, cases, dataState }: OverviewPageProps) {
                     </div>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
                       {entry.title}
+                    </p>
+                    <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                      {entry.businessUnit} · {entry.countryLabel} · updated{" "}
+                      {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>
                   <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -130,6 +134,10 @@ export function OverviewPage({ metrics, cases, dataState }: OverviewPageProps) {
                     </div>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
                       {entry.title}
+                    </p>
+                    <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                      {entry.scenarioTags.slice(0, 3).join(", ") || "standard"} ·
+                      {" "}updated {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>
                   <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
