@@ -29,6 +29,12 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   formatCurrency,
   formatDate,
   formatDateTime,
@@ -152,6 +158,179 @@ function getRuleCounts(breakdown: SupplierRuleBreakdown | null): {
     policyPassed: policy.filter((c) => c.result === "passed").length,
     policyTotal: policy.length,
   }
+}
+
+function hasNoFailedChecks(checks: SupplierRuleCheck[] | undefined): boolean {
+  if (!checks || checks.length === 0) return false
+  return !checks.some((c) => c.result === "failed")
+}
+
+function toneForCheckResult(result: SupplierRuleCheck["result"]) {
+  if (result === "passed") return "success"
+  if (result === "warned") return "warning"
+  if (result === "skipped") return "neutral"
+  return "destructive"
+}
+
+function getEvalConfigCondition(
+  snap: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!snap || typeof snap !== "object") return null
+  const ec = snap.eval_config
+  if (!ec || typeof ec !== "object" || ec === null) return null
+  const condition = (ec as { condition?: unknown }).condition
+  return condition !== undefined ? condition : null
+}
+
+/** Prefer `eval_config.condition` from dynamic (then static) snapshot, per rule engine shape. */
+function formatConditionHoverContent(check: SupplierRuleCheck): string {
+  const dyn = check.dynamicSnapshot
+  const ver = check.versionSnapshot
+  const cond = getEvalConfigCondition(dyn) ?? getEvalConfigCondition(ver)
+  if (cond != null) {
+    return JSON.stringify(cond, null, 2)
+  }
+  if (dyn && typeof dyn === "object") {
+    const ec = (dyn as { eval_config?: unknown }).eval_config
+    if (ec != null) return JSON.stringify(ec, null, 2)
+    return JSON.stringify(dyn, null, 2)
+  }
+  if (ver && typeof ver === "object") {
+    return JSON.stringify(ver, null, 2)
+  }
+  return "No snapshot available."
+}
+
+function coerceDynamicRuleVersionFromRow(c: Record<string, unknown>): number | null {
+  const v = c.dynamic_rule_version ?? c.dynamicRuleVersion
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return Number(v)
+  }
+  return null
+}
+
+let ruleDefinitionNamesCache: Promise<Record<string, string>> | null = null
+
+function loadRuleDefinitionNames(): Promise<Record<string, string>> {
+  if (!ruleDefinitionNamesCache) {
+    ruleDefinitionNamesCache = fetch("/api/rule-versions/definitions")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((defs: Array<{ rule_id?: string; rule_name?: string }>) => {
+        const m: Record<string, string> = {}
+        for (const d of Array.isArray(defs) ? defs : []) {
+          const id = d?.rule_id
+          const name = d?.rule_name
+          if (id && typeof name === "string" && name.trim()) {
+            m[id] = name.trim()
+          }
+        }
+        return m
+      })
+      .catch(() => ({}))
+  }
+  return ruleDefinitionNamesCache
+}
+
+function ruleLabelForCheck(
+  check: SupplierRuleCheck,
+  nameByRuleId: Record<string, string>,
+): string {
+  const fromCheck = check.ruleName?.trim()
+  if (fromCheck) return fromCheck
+  const fromDefs = nameByRuleId[check.ruleId]?.trim()
+  if (fromDefs) return fromDefs
+  return check.ruleId
+}
+
+function pickRuleNameFromApiRow(c: Record<string, unknown>): string | null {
+  const a = c.rule_name
+  const b = c.ruleName
+  if (typeof a === "string" && a.trim()) return a.trim()
+  if (typeof b === "string" && b.trim()) return b.trim()
+  return null
+}
+
+function EnrichedRuleChecksTable({ checks }: { checks: SupplierRuleCheck[] }) {
+  const [nameByRuleId, setNameByRuleId] = useState<Record<string, string>>({})
+  const checkKey = checks.map((c) => c.checkId).join("|")
+
+  useEffect(() => {
+    if (checks.length === 0) return
+    let cancelled = false
+    void loadRuleDefinitionNames().then((m) => {
+      if (!cancelled) setNameByRuleId(m)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [checkKey])
+
+  if (checks.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">No checks in this category.</p>
+    )
+  }
+  return (
+    <TooltipProvider delay={200}>
+      <div className="overflow-x-auto rounded-lg border p-4">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="px-3 py-3">Rule</TableHead>
+              <TableHead className="py-3">Result</TableHead>
+              <TableHead className="py-3">Checked</TableHead>
+              <TableHead className="py-3 text-right font-mono text-xs">Ver.</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {checks.map((check) => (
+              <TableRow key={check.checkId}>
+                <TableCell className="max-w-[min(280px,40vw)] px-3 py-3">
+                  <Tooltip>
+                    <TooltipTrigger className="block w-full cursor-help text-left font-medium">
+                      {ruleLabelForCheck(check, nameByRuleId)}
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="right"
+                      className="max-h-96 max-w-lg overflow-auto border bg-popover p-3 text-left text-popover-foreground shadow-md"
+                    >
+                      <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {getEvalConfigCondition(check.dynamicSnapshot) != null ||
+                        getEvalConfigCondition(check.versionSnapshot) != null
+                          ? "Condition (eval_config.condition)"
+                          : check.dynamicSnapshot
+                            ? "Rule config (snapshot)"
+                            : ""}
+                      </p>
+                      <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-snug">
+                        {formatConditionHoverContent(check)}
+                      </pre>
+                    </TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="py-3">
+                  <StatusBadge
+                    label={check.result}
+                    tone={toneForCheckResult(check.result)}
+                  />
+                </TableCell>
+                <TableCell className="py-3 text-xs text-muted-foreground">
+                  {formatDateTime(check.checkedAt)}
+                </TableCell>
+                <TableCell className="py-3 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                  {check.dynamicRuleVersion != null &&
+                  check.dynamicRuleVersion !== undefined
+                    ? check.dynamicRuleVersion
+                    : "—"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </TooltipProvider>
+  )
 }
 
 export function CaseWorkspace({
@@ -1144,10 +1323,26 @@ export function CaseWorkspace({
                                   {supplier.expeditedLeadTimeDays}d exp
                                 </div>
                               </TableCell>
-                              <TableCell className="tabular-nums text-sm">
+                              <TableCell
+                                className={cn(
+                                  "tabular-nums text-sm",
+                                  data.evaluationRuns.length > 0 &&
+                                    breakdown &&
+                                    hasNoFailedChecks(breakdown.hardRuleChecks) &&
+                                    "font-semibold text-emerald-600",
+                                )}
+                              >
                                 {rulesLabel}
                               </TableCell>
-                              <TableCell className="tabular-nums text-sm">
+                              <TableCell
+                                className={cn(
+                                  "tabular-nums text-sm",
+                                  data.evaluationRuns.length > 0 &&
+                                    breakdown &&
+                                    hasNoFailedChecks(breakdown.policyChecks) &&
+                                    "font-semibold text-emerald-600",
+                                )}
+                              >
                                 {policyLabel}
                               </TableCell>
                               <TableCell
@@ -1783,13 +1978,6 @@ export function CaseWorkspace({
   )
 }
 
-function toneForCheckResult(result: SupplierRuleCheck["result"]) {
-  if (result === "passed") return "success"
-  if (result === "warned") return "warning"
-  if (result === "skipped") return "neutral"
-  return "destructive"
-}
-
 function SupplierDetailSheetContent({
   requestId,
   supplier,
@@ -1835,21 +2023,41 @@ function SupplierDetailSheetContent({
           excluded: false,
           exclusionRuleId: null,
           exclusionReason: null,
-          hardRuleChecks: h.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; skipped?: boolean; checked_at: string }) => ({
-            checkId: c.check_id,
-            ruleId: c.rule_id,
-            versionId: c.version_id,
-            supplierId: c.supplier_id,
-            result: c.skipped ? "skipped" : toRuleCheckResult(c.result),
-            checkedAt: c.checked_at,
+          hardRuleChecks: h.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: c.skipped ? "skipped" : toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              typeof c.version_snapshot === "object" && c.version_snapshot !== null
+                ? (c.version_snapshot as Record<string, unknown>)
+                : null,
+            dynamicSnapshot:
+              typeof c.dynamic_snapshot === "object" && c.dynamic_snapshot !== null
+                ? (c.dynamic_snapshot as Record<string, unknown>)
+                : null,
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
-          policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
-            checkId: c.check_id,
-            ruleId: c.rule_id,
-            versionId: c.version_id,
-            supplierId: c.supplier_id,
-            result: toRuleCheckResult(c.result),
-            checkedAt: c.checked_at,
+          policyChecks: p.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              typeof c.version_snapshot === "object" && c.version_snapshot !== null
+                ? (c.version_snapshot as Record<string, unknown>)
+                : null,
+            dynamicSnapshot:
+              typeof c.dynamic_snapshot === "object" && c.dynamic_snapshot !== null
+                ? (c.dynamic_snapshot as Record<string, unknown>)
+                : null,
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
         })
       })
@@ -1889,33 +2097,28 @@ function SupplierDetailSheetContent({
     )
   }
 
-  const hardPassed = effectiveBreakdown.hardRuleChecks
-    .filter((c) => c.result === "passed")
-    .map((c) => c.ruleId)
-  const policyPassed = effectiveBreakdown.policyChecks
-    .filter((c) => c.result === "passed")
-    .map((c) => c.ruleId)
+  const hardFailed = effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
+  const policyFailed = effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
+  const policyWarned = effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
+  const hardOk =
+    effectiveBreakdown.hardRuleChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.hardRuleChecks)
+  const policyOk =
+    effectiveBreakdown.policyChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.policyChecks)
 
   return (
     <div className="space-y-6 pt-4 pb-6">
       <div className="flex flex-wrap items-center gap-1.5">
         <StatusBadge label={supplier.supplierId} tone="neutral" />
         <StatusBadge
-          label={`Hard: ${hardPassed.length}/${effectiveBreakdown.hardRuleChecks.length}`}
-          tone={
-            effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
-              ? "destructive"
-              : "neutral"
-          }
+          label={`Hard: ${effectiveBreakdown.hardRuleChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.hardRuleChecks.length}`}
+          tone={hardFailed ? "destructive" : hardOk ? "success" : "neutral"}
         />
         <StatusBadge
-          label={`Policy: ${policyPassed.length}/${effectiveBreakdown.policyChecks.length}`}
+          label={`Policy: ${effectiveBreakdown.policyChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.policyChecks.length}`}
           tone={
-            effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
-              ? "destructive"
-              : effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
-                ? "warning"
-                : "neutral"
+            policyFailed ? "destructive" : policyOk ? "success" : policyWarned ? "warning" : "neutral"
           }
         />
       </div>
@@ -1925,84 +2128,14 @@ function SupplierDetailSheetContent({
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Hard checks
           </p>
-          {hardPassed.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Rules passed: {hardPassed.join(", ")}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto rounded-lg border p-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 py-3">Rule</TableHead>
-                  <TableHead className="py-3">Version</TableHead>
-                  <TableHead className="py-3">Result</TableHead>
-                  <TableHead className="py-3">Checked</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {effectiveBreakdown.hardRuleChecks.map((check) => (
-                  <TableRow key={check.checkId}>
-                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {check.versionId.slice(0, 8)}
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <StatusBadge
-                        label={check.result}
-                        tone={toneForCheckResult(check.result)}
-                      />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {formatDateTime(check.checkedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.hardRuleChecks} />
         </div>
 
         <div className="space-y-2">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Policy checks
           </p>
-          {policyPassed.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Rules passed: {policyPassed.join(", ")}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto rounded-lg border p-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 py-3">Rule</TableHead>
-                  <TableHead className="py-3">Version</TableHead>
-                  <TableHead className="py-3">Result</TableHead>
-                  <TableHead className="py-3">Checked</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {effectiveBreakdown.policyChecks.map((check) => (
-                  <TableRow key={check.checkId}>
-                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {check.versionId.slice(0, 8)}
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <StatusBadge
-                        label={check.result}
-                        tone={toneForCheckResult(check.result)}
-                      />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {formatDateTime(check.checkedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.policyChecks} />
         </div>
       </div>
 
@@ -2065,11 +2198,25 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
                 <div className="flex flex-wrap gap-2">
                   <StatusBadge
                     label={`Hard: ${passedHard}✓ ${failedHard}✕ ${skippedHard}⎯`}
-                    tone={failedHard > 0 ? "destructive" : "neutral"}
+                    tone={
+                      failedHard > 0
+                        ? "destructive"
+                        : supplier.hardRuleChecks.length > 0 && failedHard === 0
+                          ? "success"
+                          : "neutral"
+                    }
                   />
                   <StatusBadge
                     label={`Policy: ${passedPolicy}✓ ${warnedPolicy}⚠ ${failedPolicy}✕`}
-                    tone={failedPolicy > 0 ? "destructive" : warnedPolicy > 0 ? "warning" : "neutral"}
+                    tone={
+                      failedPolicy > 0
+                        ? "destructive"
+                        : supplier.policyChecks.length > 0 && failedPolicy === 0
+                          ? "success"
+                          : warnedPolicy > 0
+                            ? "warning"
+                            : "neutral"
+                    }
                   />
                 </div>
               </div>
@@ -2081,68 +2228,14 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
                   <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                     Hard checks
                   </p>
-                  <div className="overflow-x-auto rounded-lg border p-4">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3 py-3">Rule</TableHead>
-                          <TableHead className="py-3">Version</TableHead>
-                          <TableHead className="py-3">Result</TableHead>
-                          <TableHead className="py-3">Checked</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {supplier.hardRuleChecks.map((check) => (
-                          <TableRow key={check.checkId}>
-                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {check.versionId.slice(0, 8)}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
-                            </TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {formatDateTime(check.checkedAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <EnrichedRuleChecksTable checks={supplier.hardRuleChecks} />
                 </div>
 
                 <div className="space-y-2">
                   <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                     Policy checks
                   </p>
-                  <div className="overflow-x-auto rounded-lg border p-4">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3 py-3">Rule</TableHead>
-                          <TableHead className="py-3">Version</TableHead>
-                          <TableHead className="py-3">Result</TableHead>
-                          <TableHead className="py-3">Checked</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {supplier.policyChecks.map((check) => (
-                          <TableRow key={check.checkId}>
-                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {check.versionId.slice(0, 8)}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
-                            </TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {formatDateTime(check.checkedAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <EnrichedRuleChecksTable checks={supplier.policyChecks} />
                 </div>
               </div>
             </div>

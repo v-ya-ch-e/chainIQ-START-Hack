@@ -74,6 +74,10 @@ class RuleCheckOut(BaseModel):
     skipped: bool | None = None
     skip_reason: str | None = None
     checked_at: datetime
+    rule_name: str | None = None
+    version_snapshot: dict[str, Any] | None = None
+    dynamic_snapshot: dict[str, Any] | None = None
+    dynamic_rule_version: int | None = None
 
     model_config = {"from_attributes": True}
 

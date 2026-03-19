@@ -218,6 +218,13 @@ type EvaluationCheckApi = {
   skipped?: boolean | null
   skip_reason?: string | null
   evidence?: Record<string, unknown> | null
+  rule_name?: string | null
+  /** Some proxies/clients may emit camelCase */
+  ruleName?: string | null
+  version_snapshot?: Record<string, unknown> | null
+  dynamic_snapshot?: Record<string, unknown> | null
+  dynamic_rule_version?: number | null
+  dynamicRuleVersion?: number | null
 }
 
 type SupplierBreakdownApi = {
@@ -608,6 +615,24 @@ function mapSupplierShortlistEntry(
   }
 }
 
+function pickRuleNameFromEvaluationCheck(check: EvaluationCheckApi): string | null {
+  const a = check.rule_name
+  const b = check.ruleName
+  if (typeof a === "string" && a.trim()) return a.trim()
+  if (typeof b === "string" && b.trim()) return b.trim()
+  return null
+}
+
+function coerceDynamicRuleVersion(check: EvaluationCheckApi): number | null {
+  const raw = check as Record<string, unknown>
+  const v = raw.dynamic_rule_version ?? raw.dynamicRuleVersion
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return Number(v)
+  }
+  return null
+}
+
 function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
   const normalizeCheckResult = (value: string | null | undefined): RuleCheckResult => {
     if (
@@ -653,6 +678,10 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
+        ruleName: pickRuleNameFromEvaluationCheck(check),
+        versionSnapshot: check.version_snapshot ?? null,
+        dynamicSnapshot: check.dynamic_snapshot ?? null,
+        dynamicRuleVersion: coerceDynamicRuleVersion(check),
       })),
       policyChecks: entry.policy_checks.map((check) => ({
         checkId: check.check_id,
@@ -664,6 +693,10 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
+        ruleName: pickRuleNameFromEvaluationCheck(check),
+        versionSnapshot: check.version_snapshot ?? null,
+        dynamicSnapshot: check.dynamic_snapshot ?? null,
+        dynamicRuleVersion: coerceDynamicRuleVersion(check),
       })),
     })),
     supplierShortlist: supplierShortlist.length > 0 ? supplierShortlist : undefined,
