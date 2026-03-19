@@ -10,6 +10,7 @@ from app.routers import (
     parse,
     policies,
     requests,
+    rule_versions,
     rules,
     suppliers,
 )
@@ -35,6 +36,7 @@ app.include_router(awards.router)
 app.include_router(escalations.router)
 app.include_router(policies.router)
 app.include_router(rules.router)
+app.include_router(rule_versions.router)
 app.include_router(analytics.router)
 app.include_router(logs.router)
 app.include_router(parse.router)
