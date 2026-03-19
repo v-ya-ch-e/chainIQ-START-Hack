@@ -31,9 +31,28 @@ class RuleVersionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RuleDefinitionCreate(BaseModel):
+    rule_id: str
+    rule_type: str
+    rule_name: str
+    is_skippable: bool = False
+    source: str = "custom"
+
+
+class RuleDefinitionUpdate(BaseModel):
+    rule_name: str | None = None
+    is_skippable: bool | None = None
+    active: bool | None = None
+
+
 class RuleVersionCreate(BaseModel):
     rule_id: str
     rule_config: dict[str, Any]
+    changed_by: str | None = None
+    change_reason: str | None = None
+
+
+class RuleVersionUpdate(BaseModel):
     changed_by: str | None = None
     change_reason: str | None = None
 
