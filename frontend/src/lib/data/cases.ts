@@ -236,6 +236,7 @@ type EvaluationDetailApi = {
   status: string
   started_at: string
   finished_at: string | null
+  favorite?: boolean
   supplier_shortlist?: Array<Record<string, unknown>>
   suppliers_excluded?: Array<{ supplier_id: string; supplier_name: string; reason: string }>
   supplier_breakdowns: SupplierBreakdownApi[]
@@ -637,6 +638,7 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
     status: raw.status,
     startedAt: raw.started_at,
     finishedAt: raw.finished_at,
+    favorite: raw.favorite ?? false,
     supplierBreakdowns: raw.supplier_breakdowns.map((entry) => ({
       supplierId: entry.supplier_id,
       supplierName: entry.supplier_name,
@@ -1269,7 +1271,51 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       ],
     })),
   ]
+  
+  const timeline = [
+    {
+      id: `${caseId}-source`,
+      timestamp: detail.created_at,
+      title: "Request ingested",
+      description: "Procurement request persisted in organisational data layer.",
+      kind: "source" as const,
+    },
+    {
+      id: `${caseId}-policy`,
+      timestamp: detail.created_at,
+      title: "Policy and geography rules applied",
+      description: `${policyCards.length} relevant rules evaluated for this context.`,
+      kind: "policy" as const,
+    },
+    {
+      id: `${caseId}-suppliers`,
+      timestamp: detail.created_at,
+      title: "Supplier shortlist generated",
+      description: `${shortlist.length} compliant suppliers with pricing matched.`,
+      kind: "supplier" as const,
+    },
+    ...escalations.map((entry) => ({
+      id: `${entry.escalationId}-timeline`,
+      timestamp:
+        escalationRows.find((row) => row.escalationId === entry.escalationId)
+          ?.createdAt ?? detail.created_at,
+      title: `Escalation opened (${entry.rule})`,
+      description: entry.trigger,
+      kind: "escalation" as const,
+    })),
+    ...evaluationRunsRaw.map((run, idx) => ({
+      id: run.run_id,
+      timestamp: run.started_at,
+      title: `Evaluation run ${idx + 1}`,
+      description: `Decision snapshot from ${new Date(run.started_at).toLocaleString()}. Click to view full details.`,
+      kind: "evaluation_run" as const,
+      runId: run.run_id,
+      favorite: run.favorite ?? false,
+    })),
+  ]
 
+  const approvalTier = overview.approval_tier?.threshold_id ?? "Threshold unavailable"
+  const quotesRequired = overview.approval_tier?.min_supplier_quotes ?? 0
   const deliveryCountries =
     detail.delivery_countries.map((entry) => entry.country_code) || []
 

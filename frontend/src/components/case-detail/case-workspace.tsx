@@ -1,6 +1,6 @@
 "use client"
 
-import { Activity, ArrowLeft, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { Activity, ArrowLeft, Download, Loader2, Play, RefreshCw, ShieldCheck, ShoppingCart, TimerReset } from "lucide-react"
 import Link from "next/link"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
@@ -136,6 +136,70 @@ function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
   const failedHard = breakdown.hardRuleChecks.some((check) => check.result === "failed")
   const failedPolicy = breakdown.policyChecks.some((check) => check.result === "failed")
   return !failedHard && !failedPolicy
+}
+
+function FavoriteToggle({
+  runId,
+  favorite,
+  onToggled,
+  variant = "icon",
+}: {
+  runId: string
+  favorite: boolean
+  onToggled: () => void
+  variant?: "icon" | "button"
+}) {
+  const [loading, setLoading] = useState(false)
+  const handleClick = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (loading) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/rule-versions/evaluations/${runId}/favorite`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favorite: !favorite }),
+      })
+      if (res.ok) onToggled()
+    } finally {
+      setLoading(false)
+    }
+  }
+  const title = favorite ? "Remove from favorites" : "Add to favorites"
+  const icon = (
+    <ShoppingCart
+      className={cn(variant === "button" ? "size-3.5" : "size-4", favorite && "fill-primary text-primary")}
+    />
+  )
+  if (variant === "button") {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={handleClick}
+        disabled={loading}
+        title={title}
+        aria-label={title}
+      >
+        {icon}
+        Buying Decision
+      </Button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={loading}
+      className="shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+      title={title}
+      aria-label={title}
+    >
+      {icon}
+    </button>
+  )
 }
 
 export function CaseWorkspace({
@@ -529,6 +593,14 @@ export function CaseWorkspace({
             <ShieldCheck className="size-3.5" />
             Audit
           </Button>
+          {selectedRun ? (
+            <FavoriteToggle
+              runId={selectedRun.runId}
+              favorite={selectedRun.favorite}
+              onToggled={() => router.refresh()}
+              variant="button"
+            />
+          ) : null}
           <Button size="sm" onClick={handleEscalate}>
             <TimerReset className="size-3.5" />
             Escalate
@@ -623,7 +695,7 @@ export function CaseWorkspace({
                 tone="info"
               />
               <StatusBadge
-                label={`${data.recommendation.quotesRequired} quotes`}
+                label={`${data.recommendation.quotesRequired} Quotes`}
                 tone="neutral"
               />
             </div>
@@ -1460,15 +1532,46 @@ export function CaseWorkspace({
                 <CardTitle>Decision timeline</CardTitle>
               </CardHeader>
               <CardContent className="space-y-5">
-                {data.auditTrail.timeline.map((event, index) => (
-                  <div key={event.id} className="relative pl-7">
-                    {index !== data.auditTrail.timeline.length - 1 ? (
-                      <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
-                    ) : null}
-                    <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {formatDateTime(event.timestamp)}
-                    </p>
+                {data.auditTrail.timeline.map((event, index) => {
+                  const isRunEvent = event.kind === "evaluation_run" && event.runId
+                  const isFavorite = Boolean(isRunEvent && event.favorite)
+                  const content = (
+                    <>
+                      {index !== data.auditTrail.timeline.length - 1 ? (
+                        <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
+                      ) : null}
+                      <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {formatDateTime(event.timestamp)}
+                      </p>
+                      <h3 className="mt-1 text-sm font-semibold">
+                        {event.title}
+                      </h3>
+                      <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
+                        {event.description}
+                      </p>
+                    </>
+                  )
+                  return (
+                    <div key={event.id} className="relative pl-7">
+                      {isRunEvent ? (
+                        <div className="flex items-start justify-between gap-2">
+                          <Link
+                            href={`/cases/eval/${event.runId}`}
+                            className="min-w-0 flex-1 block"
+                          >
+                            {content}
+                          </Link>
+                          <FavoriteToggle
+                            runId={event.runId!}
+                            favorite={isFavorite}
+                            onToggled={() => router.refresh()}
+                          />
+                        </div>
+                      ) : (
+                        content
+                      )}
+
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
                       <StatusBadge label={event.kind} tone="info" />
                       {event.level ? (
