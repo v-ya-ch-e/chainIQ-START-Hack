@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from app.clients.organisational import OrganisationalClient
 from app.models.pipeline_io import (
     Escalation,
     EscalationResult,
@@ -14,6 +15,7 @@ from app.models.pipeline_io import (
     RankResult,
 )
 from app.pipeline.logger import PipelineLogger
+from app.services.rule_evaluator import evaluate_rules_async
 from app.utils import coerce_budget, coerce_quantity
 
 logger = logging.getLogger(__name__)
@@ -27,22 +29,23 @@ async def compute_escalations(
     compliance_result: ComplianceResult,
     rank_result: RankResult,
     pipeline_logger: PipelineLogger,
+    org_client: OrganisationalClient | None = None,
 ) -> EscalationResult:
-    """Merge escalations from Org Layer, pipeline, and LLM."""
+    """Merge escalations from Org Layer, pipeline rules, and LLM."""
 
     req = fetch_result.request
     budget = coerce_budget(req.budget_amount)
-    quantity = coerce_quantity(req.quantity)
     currency = req.currency or "EUR"
+    interp = validation_result.request_interpretation
 
     async with pipeline_logger.step(
         STEP_NAME,
         {"org_escalation_count": len(fetch_result.org_escalations)},
     ) as ctx:
 
-        pipeline_issues = _discover_pipeline_issues(
+        pipeline_issues = await _discover_pipeline_issues(
             fetch_result, validation_result, compliance_result,
-            rank_result, budget, quantity, currency,
+            rank_result, budget, currency, org_client,
         )
 
         merged = _merge_escalations(
@@ -89,120 +92,152 @@ async def compute_escalations(
         return result
 
 
-def _discover_pipeline_issues(
+async def _discover_pipeline_issues(
     fetch_result: FetchResult,
     validation_result: ValidationResult,
     compliance_result: ComplianceResult,
     rank_result: RankResult,
     budget: float | None,
-    quantity: int | None,
     currency: str,
+    org_client: OrganisationalClient | None,
 ) -> list[PipelineEscalation]:
-    """Discover escalation-worthy issues from pipeline steps 2-5."""
+    """Discover escalation-worthy issues from pipeline rules (PE-001..PE-005, PE-LLM)."""
 
     issues: list[PipelineEscalation] = []
+    req = fetch_result.request
+    interp = validation_result.request_interpretation
 
-    # Budget insufficient
-    for vi in validation_result.issues:
-        if vi.type == "budget_insufficient" and budget is not None:
-            min_total = None
-            for s in rank_result.ranked_suppliers:
-                if s.total_price is not None:
-                    if min_total is None or s.total_price < min_total:
-                        min_total = s.total_price
+    has_budget_insufficient = any(vi.type == "budget_insufficient" for vi in validation_result.issues)
+    has_lead_time_issue = any(vi.type == "lead_time_infeasible" for vi in validation_result.issues)
 
-            if min_total is not None:
-                issues.append(PipelineEscalation(
-                    rule_id="ER-001",
-                    trigger=(
-                        f"Budget is insufficient to fulfil the stated quantity at any "
-                        f"compliant supplier price. Budget {currency} {budget:,.2f}, "
-                        f"minimum total {currency} {min_total:,.2f}. "
-                        f"Requester must confirm revised budget or reduced quantity."
-                    ),
-                    escalate_to="Requester Clarification",
-                    blocking=True,
-                    source="pipeline",
-                ))
+    min_ranked_total = None
+    for s in rank_result.ranked_suppliers:
+        if s.total_price is not None:
+            if min_ranked_total is None or s.total_price < min_ranked_total:
+                min_ranked_total = s.total_price
 
-    # Lead time infeasible
-    for vi in validation_result.issues:
-        if vi.type == "lead_time_infeasible":
-            interp = validation_result.request_interpretation
+    compliant_residency_count = sum(
+        1 for s in compliance_result.compliant if s.data_residency_supported
+    )
+    preferred_excluded_restricted = False
+    if req.preferred_supplier_mentioned:
+        for exc in compliance_result.excluded:
+            if (
+                req.preferred_supplier_mentioned.lower() in exc.supplier_name.lower()
+                and "restricted" in exc.reason.lower()
+            ):
+                preferred_excluded_restricted = True
+                break
+
+    pipeline_context = {
+        "has_budget_insufficient_issue": has_budget_insufficient,
+        "has_lead_time_issue": has_lead_time_issue,
+        "days_until_required": interp.days_until_required,
+        "min_expedited_lead_time": None,  # Could add from rank/filter if needed
+        "compliant_count": len(compliance_result.compliant),
+        "initial_supplier_count": len(compliance_result.compliant) + len(compliance_result.excluded),
+        "compliant_residency_count": compliant_residency_count,
+        "preferred_supplier_excluded_restricted": preferred_excluded_restricted,
+        "min_ranked_total": min_ranked_total,
+        "req_data_residency_constraint": req.data_residency_constraint,
+        "budget_amount": budget,
+        "currency": currency,
+        "country": req.country or "unknown",
+        "requester_instruction": interp.requester_instruction or "",
+        "threshold_quotes_required": fetch_result.approval_tier.get_quotes_required() if fetch_result.approval_tier else 2,
+    }
+
+    rules: list[dict] = []
+    if org_client:
+        try:
+            rules = await org_client.get_procurement_rules(
+                rule_type="pipeline_escalation",
+                scope="pipeline",
+                enabled=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to fetch pipeline escalation rules: %s", exc)
+
+    if rules:
+        triggered = await evaluate_rules_async(
+            rules, pipeline_context,
+            llm_client=None,  # PE-LLM would need llm_client; pass from caller if needed
+        )
+        for t in triggered:
             issues.append(PipelineEscalation(
-                rule_id="ER-004",
+                rule_id=t.get("rule_id", "PE-001"),
+                trigger=t.get("trigger", ""),
+                escalate_to=t.get("action_target") or "Procurement Manager",
+                blocking=t.get("is_blocking", True),
+                source="pipeline",
+            ))
+    else:
+        # Fallback: original hardcoded logic
+        if has_budget_insufficient and budget is not None and min_ranked_total is not None:
+            issues.append(PipelineEscalation(
+                rule_id="PE-001",
                 trigger=(
-                    f"Lead time infeasible: required delivery "
-                    f"{interp.required_by_date} "
+                    f"Budget is insufficient. Budget {currency} {budget:,.2f}, "
+                    f"minimum total {currency} {min_ranked_total:,.2f}. "
+                    f"Requester must confirm revised budget or reduced quantity."
+                ),
+                escalate_to="Requester Clarification",
+                blocking=True,
+                source="pipeline",
+            ))
+        if has_lead_time_issue:
+            issues.append(PipelineEscalation(
+                rule_id="PE-002",
+                trigger=(
+                    f"Lead time infeasible: required delivery {interp.required_by_date} "
                     f"({interp.days_until_required} days). "
-                    f"All suppliers' expedited lead times exceed this window. "
-                    f"No compliant supplier can meet the stated deadline."
+                    f"All suppliers' expedited lead times exceed this window."
                 ),
                 escalate_to="Head of Category",
                 blocking=True,
                 source="pipeline",
             ))
-            break
-
-    # Data residency not satisfiable
-    if fetch_result.request.data_residency_constraint:
-        has_residency = any(
-            s.data_residency_supported for s in compliance_result.compliant
-        )
-        if not has_residency and compliance_result.compliant:
-            country = fetch_result.request.country or "unknown"
+        if req.data_residency_constraint and compliant_residency_count == 0 and compliance_result.compliant:
             issues.append(PipelineEscalation(
-                rule_id="ER-005",
-                trigger=f"No compliant supplier supports data residency in {country}",
+                rule_id="PE-003",
+                trigger=f"No compliant supplier supports data residency in {req.country or 'unknown'}",
                 escalate_to="Data Protection Officer",
                 blocking=True,
                 source="pipeline",
             ))
-
-    # No suppliers remaining after compliance
-    if not compliance_result.compliant and fetch_result.compliant_suppliers:
-        issues.append(PipelineEscalation(
-            rule_id="ER-004",
-            trigger="No supplier remains after compliance checks.",
-            escalate_to="Head of Category",
-            blocking=True,
-            source="pipeline",
-        ))
-
-    # Preferred supplier is restricted (check excluded list)
-    preferred_name = fetch_result.request.preferred_supplier_mentioned
-    if preferred_name:
-        for exc in compliance_result.excluded:
-            if (
-                preferred_name.lower() in exc.supplier_name.lower()
-                and "restricted" in exc.reason.lower()
-            ):
-                issues.append(PipelineEscalation(
-                    rule_id="ER-002",
-                    trigger=f"Preferred supplier {exc.supplier_name} is restricted: {exc.reason}",
-                    escalate_to="Procurement Manager",
-                    blocking=True,
-                    source="pipeline",
-                ))
-                break
-
-    # LLM-detected policy conflicts
-    interp = validation_result.request_interpretation
-    if interp.requester_instruction:
-        for vi in validation_result.issues:
-            if vi.type in ("contradictory", "policy_conflict"):
-                issues.append(PipelineEscalation(
-                    rule_id="AT-002",
-                    trigger=(
-                        f"Policy conflict: requester instruction "
-                        f"'{interp.requester_instruction}' conflicts with policy. "
-                        f"{vi.description}"
-                    ),
-                    escalate_to="Procurement Manager",
-                    blocking=True,
-                    source="llm",
-                ))
-                break
+        if not compliance_result.compliant and fetch_result.compliant_suppliers:
+            issues.append(PipelineEscalation(
+                rule_id="PE-004",
+                trigger="No supplier remains after compliance checks.",
+                escalate_to="Head of Category",
+                blocking=True,
+                source="pipeline",
+            ))
+        if preferred_excluded_restricted:
+            for exc in compliance_result.excluded:
+                if req.preferred_supplier_mentioned and req.preferred_supplier_mentioned.lower() in exc.supplier_name.lower():
+                    issues.append(PipelineEscalation(
+                        rule_id="PE-005",
+                        trigger=f"Preferred supplier {exc.supplier_name} is restricted: {exc.reason}",
+                        escalate_to="Procurement Manager",
+                        blocking=True,
+                        source="pipeline",
+                    ))
+                    break
+        if interp.requester_instruction:
+            for vi in validation_result.issues:
+                if vi.type in ("contradictory", "policy_conflict"):
+                    issues.append(PipelineEscalation(
+                        rule_id="PE-LLM",
+                        trigger=(
+                            f"Policy conflict: requester instruction "
+                            f"'{interp.requester_instruction}' conflicts with policy. {vi.description}"
+                        ),
+                        escalate_to="Procurement Manager",
+                        blocking=True,
+                        source="llm",
+                    ))
+                    break
 
     return issues
 

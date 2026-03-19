@@ -1,5 +1,6 @@
-from sqlalchemy import Column, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
 from app.database import Base
 
@@ -199,3 +200,47 @@ class EscalationRuleCurrency(Base):
     currency = Column(String(5), nullable=False)
 
     rule = relationship("EscalationRule", back_populates="currencies")
+
+
+# --- Rule Definitions + Versions (data-driven rule engine) ---
+
+
+class RuleDefinition(Base):
+    __tablename__ = "rule_definitions"
+
+    rule_id = Column(String(10), primary_key=True)
+    rule_type = Column(String(30), nullable=False)
+    rule_name = Column(String(100), nullable=False)
+    scope = Column(String(20), nullable=False, default="request")
+    evaluation_mode = Column(String(20), nullable=False, default="expression")
+    is_skippable = Column(Boolean, nullable=False, default=False)
+    source = Column(String(10), nullable=False, default="custom")
+    severity = Column(String(10), nullable=False, default="high")
+    is_blocking = Column(Boolean, nullable=False, default=True)
+    breaks_completeness = Column(Boolean, nullable=False, default=False)
+    action_type = Column(String(30), nullable=False, default="escalate")
+    action_target = Column(String(120), nullable=True)
+    trigger_template = Column(Text, nullable=True)
+    action_required = Column(Text, nullable=True)
+    field_ref = Column(String(50), nullable=True)
+    description = Column(Text, nullable=True)
+    active = Column(Boolean, nullable=False, default=True)
+    sort_order = Column(Integer, nullable=False, default=100)
+    created_at = Column(DateTime, server_default=func.now(), nullable=True)
+
+    versions = relationship("RuleVersion", back_populates="definition", cascade="all, delete-orphan")
+
+
+class RuleVersion(Base):
+    __tablename__ = "rule_versions"
+
+    version_id = Column(String(36), primary_key=True)
+    rule_id = Column(String(10), ForeignKey("rule_definitions.rule_id"), nullable=False)
+    version_num = Column(Integer, nullable=False)
+    rule_config = Column(Text, nullable=False)  # JSON stored as TEXT for compatibility
+    valid_from = Column(DateTime, nullable=False)
+    valid_to = Column(DateTime, nullable=True)
+    changed_by = Column(String(100), nullable=True)
+    change_reason = Column(Text, nullable=True)
+
+    definition = relationship("RuleDefinition", back_populates="versions")

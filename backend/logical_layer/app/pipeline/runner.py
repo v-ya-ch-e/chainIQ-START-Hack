@@ -61,7 +61,7 @@ class PipelineRunner:
             await pl.flush_audit()
 
             # ── Step 2: Validate ──────────────────────────────
-            validation_result = await validate_request(fetch_result, self.llm, pl)
+            validation_result = await validate_request(fetch_result, self.llm, pl, self.org)
             await pl.flush_audit()
 
             # ── Branch: early exit on invalid ─────────────────
@@ -94,7 +94,7 @@ class PipelineRunner:
                 fetch_result, rank_result, compliance_result, pl,
             )
             escalation_task = compute_escalations(
-                fetch_result, validation_result, compliance_result, rank_result, pl,
+                fetch_result, validation_result, compliance_result, rank_result, pl, self.org,
             )
             policy_result, escalation_result = await asyncio.gather(
                 policy_task, escalation_task,

@@ -283,6 +283,14 @@ class LLMValidationResult(BaseModel):
     requester_instruction: str | None = None
 
 
+class LLMRuleResult(BaseModel):
+    """Structured response from LLM rule evaluation."""
+
+    triggered: bool = False
+    justification: str = ""
+    confidence: float = 0.0
+
+
 class LLMRecommendationText(BaseModel):
     """Structured response from the LLM recommendation call."""
 

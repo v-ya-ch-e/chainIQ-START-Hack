@@ -13,6 +13,7 @@ from app.models.pipeline_io import (
     ValidationResult,
 )
 from app.pipeline.logger import PipelineLogger
+from app.services.rule_evaluator import evaluate_rules_async
 from app.utils import (
     coerce_budget,
     coerce_quantity,
@@ -23,6 +24,7 @@ from app.utils import (
 
 if TYPE_CHECKING:
     from app.clients.llm import LLMClient
+    from app.clients.organisational import OrganisationalClient
 
 logger = logging.getLogger(__name__)
 
@@ -52,85 +54,144 @@ async def validate_request(
     fetch_result: FetchResult,
     llm_client: "LLMClient | None",
     pipeline_logger: PipelineLogger,
+    org_client: "OrganisationalClient | None" = None,
 ) -> ValidationResult:
-    """Run deterministic + LLM validation on the request."""
+    """Run rule-based + LLM validation on the request."""
 
     req = fetch_result.request
     budget = coerce_budget(req.budget_amount)
     quantity = coerce_quantity(req.quantity)
     delivery_country = primary_delivery_country(req.model_dump())
     days_until = compute_days_until_required(req.required_by_date, req.created_at)
+    countries = normalize_delivery_countries(req.delivery_countries)
+    min_total = _min_total_price(fetch_result.pricing) if fetch_result.pricing else None
+    min_expedited = _min_expedited_lead_time(fetch_result.pricing) if fetch_result.pricing else None
 
     async with pipeline_logger.step(STEP_NAME, {"request_id": req.request_id}) as ctx:
         issues: list[ValidationIssue] = []
         completeness = True
+        llm_used = False
+        llm_fallback = False
+        requester_instruction: str | None = None
 
-        # ── Phase A: Deterministic checks ─────────────────────
+        # ── Phase A: Rule-based validation (VR-001..VR-010 + VR-LLM) ─────
 
-        if not req.category_l1:
-            issues.append(ValidationIssue(
-                severity="critical", type="missing_info", field="category_l1",
-                description="category_l1 is missing.",
-                action_required="Requester must specify L1 category.",
-            ))
-            completeness = False
+        request_context = {
+            "category_l1": req.category_l1,
+            "category_l2": req.category_l2,
+            "currency": req.currency,
+            "budget_amount": budget,
+            "quantity": quantity,
+            "required_by_date": req.required_by_date,
+            "days_until_required": days_until,
+            "delivery_countries_count": len(countries),
+            "min_supplier_total": min_total,
+            "min_expedited_lead_time": min_expedited,
+        }
 
-        if not req.category_l2:
-            issues.append(ValidationIssue(
-                severity="critical", type="missing_info", field="category_l2",
-                description="category_l2 is missing.",
-                action_required="Requester must specify L2 category.",
-            ))
-            completeness = False
+        rules: list[dict] = []
+        if org_client:
+            try:
+                rules = await org_client.get_procurement_rules(
+                    rule_type="validation",
+                    scope="request",
+                    enabled=True,
+                )
+            except Exception as exc:
+                logger.warning("Failed to fetch validation rules, using fallback: %s", exc)
 
-        if not req.currency:
-            issues.append(ValidationIssue(
-                severity="critical", type="missing_info", field="currency",
-                description="currency is missing.",
-                action_required="Requester must specify currency.",
-            ))
-            completeness = False
+        if rules:
+            triggered = await evaluate_rules_async(
+                rules, request_context, llm_client=llm_client,
+            )
 
-        if budget is None:
-            issues.append(ValidationIssue(
-                severity="high", type="missing_info", field="budget_amount",
-                description="budget_amount is null. Pipeline will continue with degraded capability.",
-                action_required="Requester should provide a budget for accurate pricing comparison.",
-            ))
+            eval_log = triggered[0].get("_eval_log", []) if triggered else []
+            pipeline_logger.audit(
+                "validation", "info", STEP_NAME,
+                f"Evaluated {len(rules)} validation rules, {len(triggered)} triggered",
+                {"rules_evaluated": len(rules), "rules_triggered": len(triggered),
+                 "triggered_ids": [t.get("rule_id") for t in triggered],
+                 "evaluation_log": eval_log},
+            )
 
-        if quantity is None:
-            issues.append(ValidationIssue(
-                severity="high", type="missing_info", field="quantity",
-                description="quantity is null. Pricing comparison will be limited to quality-only ranking.",
-                action_required="Requester should provide a quantity for pricing lookup.",
-            ))
-
-        if not req.required_by_date:
-            issues.append(ValidationIssue(
-                severity="medium", type="missing_info", field="required_by_date",
-                description="required_by_date is not specified.",
-                action_required="Requester should specify a delivery date for lead time feasibility checks.",
-            ))
-
-        countries = normalize_delivery_countries(req.delivery_countries)
-        if not countries:
-            issues.append(ValidationIssue(
-                severity="high", type="missing_info", field="delivery_countries",
-                description="No delivery countries specified.",
-                action_required="Requester must specify at least one delivery country.",
-            ))
-
-        if days_until is not None and days_until < 0:
-            issues.append(ValidationIssue(
-                severity="critical", type="lead_time_infeasible", field="required_by_date",
-                description=f"Required by date {req.required_by_date} is in the past ({days_until} days ago).",
-                action_required="Requester must provide a future delivery date.",
-            ))
-
-        # Budget sufficiency check
-        if budget is not None and quantity is not None and fetch_result.pricing:
-            min_total = _min_total_price(fetch_result.pricing)
-            if min_total is not None and budget < min_total:
+            for t in triggered:
+                rule_id = t.get("rule_id", "")
+                issue_type = "missing_info"
+                if rule_id == "VR-009":
+                    issue_type = "budget_insufficient"
+                elif rule_id in ("VR-010", "VR-008"):
+                    issue_type = "lead_time_infeasible"
+                issues.append(ValidationIssue(
+                    severity=t.get("severity", "high"),
+                    type=issue_type,
+                    field=t.get("field_ref"),
+                    description=t.get("trigger", ""),
+                    action_required=t.get("action_required", ""),
+                ))
+                log_level = "error" if t.get("severity") == "critical" else "warn"
+                pipeline_logger.audit(
+                    "validation", log_level, STEP_NAME,
+                    f"Rule {rule_id} triggered: {t.get('trigger', '')[:200]}",
+                    {"rule_id": rule_id, "severity": t.get("severity"),
+                     "evaluation_mode": t.get("evaluation_mode", "expression"),
+                     "is_blocking": t.get("is_blocking"), "field": t.get("field_ref")},
+                )
+                if t.get("breaks_completeness"):
+                    completeness = False
+        else:
+            # Fallback: original hardcoded checks when rules unavailable
+            if not req.category_l1:
+                issues.append(ValidationIssue(
+                    severity="critical", type="missing_info", field="category_l1",
+                    description="category_l1 is missing.",
+                    action_required="Requester must specify L1 category.",
+                ))
+                completeness = False
+            if not req.category_l2:
+                issues.append(ValidationIssue(
+                    severity="critical", type="missing_info", field="category_l2",
+                    description="category_l2 is missing.",
+                    action_required="Requester must specify L2 category.",
+                ))
+                completeness = False
+            if not req.currency:
+                issues.append(ValidationIssue(
+                    severity="critical", type="missing_info", field="currency",
+                    description="currency is missing.",
+                    action_required="Requester must specify currency.",
+                ))
+                completeness = False
+            if budget is None:
+                issues.append(ValidationIssue(
+                    severity="high", type="missing_info", field="budget_amount",
+                    description="budget_amount is null. Pipeline will continue with degraded capability.",
+                    action_required="Requester should provide a budget for accurate pricing comparison.",
+                ))
+            if quantity is None:
+                issues.append(ValidationIssue(
+                    severity="high", type="missing_info", field="quantity",
+                    description="quantity is null. Pricing comparison will be limited to quality-only ranking.",
+                    action_required="Requester should provide a quantity for pricing lookup.",
+                ))
+            if not req.required_by_date:
+                issues.append(ValidationIssue(
+                    severity="medium", type="missing_info", field="required_by_date",
+                    description="required_by_date is not specified.",
+                    action_required="Requester should specify a delivery date for lead time feasibility checks.",
+                ))
+            if not countries:
+                issues.append(ValidationIssue(
+                    severity="high", type="missing_info", field="delivery_countries",
+                    description="No delivery countries specified.",
+                    action_required="Requester must specify at least one delivery country.",
+                ))
+            if days_until is not None and days_until < 0:
+                issues.append(ValidationIssue(
+                    severity="critical", type="lead_time_infeasible", field="required_by_date",
+                    description=f"Required by date {req.required_by_date} is in the past ({days_until} days ago).",
+                    action_required="Requester must provide a future delivery date.",
+                ))
+            if budget is not None and quantity is not None and min_total is not None and budget < min_total:
                 currency = req.currency or "EUR"
                 issues.append(ValidationIssue(
                     severity="critical", type="budget_insufficient",
@@ -144,11 +205,7 @@ async def validate_request(
                         f"{currency} {min_total:,.2f} or reduce quantity."
                     ),
                 ))
-
-        # Lead time feasibility check
-        if days_until is not None and days_until >= 0 and fetch_result.pricing:
-            min_expedited = _min_expedited_lead_time(fetch_result.pricing)
-            if min_expedited is not None and days_until < min_expedited:
+            if days_until is not None and days_until >= 0 and min_expedited is not None and days_until < min_expedited:
                 max_expedited = _max_expedited_lead_time(fetch_result.pricing)
                 issues.append(ValidationIssue(
                     severity="high", type="lead_time_infeasible",
@@ -164,12 +221,8 @@ async def validate_request(
                 ))
 
         # ── Phase B: LLM contradiction detection ─────────────
-
-        llm_used = False
-        llm_fallback = False
-        requester_instruction: str | None = None
-
-        if llm_client and req.request_text:
+        # When using rules: VR-LLM is evaluated in Phase A. Otherwise use legacy LLM call.
+        if not rules and llm_client and req.request_text:
             llm_used = True
             user_prompt = _build_validation_prompt(req, budget, quantity)
             llm_result, fallback = await llm_client.structured_call(

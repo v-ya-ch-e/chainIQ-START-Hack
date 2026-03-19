@@ -108,6 +108,10 @@ Default local URLs:
 - Logical Layer: `http://localhost:8080`
 - MySQL: `localhost:3306`
 
+## Data-Driven Rules
+
+Rules live in `rule_definitions` (metadata + evaluation config) + `rule_versions` (versioned `rule_config` JSON with `condition_expr`/`llm_prompt`). Types: escalation, validation, supplier_compliance, pipeline_escalation, hard_rule, policy. Modes: expression (simpleeval), llm (Claude). CRUD: `/api/rules/definitions`, `/api/rules/versions/{rule_id}`. Context schema: `/api/rules/definitions/context/{scope}`. See `REFACTORING_RULES.md`.
+
 ## Integration Notes
 
 - Frontend API calls are same-origin (`/api/*`) and proxied to backend through Next rewrites.
