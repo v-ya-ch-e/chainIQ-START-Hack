@@ -2,8 +2,20 @@
 
 import Link from "next/link"
 import { ArrowRight, Search } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react"
 
+import {
+  TopbarFilters,
+  topbarFilterControlClassName,
+} from "@/components/app-shell/topbar-filters"
+import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { buttonVariants } from "@/components/ui/button"
@@ -35,8 +47,8 @@ import {
   displayRecommendationStatus,
   formatCountryDisplayName,
   formatDateTime,
-  titleCase,
 } from "@/lib/data/formatters"
+import { labelForFilterValue, type FilterOption } from "@/lib/filter-options"
 import type { QueueEscalationItem } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
@@ -45,23 +57,110 @@ interface EscalationsPageProps {
   items: QueueEscalationItem[]
 }
 
-const escalationStatusTriggerLabels: Record<string, string> = {
-  all: "All statuses",
-  open: "Open",
-  resolved: "Resolved",
-}
+const escalationStatusOptions: FilterOption[] = [
+  { value: "all", label: "All statuses" },
+  { value: "open", label: "Open" },
+  { value: "resolved", label: "Resolved" },
+]
 
-const escalationBlockingTriggerLabels: Record<string, string> = {
-  all: "All types",
-  blocking: "Blocking only",
-  advisory: "Advisory only",
-}
+const escalationTypeOptions: FilterOption[] = [
+  { value: "all", label: "All types" },
+  { value: "blocking", label: "Blocking only" },
+  { value: "advisory", label: "Advisory only" },
+]
+
+const EscalationsWorkspaceToolbar = memo(function EscalationsWorkspaceToolbar({
+  query,
+  statusFilter,
+  blockingFilter,
+  onQueryChange,
+  onStatusChange,
+  onBlockingChange,
+}: {
+  query: string
+  statusFilter: string
+  blockingFilter: string
+  onQueryChange: (value: string) => void
+  onStatusChange: (value: string | null) => void
+  onBlockingChange: (value: string | null) => void
+}) {
+  const statusTriggerLabel = labelForFilterValue(
+    escalationStatusOptions,
+    statusFilter,
+    "All statuses",
+  )
+  const blockingTriggerLabel = labelForFilterValue(
+    escalationTypeOptions,
+    blockingFilter,
+    "All types",
+  )
+
+  return (
+    <TopbarFilters>
+      <div className="relative h-8 min-w-[14rem] grow basis-full sm:basis-auto sm:max-w-[24rem] sm:grow">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Search case, rule, target role, business unit…"
+          className={cn(
+            "h-8 border-input/80 pl-8 text-sm transition-colors focus-visible:border-ring",
+            topbarFilterControlClassName,
+          )}
+        />
+      </div>
+
+      <Select value={statusFilter} onValueChange={onStatusChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {statusTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {escalationStatusOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select value={blockingFilter} onValueChange={onBlockingChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {blockingTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {escalationTypeOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </TopbarFilters>
+  )
+})
 
 export function EscalationsPage({ items }: EscalationsPageProps) {
   const openCount = items.filter((item) => item.status !== "resolved").length
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [blockingFilter, setBlockingFilter] = useState("all")
+  const setHeaderActions = useSetWorkspaceHeaderActions()
   const [selectedEscalationId, setSelectedEscalationId] = useState<string | null>(null)
   const [isReviewOpen, setIsReviewOpen] = useState(false)
   const [ruleDetails, setRuleDetails] = useState<Record<string, unknown> | null>(null)
@@ -98,10 +197,13 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
     })
   }, [blockingFilter, items, query, statusFilter])
 
-  const statusTriggerLabel =
-    escalationStatusTriggerLabels[statusFilter] ?? titleCase(statusFilter)
-  const blockingTriggerLabel =
-    escalationBlockingTriggerLabels[blockingFilter] ?? titleCase(blockingFilter)
+  const handleStatusFilterChange = useCallback((value: string | null) => {
+    setStatusFilter(value ?? "all")
+  }, [])
+
+  const handleBlockingFilterChange = useCallback((value: string | null) => {
+    setBlockingFilter(value ?? "all")
+  }, [])
 
   const selectedItem =
     filteredItems.find((item) => item.escalationId === selectedEscalationId) ??
@@ -152,6 +254,30 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
     }
   }, [isReviewOpen, selectedItem])
 
+  useLayoutEffect(
+    () => {
+      setHeaderActions(
+        <EscalationsWorkspaceToolbar
+          query={query}
+          statusFilter={statusFilter}
+          blockingFilter={blockingFilter}
+          onQueryChange={setQuery}
+          onStatusChange={handleStatusFilterChange}
+          onBlockingChange={handleBlockingFilterChange}
+        />,
+      )
+      return () => setHeaderActions(null)
+    },
+    [
+      setHeaderActions,
+      query,
+      statusFilter,
+      blockingFilter,
+      handleStatusFilterChange,
+      handleBlockingFilterChange,
+    ],
+  )
+
   return (
     <>
       <div className="space-y-6">
@@ -164,50 +290,32 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
       </div>
 
       <Card className="animate-fade-in-up" style={{ animationDelay: "160ms" }}>
-        <CardHeader className="space-y-4 border-b pb-4">
+        <CardHeader className="space-y-2 border-b pb-4">
           <CardTitle>All escalations</CardTitle>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search case, rule, target role, business unit..."
-                className="h-9 pl-9"
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              Showing {filteredItems.length} of {items.length} escalations
+            </span>
+            {statusFilter !== "all" ? (
+              <StatusBadge
+                label={labelForFilterValue(
+                  escalationStatusOptions,
+                  statusFilter,
+                  "Status",
+                )}
+                tone="info"
               />
-            </div>
-            <div className="flex min-h-0 min-w-0 flex-nowrap items-center gap-3 overflow-x-auto [scrollbar-width:thin]">
-              <Select
-                value={statusFilter}
-                onValueChange={(value) => setStatusFilter(value ?? "all")}
-              >
-                <SelectTrigger className="h-8 w-[160px] shrink-0">
-                  <span className="truncate text-left" data-slot="select-value">
-                    {statusTriggerLabel}
-                  </span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  <SelectItem value="open">Open</SelectItem>
-                  <SelectItem value="resolved">Resolved</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={blockingFilter}
-                onValueChange={(value) => setBlockingFilter(value ?? "all")}
-              >
-                <SelectTrigger className="h-8 w-[160px] shrink-0">
-                  <span className="truncate text-left" data-slot="select-value">
-                    {blockingTriggerLabel}
-                  </span>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All types</SelectItem>
-                  <SelectItem value="blocking">Blocking only</SelectItem>
-                  <SelectItem value="advisory">Advisory only</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            ) : null}
+            {blockingFilter !== "all" ? (
+              <StatusBadge
+                label={labelForFilterValue(
+                  escalationTypeOptions,
+                  blockingFilter,
+                  "Type",
+                )}
+                tone="warning"
+              />
+            ) : null}
           </div>
         </CardHeader>
         <CardContent className="p-0">

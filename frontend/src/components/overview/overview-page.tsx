@@ -10,12 +10,16 @@ import {
 } from "react"
 import { AlertTriangle, ArrowRight, BarChart3 } from "lucide-react"
 
+import {
+  TopbarFilters,
+  topbarFilterControlClassName,
+} from "@/components/app-shell/topbar-filters"
 import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import {
+  displayCaseStatus,
   formatCountryDisplayName,
   formatCurrency,
   formatDateTime,
-  titleCase,
 } from "@/lib/data/formatters"
 import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
@@ -36,6 +40,11 @@ import type {
   DashboardInsights,
   DashboardMetric,
 } from "@/lib/types/case"
+import {
+  buildFilterOptions,
+  labelForFilterValue,
+  type FilterOption,
+} from "@/lib/filter-options"
 import { cn } from "@/lib/utils"
 
 interface OverviewPageProps {
@@ -43,16 +52,6 @@ interface OverviewPageProps {
   cases: CaseListItem[]
   dataState: DashboardDataState
   insights: DashboardInsights
-}
-
-const statusLabelMap: Record<CaseStatus, string> = {
-  received: "Received",
-  parsed: "Parsed",
-  pending_review: "Pending review",
-  evaluated: "Evaluated",
-  recommended: "Recommended",
-  escalated: "Escalated",
-  resolved: "Resolved",
 }
 
 function getStatusTone(status: CaseStatus) {
@@ -66,7 +65,9 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
   categoryFilter,
   countryFilter,
   attentionOnly,
-  filterOptions,
+  statusOptions,
+  categoryOptions,
+  countryOptions,
   onStatusChange,
   onCategoryChange,
   onCountryChange,
@@ -78,7 +79,9 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
   categoryFilter: string
   countryFilter: string
   attentionOnly: boolean
-  filterOptions: DashboardInsights["filterOptions"]
+  statusOptions: FilterOption[]
+  categoryOptions: FilterOption[]
+  countryOptions: FilterOption[]
   onStatusChange: (value: string | null) => void
   onCategoryChange: (value: string | null) => void
   onCountryChange: (value: string | null) => void
@@ -86,37 +89,40 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
   onReset: () => void
   canReset: boolean
 }) {
-  const statusTriggerLabel =
-    statusFilter === "all"
-      ? "All statuses"
-      : statusLabelMap[statusFilter as CaseStatus] ?? titleCase(statusFilter)
-  const categoryTriggerLabel =
-    categoryFilter === "all"
-      ? "All categories"
-      : categoryFilter.trim()
-        ? categoryFilter
-        : "Uncategorized"
-  const countryTriggerLabel =
-    countryFilter === "all"
-      ? "All countries"
-      : formatCountryDisplayName(countryFilter)
+  const statusTriggerLabel = labelForFilterValue(
+    statusOptions,
+    statusFilter,
+    "All statuses",
+  )
+  const categoryTriggerLabel = labelForFilterValue(
+    categoryOptions,
+    categoryFilter,
+    "All categories",
+  )
+  const countryTriggerLabel = labelForFilterValue(
+    countryOptions,
+    countryFilter,
+    "All countries",
+  )
 
   return (
-    <div className="flex w-max min-w-0 flex-nowrap items-center justify-end gap-3">
+    <TopbarFilters>
       <Select value={statusFilter} onValueChange={onStatusChange}>
         <SelectTrigger
           size="sm"
-          className="h-8 w-[10.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
         >
           <span className="truncate text-left" data-slot="select-value">
             {statusTriggerLabel}
           </span>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">All statuses</SelectItem>
-          {filterOptions.statuses.map((status) => (
-            <SelectItem key={status} value={status}>
-              {statusLabelMap[status]}
+          {statusOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
             </SelectItem>
           ))}
         </SelectContent>
@@ -124,20 +130,22 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       <Select value={categoryFilter} onValueChange={onCategoryChange}>
         <SelectTrigger
           size="sm"
-          className="h-8 w-[11.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
+          className={cn(
+            "h-8 min-w-[11rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[13rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
         >
           <span className="truncate text-left" data-slot="select-value">
             {categoryTriggerLabel}
           </span>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">All categories</SelectItem>
-          {filterOptions.categories.map((category) => (
+          {categoryOptions.map((category) => (
             <SelectItem
-              key={category.trim() ? category : "__uncategorized"}
-              value={category}
+              key={category.value || "__uncategorized"}
+              value={category.value}
             >
-              {category.trim() ? category : "Uncategorized"}
+              {category.label}
             </SelectItem>
           ))}
         </SelectContent>
@@ -145,22 +153,29 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       <Select value={countryFilter} onValueChange={onCountryChange}>
         <SelectTrigger
           size="sm"
-          className="h-8 w-[10.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
         >
           <span className="truncate text-left" data-slot="select-value">
             {countryTriggerLabel}
           </span>
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="all">All countries</SelectItem>
-          {filterOptions.countries.map((country) => (
-            <SelectItem key={country} value={country}>
-              {formatCountryDisplayName(country)}
+          {countryOptions.map((country) => (
+            <SelectItem key={country.value} value={country.value}>
+              {country.label}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
-      <label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground transition-colors hover:text-foreground">
+      <label
+        className={cn(
+          "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border border-transparent bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground",
+          topbarFilterControlClassName,
+        )}
+      >
         <Checkbox
           checked={attentionOnly}
           onCheckedChange={(checked) => onAttentionChange(checked === true)}
@@ -170,13 +185,13 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       <Button
         variant="outline"
         size="sm"
-        className="h-8 shrink-0"
+        className={cn("h-8 shrink-0", topbarFilterControlClassName)}
         onClick={onReset}
         disabled={!canReset}
       >
         Reset
       </Button>
-    </div>
+    </TopbarFilters>
   )
 })
 
@@ -190,6 +205,36 @@ export function OverviewPage({
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
   const [countryFilter, setCountryFilter] = useState<string>("all")
   const [attentionOnly, setAttentionOnly] = useState(false)
+
+  const statusOptions = useMemo(
+    () => [
+      { value: "all", label: "All statuses" },
+      ...buildFilterOptions(insights.filterOptions.statuses, (status) =>
+        displayCaseStatus(status),
+      ),
+    ],
+    [insights.filterOptions.statuses],
+  )
+
+  const categoryOptions = useMemo(
+    () => [
+      { value: "all", label: "All categories" },
+      ...buildFilterOptions(insights.filterOptions.categories, (category) =>
+        category.trim() ? category : "Uncategorized",
+      ),
+    ],
+    [insights.filterOptions.categories],
+  )
+
+  const countryOptions = useMemo(
+    () => [
+      { value: "all", label: "All countries" },
+      ...buildFilterOptions(insights.filterOptions.countries, (country) =>
+        formatCountryDisplayName(country),
+      ),
+    ],
+    [insights.filterOptions.countries],
+  )
 
   const filteredCases = useMemo(() => {
     return cases.filter((entry) => {
@@ -228,7 +273,7 @@ export function OverviewPage({
     return insights.filterOptions.statuses
       .map((status) => ({
         status,
-        label: statusLabelMap[status],
+        label: displayCaseStatus(status),
         count: counts.get(status) ?? 0,
       }))
       .filter((entry) => entry.count > 0)
@@ -270,7 +315,9 @@ export function OverviewPage({
           categoryFilter={categoryFilter}
           countryFilter={countryFilter}
           attentionOnly={attentionOnly}
-          filterOptions={insights.filterOptions}
+          statusOptions={statusOptions}
+          categoryOptions={categoryOptions}
+          countryOptions={countryOptions}
           onStatusChange={handleStatusFilterChange}
           onCategoryChange={handleCategoryFilterChange}
           onCountryChange={handleCountryFilterChange}
@@ -288,7 +335,9 @@ export function OverviewPage({
       countryFilter,
       attentionOnly,
       activeFiltersCount,
-      insights.filterOptions,
+      statusOptions,
+      categoryOptions,
+      countryOptions,
       handleStatusFilterChange,
       handleCategoryFilterChange,
       handleCountryFilterChange,

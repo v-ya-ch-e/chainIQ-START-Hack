@@ -201,7 +201,8 @@ function CaseWorkspaceHeaderActions({
   onEscalate: () => void
 }) {
   return (
-    <div className="flex w-max min-w-0 flex-nowrap items-center justify-end gap-3">
+    <div className="max-w-full overflow-x-auto overscroll-x-contain py-0.5 [scrollbar-width:thin]">
+      <div className="ml-auto flex w-max min-w-0 flex-nowrap items-center gap-3">
       {showReturnToLatest ? (
         <Link
           href={`/cases/${caseId}`}
@@ -297,6 +298,7 @@ function CaseWorkspaceHeaderActions({
         )}
         {loadingAction === "escalate" ? "Escalating..." : "Escalate"}
       </Button>
+      </div>
     </div>
   )
 }

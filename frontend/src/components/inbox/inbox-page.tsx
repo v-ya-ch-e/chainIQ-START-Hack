@@ -21,6 +21,10 @@ import {
   Search,
 } from "lucide-react"
 
+import {
+  TopbarFilters,
+  topbarFilterControlClassName,
+} from "@/components/app-shell/topbar-filters"
 import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { CaseIntakeWizard } from "@/components/case-intake/case-intake-wizard"
@@ -66,6 +70,7 @@ import {
   useRequestStatusPoller,
 } from "@/lib/pipeline/request-status-poller"
 import type { CaseListItem } from "@/lib/types/case"
+import { labelForFilterValue, type FilterOption } from "@/lib/filter-options"
 import { cn } from "@/lib/utils"
 
 interface InboxPageProps {
@@ -77,7 +82,7 @@ interface InboxPageProps {
   dataLoadError?: string | null
 }
 
-const statusOptions = [
+const statusOptions: FilterOption[] = [
   { value: "all", label: "All statuses" },
   { value: "new", label: "New" },
   { value: "submitted", label: "Submitted" },
@@ -88,7 +93,7 @@ const statusOptions = [
   { value: "resolved", label: "Resolved" },
 ]
 
-const escalationOptions = [
+const escalationOptions: FilterOption[] = [
   { value: "all", label: "All escalations" },
   { value: "none", label: "No escalation" },
   { value: "advisory", label: "Advisory" },
@@ -162,27 +167,38 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
   onAttentionChange: (checked: boolean) => void
   onNewRequest: () => void
 }) {
-  const statusTriggerLabel =
-    statusOptions.find((o) => o.value === statusValue)?.label ?? "All statuses"
-  const escalationTriggerLabel =
-    escalationOptions.find((o) => o.value === escalationFilter)?.label ??
-    "All escalations"
+  const statusTriggerLabel = labelForFilterValue(
+    statusOptions,
+    statusValue,
+    "All statuses",
+  )
+  const escalationTriggerLabel = labelForFilterValue(
+    escalationOptions,
+    escalationFilter,
+    "All escalations",
+  )
 
   return (
-    <div className="flex w-max min-w-0 flex-nowrap items-center gap-3">
-      <div className="relative h-8 w-[11rem] shrink-0 sm:w-[13rem]">
+    <TopbarFilters>
+      <div className="relative h-8 min-w-[14rem] grow basis-full sm:basis-auto sm:max-w-[22rem] sm:grow">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Filter by ID, title, supplier, unit, country…"
-          className="h-8 border-input/80 pl-8 text-sm transition-colors focus-visible:border-ring"
+          placeholder="Filter by request, title, supplier, unit, country…"
+          className={cn(
+            "h-8 border-input/80 pl-8 text-sm transition-colors focus-visible:border-ring",
+            topbarFilterControlClassName,
+          )}
         />
       </div>
       <Select value={statusValue} onValueChange={onStatusChange}>
         <SelectTrigger
           size="sm"
-          className="h-8 w-[10.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
         >
           <span className="truncate text-left" data-slot="select-value">
             {statusTriggerLabel}
@@ -202,7 +218,10 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
       >
         <SelectTrigger
           size="sm"
-          className="h-8 w-[11rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
         >
           <span className="truncate text-left" data-slot="select-value">
             {escalationTriggerLabel}
@@ -216,18 +235,27 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
           ))}
         </SelectContent>
       </Select>
-      <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground transition-colors hover:text-foreground">
+      <label
+        className={cn(
+          "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border border-transparent bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground",
+          topbarFilterControlClassName,
+        )}
+      >
         <Checkbox
           checked={attentionOnly}
           onCheckedChange={(checked) => onAttentionChange(checked === true)}
         />
         Needs attention only
       </label>
-      <Button size="sm" className="h-8 shrink-0" onClick={onNewRequest}>
+      <Button
+        size="sm"
+        className={cn("h-8 shrink-0", topbarFilterControlClassName)}
+        onClick={onNewRequest}
+      >
         <Plus className="mr-1.5 size-4" />
         New Request
       </Button>
-    </div>
+    </TopbarFilters>
   )
 })
 
