@@ -218,6 +218,13 @@ type EvaluationCheckApi = {
   skipped?: boolean | null
   skip_reason?: string | null
   evidence?: Record<string, unknown> | null
+  rule_name?: string | null
+  /** Some proxies/clients may emit camelCase */
+  ruleName?: string | null
+  version_snapshot?: Record<string, unknown> | null
+  dynamic_snapshot?: Record<string, unknown> | null
+  dynamic_rule_version?: number | null
+  dynamicRuleVersion?: number | null
 }
 
 type SupplierBreakdownApi = {
@@ -608,6 +615,42 @@ function mapSupplierShortlistEntry(
   }
 }
 
+function pickRuleNameFromEvaluationCheck(check: EvaluationCheckApi): string | null {
+  const a = check.rule_name
+  const b = check.ruleName
+  if (typeof a === "string" && a.trim()) return a.trim()
+  if (typeof b === "string" && b.trim()) return b.trim()
+  return null
+}
+
+/** API may return JSON columns as objects or (rarely) JSON strings. */
+function coerceJsonObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
+function coerceDynamicRuleVersion(check: EvaluationCheckApi): number | null {
+  const raw = check as Record<string, unknown>
+  const v = raw.dynamic_rule_version ?? raw.dynamicRuleVersion
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return Number(v)
+  }
+  return null
+}
+
 function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
   const normalizeCheckResult = (value: string | null | undefined): RuleCheckResult => {
     if (
@@ -653,6 +696,14 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
+        ruleName: pickRuleNameFromEvaluationCheck(check),
+        versionSnapshot:
+          coerceJsonObjectRecord(check.version_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).versionSnapshot),
+        dynamicSnapshot:
+          coerceJsonObjectRecord(check.dynamic_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).dynamicSnapshot),
+        dynamicRuleVersion: coerceDynamicRuleVersion(check),
       })),
       policyChecks: entry.policy_checks.map((check) => ({
         checkId: check.check_id,
@@ -664,6 +715,14 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
+        ruleName: pickRuleNameFromEvaluationCheck(check),
+        versionSnapshot:
+          coerceJsonObjectRecord(check.version_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).versionSnapshot),
+        dynamicSnapshot:
+          coerceJsonObjectRecord(check.dynamic_snapshot) ??
+          coerceJsonObjectRecord((check as Record<string, unknown>).dynamicSnapshot),
+        dynamicRuleVersion: coerceDynamicRuleVersion(check),
       })),
     })),
     supplierShortlist: supplierShortlist.length > 0 ? supplierShortlist : undefined,
@@ -1107,6 +1166,7 @@ export async function getCaseDetailByRunId(
   return { caseDetail, runId: evaluation.run_id }
 }
 
+/** Aggregates request, analytics overview, awards, escalations, audit, and evaluation runs into the `CaseDetail` view model used by `CaseWorkspace`. */
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {
   let detail: RequestDetail
   try {

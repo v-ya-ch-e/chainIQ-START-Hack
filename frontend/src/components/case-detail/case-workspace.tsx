@@ -29,6 +29,12 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   formatCurrency,
   formatDate,
   formatDateTime,
@@ -138,6 +144,212 @@ function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
   return !failedHard && !failedPolicy
 }
 
+function getRuleCounts(breakdown: SupplierRuleBreakdown | null): {
+  hardPassed: number
+  hardTotal: number
+  policyPassed: number
+  policyTotal: number
+} {
+  const hard = breakdown?.hardRuleChecks ?? []
+  const policy = breakdown?.policyChecks ?? []
+  return {
+    hardPassed: hard.filter((c) => c.result === "passed").length,
+    hardTotal: hard.length,
+    policyPassed: policy.filter((c) => c.result === "passed").length,
+    policyTotal: policy.length,
+  }
+}
+
+function hasNoFailedChecks(checks: SupplierRuleCheck[] | undefined): boolean {
+  if (!checks || checks.length === 0) return false
+  return !checks.some((c) => c.result === "failed")
+}
+
+function toneForCheckResult(result: SupplierRuleCheck["result"]) {
+  if (result === "passed") return "success"
+  if (result === "warned") return "warning"
+  if (result === "skipped") return "neutral"
+  return "destructive"
+}
+
+function getEvalConfigCondition(
+  snap: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!snap || typeof snap !== "object") return null
+  const ec = snap.eval_config
+  if (!ec || typeof ec !== "object" || ec === null) return null
+  const condition = (ec as { condition?: unknown }).condition
+  return condition !== undefined ? condition : null
+}
+
+/** Prefer `eval_config.condition` from dynamic (then static) snapshot, per rule engine shape. */
+function formatConditionHoverContent(check: SupplierRuleCheck): string {
+  const dyn = check.dynamicSnapshot
+  const ver = check.versionSnapshot
+  const cond = getEvalConfigCondition(dyn) ?? getEvalConfigCondition(ver)
+  if (cond != null) {
+    return JSON.stringify(cond, null, 2)
+  }
+  if (dyn && typeof dyn === "object") {
+    const ec = (dyn as { eval_config?: unknown }).eval_config
+    if (ec != null) return JSON.stringify(ec, null, 2)
+    return JSON.stringify(dyn, null, 2)
+  }
+  if (ver && typeof ver === "object") {
+    return JSON.stringify(ver, null, 2)
+  }
+  return "No snapshot available."
+}
+
+function coerceDynamicRuleVersionFromRow(c: Record<string, unknown>): number | null {
+  const v = c.dynamic_rule_version ?? c.dynamicRuleVersion
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return Number(v)
+  }
+  return null
+}
+
+function coerceJsonObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
+let ruleDefinitionNamesCache: Promise<Record<string, string>> | null = null
+
+function loadRuleDefinitionNames(): Promise<Record<string, string>> {
+  if (!ruleDefinitionNamesCache) {
+    ruleDefinitionNamesCache = fetch("/api/rule-versions/definitions")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((defs: Array<{ rule_id?: string; rule_name?: string }>) => {
+        const m: Record<string, string> = {}
+        for (const d of Array.isArray(defs) ? defs : []) {
+          const id = d?.rule_id
+          const name = d?.rule_name
+          if (id && typeof name === "string" && name.trim()) {
+            m[id] = name.trim()
+          }
+        }
+        return m
+      })
+      .catch(() => ({}))
+  }
+  return ruleDefinitionNamesCache
+}
+
+function ruleLabelForCheck(
+  check: SupplierRuleCheck,
+  nameByRuleId: Record<string, string>,
+): string {
+  const fromCheck = check.ruleName?.trim()
+  if (fromCheck) return fromCheck
+  const fromDefs = nameByRuleId[check.ruleId]?.trim()
+  if (fromDefs) return fromDefs
+  return check.ruleId
+}
+
+function pickRuleNameFromApiRow(c: Record<string, unknown>): string | null {
+  const a = c.rule_name
+  const b = c.ruleName
+  if (typeof a === "string" && a.trim()) return a.trim()
+  if (typeof b === "string" && b.trim()) return b.trim()
+  return null
+}
+
+function EnrichedRuleChecksTable({ checks }: { checks: SupplierRuleCheck[] }) {
+  const [nameByRuleId, setNameByRuleId] = useState<Record<string, string>>({})
+  const checkKey = checks.map((c) => c.checkId).join("|")
+
+  useEffect(() => {
+    if (checks.length === 0) return
+    let cancelled = false
+    void loadRuleDefinitionNames().then((m) => {
+      if (!cancelled) setNameByRuleId(m)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [checkKey])
+
+  if (checks.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">No checks in this category.</p>
+    )
+  }
+  return (
+    <TooltipProvider delay={200}>
+      <div className="overflow-x-auto rounded-lg border p-4">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="px-3 py-3">Rule</TableHead>
+              <TableHead className="py-3">Result</TableHead>
+              <TableHead className="py-3">Checked</TableHead>
+              <TableHead className="py-3 text-right font-mono text-xs">Version</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {checks.map((check) => (
+              <TableRow key={check.checkId}>
+                <TableCell className="max-w-[min(280px,40vw)] px-3 py-3">
+                  <Tooltip>
+                    <TooltipTrigger className="block w-full cursor-help text-left font-medium">
+                      {ruleLabelForCheck(check, nameByRuleId)}
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="right"
+                      className="max-h-96 max-w-lg overflow-auto border bg-popover p-3 text-left text-popover-foreground shadow-md"
+                    >
+                      <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {getEvalConfigCondition(check.dynamicSnapshot) != null ||
+                        getEvalConfigCondition(check.versionSnapshot) != null
+                          ? "Condition (eval_config.condition)"
+                          : check.dynamicSnapshot
+                            ? "Rule config (snapshot)"
+                            : ""}
+                      </p>
+                      <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-snug">
+                        {formatConditionHoverContent(check)}
+                      </pre>
+                    </TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="py-3">
+                  <StatusBadge
+                    label={check.result}
+                    tone={toneForCheckResult(check.result)}
+                  />
+                </TableCell>
+                <TableCell className="py-3 text-xs text-muted-foreground">
+                  {formatDateTime(check.checkedAt)}
+                </TableCell>
+                <TableCell className="py-3 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                  {check.dynamicRuleVersion != null &&
+                  check.dynamicRuleVersion !== undefined
+                    ? check.dynamicRuleVersion
+                    : "—"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </TooltipProvider>
+  )
+}
+
 export function CaseWorkspace({
   data,
   initialTab = "overview",
@@ -221,14 +433,11 @@ export function CaseWorkspace({
   const compliantFirst = [...shortlistWithBreakdown].sort((a, b) =>
     a.meetsAll === b.meetsAll ? 0 : a.meetsAll ? -1 : 1,
   )
-  const compliantCount = compliantFirst.filter((x) => x.meetsAll).length
   const visibleCount = suppliersExpanded
     ? compliantFirst.length
-    : compliantCount > 0
-      ? Math.min(3, compliantCount)
-      : Math.min(3, compliantFirst.length)
+    : Math.min(3, compliantFirst.length)
   const visibleSuppliers = compliantFirst.slice(0, visibleCount)
-  const hasMore = compliantFirst.length > visibleCount
+  const hasMore = !suppliersExpanded && compliantFirst.length > 3
 
   useEffect(() => {
     const tabPanelMap: Record<CaseTab, HTMLDivElement | null> = {
@@ -992,14 +1201,27 @@ export function CaseWorkspace({
               />
             </section>
 
-            <section className="space-y-4">
-              <Card className="h-fit">
+            <section className="min-w-0 space-y-4">
+              <Card className="h-fit w-full max-w-full overflow-hidden">
                 <CardHeader>
                   <CardTitle>Supplier comparison</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="overflow-x-auto rounded-lg border">
-                    <Table>
+                    <Table className="min-w-[720px] table-fixed">
+                      <colgroup>
+                        <col className="w-[4%]" />
+                        <col className="w-[18%]" />
+                        <col className="w-[11%]" />
+                        <col className="w-[12%]" />
+                        <col className="w-[10%]" />
+                        <col className="w-[7%]" />
+                        <col className="w-[7%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[13%]" />
+                      </colgroup>
                       <TableHeader>
                         <TableRow>
                           <TableHead className="px-3">Rank</TableHead>
@@ -1016,121 +1238,167 @@ export function CaseWorkspace({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {visibleSuppliers.map(({ supplier }) => (
-                          <TableRow
-                            key={supplier.supplierId}
-                            className={
-                              supplier.rank === 1 ? "bg-emerald-50/40" : ""
-                            }
-                          >
-                            <TableCell className="px-3">
-                              <div className="space-y-1">
+                        {compliantFirst.length === 0 ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={11}
+                              className="py-8 text-center text-sm text-muted-foreground"
+                            >
+                              No suppliers on the shortlist for this case.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                        {visibleSuppliers.map(({ supplier, breakdown }) => {
+                          const { hardPassed, hardTotal, policyPassed, policyTotal } =
+                            getRuleCounts(breakdown)
+                          const rulesLabel =
+                            data.evaluationRuns.length > 0
+                              ? `${hardPassed}/${hardTotal}`
+                              : "—"
+                          const policyLabel =
+                            data.evaluationRuns.length > 0
+                              ? `${policyPassed}/${policyTotal}`
+                              : "—"
+                          return (
+                            <TableRow
+                              key={supplier.supplierId}
+                              className="cursor-pointer"
+                              onClick={() =>
+                                setSelectedSupplierDetail({ supplier, breakdown })
+                              }
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`View details for ${supplier.supplierName}`}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault()
+                                  setSelectedSupplierDetail({ supplier, breakdown })
+                                }
+                              }}
+                            >
+                              <TableCell className="px-3">
                                 <p className="text-base font-semibold tabular-nums">
                                   #{supplier.rank}
                                 </p>
-                                {supplier.rank === 1 ? (
-                                  <StatusBadge label="Top option" tone="success" />
-                                ) : null}
-                              </div>
-                            </TableCell>
-                            <TableCell className="align-top">
-                              <div className="space-y-1">
-                                <p className="font-medium">
-                                  {supplier.supplierName}
-                                </p>
-                                <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                                  {supplier.supplierId}
+                              </TableCell>
+                              <TableCell className="align-top">
+                                <div className="space-y-1">
+                                  <p className="font-medium">
+                                    {supplier.supplierName}
+                                  </p>
+                                  <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                                    {supplier.supplierId}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {supplier.countryHq ?? "N/A"} ·{" "}
+                                    {supplier.currency ?? data.recommendation.currency}
+                                  </p>
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-sm">
+                                <p>{supplier.pricingTierApplied}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {supplier.region ?? "N/A"} · qty{" "}
+                                  {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
-                                  {supplier.countryHq ?? "N/A"} ·{" "}
-                                  {supplier.currency ?? data.recommendation.currency}
+                                  MOQ {supplier.moq ?? "N/A"}
                                 </p>
-                                <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
-                                  {supplier.recommendationNote}
-                                </p>
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-sm">
-                              <p>{supplier.pricingTierApplied}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {supplier.region ?? "N/A"} · qty{" "}
-                                {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                MOQ {supplier.moq ?? "N/A"}
-                              </p>
-                            </TableCell>
-                            <TableCell className="font-medium tabular-nums">
-                              <div>
-                                {formatCurrency(
-                                  supplier.totalPrice,
-                                  data.recommendation.currency,
+                              </TableCell>
+                              <TableCell className="font-medium tabular-nums">
+                                <div>
+                                  {formatCurrency(
+                                    supplier.totalPrice,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Unit{" "}
+                                  {formatCurrency(
+                                    supplier.unitPrice,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Exp.{" "}
+                                  {formatCurrency(
+                                    supplier.expeditedTotal,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Exp unit{" "}
+                                  {formatCurrency(
+                                    supplier.expeditedUnitPrice,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="tabular-nums">
+                                <div>{supplier.standardLeadTimeDays}d std</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {supplier.expeditedLeadTimeDays}d exp
+                                </div>
+                              </TableCell>
+                              <TableCell
+                                className={cn(
+                                  "tabular-nums text-sm",
+                                  data.evaluationRuns.length > 0 &&
+                                    breakdown &&
+                                    hasNoFailedChecks(breakdown.hardRuleChecks) &&
+                                    "font-semibold text-emerald-600",
                                 )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Unit{" "}
-                                {formatCurrency(
-                                  supplier.unitPrice,
-                                  data.recommendation.currency,
+                              >
+                                {rulesLabel}
+                              </TableCell>
+                              <TableCell
+                                className={cn(
+                                  "tabular-nums text-sm",
+                                  data.evaluationRuns.length > 0 &&
+                                    breakdown &&
+                                    hasNoFailedChecks(breakdown.policyChecks) &&
+                                    "font-semibold text-emerald-600",
                                 )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Exp.{" "}
-                                {formatCurrency(
-                                  supplier.expeditedTotal,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Exp unit{" "}
-                                {formatCurrency(
-                                  supplier.expeditedUnitPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell className="tabular-nums">
-                              <div>{supplier.standardLeadTimeDays}d std</div>
-                              <div className="text-xs text-muted-foreground">
-                                {supplier.expeditedLeadTimeDays}d exp
-                              </div>
-                            </TableCell>
-                            <TableCell
-                              className={scoreTone(supplier.qualityScore)}
-                            >
-                              {supplier.qualityScore}
-                            </TableCell>
-                            <TableCell
-                              className={scoreTone(supplier.riskScore, true)}
-                            >
-                              {supplier.riskScore}
-                            </TableCell>
-                            <TableCell className={scoreTone(supplier.esgScore)}>
-                              {supplier.esgScore}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex max-w-[180px] flex-wrap gap-1">
-                                {supplier.preferred ? (
-                                  <StatusBadge label="Preferred" tone="info" />
-                                ) : null}
-                                {supplier.incumbent ? (
-                                  <StatusBadge label="Incumbent" tone="neutral" />
-                                ) : null}
-                                {supplier.policyCompliant ? (
-                                  <StatusBadge label="Compliant" tone="success" />
-                                ) : (
-                                  <StatusBadge label="Conflict" tone="destructive" />
-                                )}
-                                {supplier.dataResidencySupported ? (
-                                  <StatusBadge label="Data residency" tone="info" />
-                                ) : null}
-                                {supplier.coversDeliveryCountry ? (
-                                  <StatusBadge label="Covers country" tone="neutral" />
-                                ) : null}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                              >
+                                {policyLabel}
+                              </TableCell>
+                              <TableCell
+                                className={scoreTone(supplier.qualityScore)}
+                              >
+                                {supplier.qualityScore}
+                              </TableCell>
+                              <TableCell
+                                className={scoreTone(supplier.riskScore, true)}
+                              >
+                                {supplier.riskScore}
+                              </TableCell>
+                              <TableCell className={scoreTone(supplier.esgScore)}>
+                                {supplier.esgScore}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex max-w-[180px] flex-wrap gap-1">
+                                  {supplier.preferred ? (
+                                    <StatusBadge label="Preferred" tone="info" />
+                                  ) : null}
+                                  {supplier.incumbent ? (
+                                    <StatusBadge label="Incumbent" tone="neutral" />
+                                  ) : null}
+                                  {supplier.policyCompliant ? (
+                                    <StatusBadge label="Compliant" tone="success" />
+                                  ) : (
+                                    <StatusBadge label="Conflict" tone="destructive" />
+                                  )}
+                                  {supplier.dataResidencySupported ? (
+                                    <StatusBadge label="Data residency" tone="info" />
+                                  ) : null}
+                                  {supplier.coversDeliveryCountry ? (
+                                    <StatusBadge label="Covers country" tone="neutral" />
+                                  ) : null}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
                       </TableBody>
                     </Table>
                   </div>
@@ -1141,7 +1409,16 @@ export function CaseWorkspace({
                       onClick={() => setSuppliersExpanded(true)}
                       className="w-full"
                     >
-                      Extend — show {compliantFirst.length - visibleCount} more
+                      Show all
+                    </Button>
+                  ) : suppliersExpanded && compliantFirst.length > 3 ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSuppliersExpanded(false)}
+                      className="w-full"
+                    >
+                      Minimize
                     </Button>
                   ) : null}
                 </CardContent>
@@ -1165,6 +1442,7 @@ export function CaseWorkspace({
                   </SheetHeader>
                   {selectedSupplierDetail ? (
                     <SupplierDetailSheetContent
+                      key={`${data.id}-${selectedSupplierDetail.supplier.supplierId}`}
                       requestId={data.id}
                       supplier={selectedSupplierDetail.supplier}
                       breakdown={selectedSupplierDetail.breakdown}
@@ -1290,6 +1568,35 @@ export function CaseWorkspace({
                 </CardContent>
               </Card>
             </section>
+
+            {visibleSuppliers.length > 0 ? (
+              <section className="min-w-0">
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Supplier notes</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {visibleSuppliers.map(({ supplier }) => (
+                      <div
+                        key={supplier.supplierId}
+                        className="rounded-lg border bg-background/80 p-3.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <StatusBadge label={`#${supplier.rank}`} tone="neutral" />
+                          <span className="font-medium">{supplier.supplierName}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {supplier.supplierId}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                          {supplier.recommendationNote}
+                        </p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </section>
+            ) : null}
           </div>
           </TabsContent>
 
@@ -1688,13 +1995,6 @@ export function CaseWorkspace({
   )
 }
 
-function toneForCheckResult(result: SupplierRuleCheck["result"]) {
-  if (result === "passed") return "success"
-  if (result === "warned") return "warning"
-  if (result === "skipped") return "neutral"
-  return "destructive"
-}
-
 function SupplierDetailSheetContent({
   requestId,
   supplier,
@@ -1713,8 +2013,6 @@ function SupplierDetailSheetContent({
 
   useEffect(() => {
     if (breakdown || !requestId || !supplier.supplierId) {
-      setFetchedBreakdown(null)
-      setFetchError(null)
       return
     }
     let cancelled = false
@@ -1742,21 +2040,37 @@ function SupplierDetailSheetContent({
           excluded: false,
           exclusionRuleId: null,
           exclusionReason: null,
-          hardRuleChecks: h.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; skipped?: boolean; checked_at: string }) => ({
-            checkId: c.check_id,
-            ruleId: c.rule_id,
-            versionId: c.version_id,
-            supplierId: c.supplier_id,
-            result: c.skipped ? "skipped" : toRuleCheckResult(c.result),
-            checkedAt: c.checked_at,
+          hardRuleChecks: h.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: c.skipped ? "skipped" : toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
+            dynamicSnapshot:
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
-          policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
-            checkId: c.check_id,
-            ruleId: c.rule_id,
-            versionId: c.version_id,
-            supplierId: c.supplier_id,
-            result: toRuleCheckResult(c.result),
-            checkedAt: c.checked_at,
+          policyChecks: p.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
+            dynamicSnapshot:
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
         })
       })
@@ -1796,33 +2110,28 @@ function SupplierDetailSheetContent({
     )
   }
 
-  const hardPassed = effectiveBreakdown.hardRuleChecks
-    .filter((c) => c.result === "passed")
-    .map((c) => c.ruleId)
-  const policyPassed = effectiveBreakdown.policyChecks
-    .filter((c) => c.result === "passed")
-    .map((c) => c.ruleId)
+  const hardFailed = effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
+  const policyFailed = effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
+  const policyWarned = effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
+  const hardOk =
+    effectiveBreakdown.hardRuleChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.hardRuleChecks)
+  const policyOk =
+    effectiveBreakdown.policyChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.policyChecks)
 
   return (
     <div className="space-y-6 pt-4 pb-6">
       <div className="flex flex-wrap items-center gap-1.5">
         <StatusBadge label={supplier.supplierId} tone="neutral" />
         <StatusBadge
-          label={`Hard: ${hardPassed.length}/${effectiveBreakdown.hardRuleChecks.length}`}
-          tone={
-            effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
-              ? "destructive"
-              : "neutral"
-          }
+          label={`Hard: ${effectiveBreakdown.hardRuleChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.hardRuleChecks.length}`}
+          tone={hardFailed ? "destructive" : hardOk ? "success" : "neutral"}
         />
         <StatusBadge
-          label={`Policy: ${policyPassed.length}/${effectiveBreakdown.policyChecks.length}`}
+          label={`Policy: ${effectiveBreakdown.policyChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.policyChecks.length}`}
           tone={
-            effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
-              ? "destructive"
-              : effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
-                ? "warning"
-                : "neutral"
+            policyFailed ? "destructive" : policyOk ? "success" : policyWarned ? "warning" : "neutral"
           }
         />
       </div>
@@ -1832,85 +2141,22 @@ function SupplierDetailSheetContent({
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Hard checks
           </p>
-          {hardPassed.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Rules passed: {hardPassed.join(", ")}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto rounded-lg border p-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 py-3">Rule</TableHead>
-                  <TableHead className="py-3">Version</TableHead>
-                  <TableHead className="py-3">Result</TableHead>
-                  <TableHead className="py-3">Checked</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {effectiveBreakdown.hardRuleChecks.map((check) => (
-                  <TableRow key={check.checkId}>
-                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {check.versionId.slice(0, 8)}
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <StatusBadge
-                        label={check.result}
-                        tone={toneForCheckResult(check.result)}
-                      />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {formatDateTime(check.checkedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.hardRuleChecks} />
         </div>
 
         <div className="space-y-2">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Policy checks
           </p>
-          {policyPassed.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Rules passed: {policyPassed.join(", ")}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto rounded-lg border p-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 py-3">Rule</TableHead>
-                  <TableHead className="py-3">Version</TableHead>
-                  <TableHead className="py-3">Result</TableHead>
-                  <TableHead className="py-3">Checked</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {effectiveBreakdown.policyChecks.map((check) => (
-                  <TableRow key={check.checkId}>
-                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {check.versionId.slice(0, 8)}
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <StatusBadge
-                        label={check.result}
-                        tone={toneForCheckResult(check.result)}
-                      />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {formatDateTime(check.checkedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.policyChecks} />
         </div>
+      </div>
+
+      <div className="rounded-lg border bg-muted/20 p-4">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Rationale
+        </p>
+        <p className="mt-2 text-sm leading-relaxed">{supplier.recommendationNote}</p>
       </div>
     </div>
   )
@@ -1965,11 +2211,25 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
                 <div className="flex flex-wrap gap-2">
                   <StatusBadge
                     label={`Hard: ${passedHard}✓ ${failedHard}✕ ${skippedHard}⎯`}
-                    tone={failedHard > 0 ? "destructive" : "neutral"}
+                    tone={
+                      failedHard > 0
+                        ? "destructive"
+                        : supplier.hardRuleChecks.length > 0 && failedHard === 0
+                          ? "success"
+                          : "neutral"
+                    }
                   />
                   <StatusBadge
                     label={`Policy: ${passedPolicy}✓ ${warnedPolicy}⚠ ${failedPolicy}✕`}
-                    tone={failedPolicy > 0 ? "destructive" : warnedPolicy > 0 ? "warning" : "neutral"}
+                    tone={
+                      failedPolicy > 0
+                        ? "destructive"
+                        : supplier.policyChecks.length > 0 && failedPolicy === 0
+                          ? "success"
+                          : warnedPolicy > 0
+                            ? "warning"
+                            : "neutral"
+                    }
                   />
                 </div>
               </div>
@@ -1981,68 +2241,14 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
                   <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                     Hard checks
                   </p>
-                  <div className="overflow-x-auto rounded-lg border p-4">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3 py-3">Rule</TableHead>
-                          <TableHead className="py-3">Version</TableHead>
-                          <TableHead className="py-3">Result</TableHead>
-                          <TableHead className="py-3">Checked</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {supplier.hardRuleChecks.map((check) => (
-                          <TableRow key={check.checkId}>
-                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {check.versionId.slice(0, 8)}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
-                            </TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {formatDateTime(check.checkedAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <EnrichedRuleChecksTable checks={supplier.hardRuleChecks} />
                 </div>
 
                 <div className="space-y-2">
                   <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                     Policy checks
                   </p>
-                  <div className="overflow-x-auto rounded-lg border p-4">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3 py-3">Rule</TableHead>
-                          <TableHead className="py-3">Version</TableHead>
-                          <TableHead className="py-3">Result</TableHead>
-                          <TableHead className="py-3">Checked</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {supplier.policyChecks.map((check) => (
-                          <TableRow key={check.checkId}>
-                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {check.versionId.slice(0, 8)}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
-                            </TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {formatDateTime(check.checkedAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
+                  <EnrichedRuleChecksTable checks={supplier.policyChecks} />
                 </div>
               </div>
             </div>

@@ -25,7 +25,13 @@ from app.models.evaluations import (
     RuleVersion,
     SupplierEvaluation,
 )
+from app.services.dynamic_rule_versions import (
+    get_dynamic_snapshot_and_version,
+    get_dynamic_snapshot_by_version,
+)
 from app.schemas.rule_versions import (
+    DynamicRuleVersionActiveOut,
+    DynamicRuleVersionPinnedOut,
     EscalationLogOut,
     EvaluationDetailOut,
     EvaluationRunCreate,
@@ -51,6 +57,60 @@ from app.schemas.rule_versions import (
 )
 
 router = APIRouter(prefix="/api/rule-versions", tags=["Rule Versions"])
+
+
+def _rule_definition_name(db: Session, rule_id: str) -> str | None:
+    rd = db.query(RuleDefinition).filter(RuleDefinition.rule_id == rule_id).first()
+    return rd.rule_name if rd else None
+
+
+def _version_config_snapshot(db: Session, version_id: str) -> dict[str, Any] | None:
+    rv = db.query(RuleVersion).filter(RuleVersion.version_id == version_id).first()
+    if not rv:
+        return None
+    return rv.rule_config
+
+
+def _hard_rule_check_out(db: Session, h: HardRuleCheck) -> RuleCheckOut:
+    dyn_snap, dyn_ver = get_dynamic_snapshot_and_version(db, h.rule_id)
+    return RuleCheckOut(
+        check_id=h.check_id,
+        rule_id=h.rule_id,
+        version_id=h.version_id,
+        supplier_id=h.supplier_id,
+        result=h.result or "skipped",
+        evidence=None,
+        skipped=h.skipped,
+        skip_reason=h.skip_reason,
+        checked_at=h.checked_at,
+        rule_name=_rule_definition_name(db, h.rule_id),
+        version_snapshot=_version_config_snapshot(db, h.version_id),
+        dynamic_snapshot=dyn_snap,
+        dynamic_rule_version=dyn_ver,
+    )
+
+
+def _policy_rule_check_out(db: Session, p: PolicyCheck) -> PolicyCheckOut:
+    dyn_snap, dyn_ver = get_dynamic_snapshot_and_version(db, p.rule_id)
+    return PolicyCheckOut(
+        check_id=p.check_id,
+        rule_id=p.rule_id,
+        version_id=p.version_id,
+        supplier_id=p.supplier_id,
+        result=p.result,
+        evidence=p.evidence if isinstance(p.evidence, dict) else {},
+        skipped=False,
+        skip_reason=None,
+        checked_at=p.checked_at,
+        rule_name=_rule_definition_name(db, p.rule_id),
+        version_snapshot=_version_config_snapshot(db, p.version_id),
+        dynamic_snapshot=dyn_snap,
+        dynamic_rule_version=dyn_ver,
+        run_id=p.run_id,
+        override_by=p.override_by,
+        override_at=p.override_at,
+        override_reason=p.override_reason,
+    )
 
 
 def _get_active_version(db: Session, rule_id: str) -> RuleVersion | None:
@@ -209,6 +269,50 @@ def get_active_version(rule_id: str, db: Session = Depends(get_db)):
     return v
 
 
+@router.get(
+    "/dynamic-rule-versions/active/{rule_id}",
+    response_model=DynamicRuleVersionActiveOut,
+)
+def get_active_dynamic_rule_version(rule_id: str, db: Session = Depends(get_db)):
+    """
+    Latest snapshot from `dynamic_rule_versions` (active row, else highest version),
+    else live row from `dynamic_rules`. Used by clients when embedded check payloads
+    omit `dynamic_snapshot` / `dynamic_rule_version`.
+    """
+    snap, ver = get_dynamic_snapshot_and_version(db, rule_id)
+    if snap is None or ver is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No dynamic rule snapshot found for rule_id={rule_id}",
+        )
+    return DynamicRuleVersionActiveOut(rule_id=rule_id, version=ver, snapshot=snap)
+
+
+@router.get(
+    "/dynamic-rule-versions/{rule_id}/at-version/{version_num}",
+    response_model=DynamicRuleVersionPinnedOut,
+)
+def get_dynamic_rule_version_at(
+    rule_id: str,
+    version_num: int,
+    db: Session = Depends(get_db),
+):
+    """Exact row from `dynamic_rule_versions` by (rule_id, integer version)."""
+    snap, row = get_dynamic_snapshot_by_version(db, rule_id, version_num)
+    if row is None or snap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No dynamic_rule_versions row for {rule_id} version {version_num}",
+        )
+    return DynamicRuleVersionPinnedOut(
+        rule_id=rule_id,
+        version=row.version,
+        snapshot=snap,
+        valid_from=row.valid_from,
+        valid_to=row.valid_to,
+    )
+
+
 @router.get("/versions/{version_id}", response_model=RuleVersionWithDefinitionOut)
 def get_rule_version(version_id: str, db: Session = Depends(get_db)):
     """Get a single rule version by its UUID, including parent definition metadata."""
@@ -301,32 +405,12 @@ def get_evaluation_detail(
     for sid in sorted(supplier_ids):
         se = next((s for s in supplier_evals if s.supplier_id == sid), None)
         hc_list = [
-            RuleCheckOut(
-                check_id=h.check_id,
-                rule_id=h.rule_id,
-                version_id=h.version_id,
-                supplier_id=h.supplier_id,
-                result=h.result or "skipped",
-                evidence=None,
-                skipped=h.skipped,
-                skip_reason=h.skip_reason,
-                checked_at=h.checked_at,
-            )
+            _hard_rule_check_out(db, h)
             for h in hard_checks
             if h.supplier_id == sid
         ]
         pc_list = [
-            RuleCheckOut(
-                check_id=p.check_id,
-                rule_id=p.rule_id,
-                version_id=p.version_id,
-                supplier_id=p.supplier_id,
-                result=p.result,
-                evidence=p.evidence if isinstance(p.evidence, dict) else {},
-                skipped=False,
-                skip_reason=None,
-                checked_at=p.checked_at,
-            )
+            _policy_rule_check_out(db, p)
             for p in policy_checks
             if p.supplier_id == sid
         ]
@@ -856,20 +940,7 @@ def list_hard_rule_checks(
     if supplier_id:
         q = q.filter(HardRuleCheck.supplier_id == supplier_id)
     rows = q.order_by(HardRuleCheck.checked_at.desc()).all()
-    return [
-        RuleCheckOut(
-            check_id=h.check_id,
-            rule_id=h.rule_id,
-            version_id=h.version_id,
-            supplier_id=h.supplier_id,
-            result=h.result or "skipped",
-            evidence=None,
-            skipped=h.skipped,
-            skip_reason=h.skip_reason,
-            checked_at=h.checked_at,
-        )
-        for h in rows
-    ]
+    return [_hard_rule_check_out(db, h) for h in rows]
 
 
 @router.get("/hard-rule-checks/{check_id}", response_model=RuleCheckOut)
@@ -878,17 +949,7 @@ def get_hard_rule_check(check_id: str, db: Session = Depends(get_db)):
     h = db.query(HardRuleCheck).filter(HardRuleCheck.check_id == check_id).first()
     if not h:
         raise HTTPException(status_code=404, detail="Hard rule check not found")
-    return RuleCheckOut(
-        check_id=h.check_id,
-        rule_id=h.rule_id,
-        version_id=h.version_id,
-        supplier_id=h.supplier_id,
-        result=h.result or "skipped",
-        evidence=None,
-        skipped=h.skipped,
-        skip_reason=h.skip_reason,
-        checked_at=h.checked_at,
-    )
+    return _hard_rule_check_out(db, h)
 
 
 @router.post("/evaluations/{run_id}/hard-rule-checks", response_model=list[RuleCheckOut])
@@ -920,20 +981,7 @@ def add_hard_rule_checks(
         db.add(hc)
         created.append(hc)
     db.commit()
-    return [
-        RuleCheckOut(
-            check_id=h.check_id,
-            rule_id=h.rule_id,
-            version_id=h.version_id,
-            supplier_id=h.supplier_id,
-            result=h.result or "skipped",
-            evidence=None,
-            skipped=h.skipped,
-            skip_reason=h.skip_reason,
-            checked_at=h.checked_at,
-        )
-        for h in created
-    ]
+    return [_hard_rule_check_out(db, h) for h in created]
 
 
 # ── Policy checks ───────────────────────────────────────────────────────────
@@ -955,7 +1003,7 @@ def list_policy_checks(
     if supplier_id:
         q = q.filter(PolicyCheck.supplier_id == supplier_id)
     rows = q.order_by(PolicyCheck.checked_at.desc()).all()
-    return [PolicyCheckOut.model_validate(p) for p in rows]
+    return [_policy_rule_check_out(db, p) for p in rows]
 
 
 @router.get("/policy-checks/{check_id}", response_model=PolicyCheckOut)
@@ -964,7 +1012,7 @@ def get_policy_check(check_id: str, db: Session = Depends(get_db)):
     p = db.query(PolicyCheck).filter(PolicyCheck.check_id == check_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Policy check not found")
-    return PolicyCheckOut.model_validate(p)
+    return _policy_rule_check_out(db, p)
 
 
 @router.post("/evaluations/{run_id}/policy-checks", response_model=list[PolicyCheckOut])
@@ -993,7 +1041,7 @@ def add_policy_checks(
         db.add(pc)
         created.append(pc)
     db.commit()
-    return [PolicyCheckOut.model_validate(c) for c in created]
+    return [_policy_rule_check_out(db, c) for c in created]
 
 
 @router.patch("/policy-checks/{check_id}", response_model=PolicyCheckOut)
@@ -1017,7 +1065,7 @@ def override_policy_check(
             override_reason=body.override_reason,
             new_evidence=body.new_evidence,
         )
-        return PolicyCheckOut.model_validate(updated)
+        return _policy_rule_check_out(db, updated)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
