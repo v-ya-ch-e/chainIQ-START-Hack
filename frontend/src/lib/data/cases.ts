@@ -1259,9 +1259,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
         const details = asRecord(entry.details)
         const severity = details?.severity as string | undefined
         return {
-          issueId:
-            (details?.issue_type as string | undefined)?.toUpperCase() ??
-            `VAL-${index + 1}`,
+          issueId: `${(details?.issue_type as string | undefined)?.toUpperCase() ?? "VAL"}-${index + 1}`,
           severity: severityFrom(severity),
           type: entry.category,
           description: entry.message,

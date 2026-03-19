@@ -639,6 +639,19 @@ export function CaseWorkspace({
 
   return (
     <div className="space-y-6">
+      {showReturnToLatest ? (
+        <Link
+          href={`/cases/${data.id}`}
+          className={cn(
+            buttonVariants({ variant: "default", size: "sm" }),
+            "fixed left-4 top-4 z-50 gap-1.5 shadow-lg",
+          )}
+        >
+          <ArrowLeft className="size-3.5" />
+          Return to latest evaluation
+        </Link>
+      ) : null}
+
       {/* Page header */}
       <div className="animate-fade-in-up flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="space-y-2">
@@ -678,15 +691,6 @@ export function CaseWorkspace({
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {showReturnToLatest ? (
-            <Link
-              href={`/cases/${data.id}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
-            >
-              <ArrowLeft className="size-3.5" />
-              Return to latest evaluation
-            </Link>
-          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -1845,6 +1849,47 @@ export function CaseWorkspace({
                   />
                 </CardContent>
               </Card>
+
+              {data.evaluationRuns.length > 0 ? (
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Evaluation runs</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {[...data.evaluationRuns]
+                      .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+                      .map((run, index) => (
+                      <Link
+                        key={run.runId}
+                        href={`/cases/eval/${run.runId}`}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-accent/60",
+                          run.runId === selectedRunId && "border-primary bg-primary/5",
+                        )}
+                      >
+                        <div>
+                          <p className="text-sm font-medium">
+                            Evaluation {index + 1}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDateTime(run.startedAt)}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          label={run.status}
+                          tone={
+                            run.status === "completed"
+                              ? "success"
+                              : run.status === "failed"
+                                ? "destructive"
+                                : "neutral"
+                          }
+                        />
+                      </Link>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
 
               <Card className="bg-card/70">
                 <CardHeader>
