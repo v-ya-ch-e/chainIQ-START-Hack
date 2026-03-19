@@ -133,6 +133,10 @@ export interface EvaluationRunDetail {
   startedAt: string
   finishedAt: string | null
   supplierBreakdowns: SupplierRuleBreakdown[]
+  /** Supplier shortlist from this run (from output_snapshot). Used when run is selected. */
+  supplierShortlist?: SupplierRow[]
+  /** Excluded suppliers from this run (from output_snapshot). */
+  excludedSuppliersFromRun?: ExcludedSupplier[]
 }
 
 export interface ExcludedSupplier {
@@ -172,7 +176,9 @@ export interface AuditTimelineEvent {
   timestamp: string
   title: string
   description: string
-  kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit"
+  kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit" | "evaluation_run"
+  /** When kind is evaluation_run, links to /cases/eval/{runId} */
+  runId?: string
 }
 
 export interface AuditFeedEvent extends AuditTimelineEvent {

@@ -1,12 +1,13 @@
 "use client"
 
-import { Download, Loader2, Play, ShieldCheck, TimerReset } from "lucide-react"
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Loader2, Play, ShieldCheck, TimerReset } from "lucide-react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -17,6 +18,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Sheet,
   SheetContent,
@@ -35,6 +43,7 @@ import {
 import type {
   CaseDetail,
   EvaluationRunDetail,
+  RuleCheckResult,
   SupplierRuleBreakdown,
   SupplierRuleCheck,
   SupplierRow,
@@ -44,6 +53,10 @@ import { cn } from "@/lib/utils"
 interface CaseWorkspaceProps {
   data: CaseDetail
   initialTab?: CaseTab
+  /** When provided, pre-select this run (e.g. from /cases/eval/[runId] page). */
+  initialRunId?: string
+  /** When true, show "Return to latest decision" button linking to case page. */
+  showReturnToLatest?: boolean
 }
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
@@ -75,12 +88,17 @@ function getRuleCounts(breakdown: SupplierRuleBreakdown | null) {
   return { hardPassed, hardTotal, policyPassed, policyTotal }
 }
 
-export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspaceProps) {
+export function CaseWorkspace({
+  data,
+  initialTab = "overview",
+  initialRunId,
+  showReturnToLatest = false,
+}: CaseWorkspaceProps) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(
-    data.evaluationRuns[0]?.runId ?? null,
+    initialRunId ?? data.evaluationRuns[0]?.runId ?? null,
   )
   const [suppliersExpanded, setSuppliersExpanded] = useState(false)
   const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<{
@@ -90,15 +108,6 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
   const [isRerunning, setIsRerunning] = useState(false)
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
-  const evaluatedSuppliers =
-    data.supplierShortlist.length + data.excludedSuppliers.length
-  const hasShortlist = data.supplierShortlist.length > 0
-  const lowestPrice = hasShortlist
-    ? Math.min(...data.supplierShortlist.map((entry) => entry.totalPrice))
-    : null
-  const fastestExpeditedLeadTime = hasShortlist
-    ? Math.min(...data.supplierShortlist.map((entry) => entry.expeditedLeadTimeDays))
-    : null
   const activeEscalation =
     data.escalations.find((entry) => entry.status !== "resolved") ??
     data.escalations[0] ??
@@ -107,6 +116,23 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
     data.evaluationRuns.find((run) => run.runId === selectedRunId) ??
     data.evaluationRuns[0] ??
     null
+  const effectiveShortlist =
+    selectedRun?.supplierShortlist && selectedRun.supplierShortlist.length > 0
+      ? selectedRun.supplierShortlist
+      : data.supplierShortlist
+  const effectiveExcluded =
+    selectedRun?.excludedSuppliersFromRun && selectedRun.excludedSuppliersFromRun.length > 0
+      ? selectedRun.excludedSuppliersFromRun
+      : data.excludedSuppliers
+  const effectiveEvaluatedCount = effectiveShortlist.length + effectiveExcluded.length
+  const effectiveLowestPrice =
+    effectiveShortlist.length > 0
+      ? Math.min(...effectiveShortlist.map((entry) => entry.totalPrice))
+      : null
+  const effectiveFastestExpedited =
+    effectiveShortlist.length > 0
+      ? Math.min(...effectiveShortlist.map((entry) => entry.expeditedLeadTimeDays))
+      : null
   const overviewRef = useRef<HTMLDivElement>(null)
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
@@ -141,7 +167,7 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
     }
   }
 
-  const shortlistWithBreakdown = data.supplierShortlist.map((s) => ({
+  const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
     supplier: s,
     breakdown: getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
     meetsAll: meetsAllCriteria(
@@ -215,7 +241,16 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
           />
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {showReturnToLatest ? (
+            <Link
+              href={`/cases/${data.id}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+            >
+              <ArrowLeft className="size-3.5" />
+              Return to latest decision
+            </Link>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -570,25 +605,25 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MiniMetric
                 label="Suppliers evaluated"
-                value={evaluatedSuppliers}
+                value={effectiveEvaluatedCount}
                 helper="Shortlist plus excluded rows"
               />
               <MiniMetric
                 label="Compliant suppliers"
-                value={data.supplierShortlist.length}
+                value={effectiveShortlist.length}
                 helper="Suppliers still eligible after policy filters"
               />
               <MiniMetric
                 label="Lowest compliant price"
-                value={formatCurrency(lowestPrice, data.recommendation.currency)}
+                value={formatCurrency(effectiveLowestPrice, data.recommendation.currency)}
                 helper="Best commercial baseline"
               />
               <MiniMetric
                 label="Fastest expedited lead time"
                 value={
-                  fastestExpeditedLeadTime === null
+                  effectiveFastestExpedited === null
                     ? "Not available"
-                    : `${fastestExpeditedLeadTime} days`
+                    : `${effectiveFastestExpedited} days`
                 }
                 helper="Closest feasible delivery option"
               />
@@ -792,7 +827,7 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
                     <CardTitle>Excluded suppliers</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    {data.excludedSuppliers.map((supplier) => (
+                    {effectiveExcluded.map((supplier) => (
                       <div
                         key={supplier.supplierId}
                         className="rounded-lg border bg-background/80 p-3.5"
@@ -1056,29 +1091,113 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
             value="audit"
             className="space-y-5 transition-all duration-200 ease-out"
           >
-          <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+          <div className="space-y-5">
+            {data.evaluationRuns.length > 0 ? (
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Evaluation run</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Select which evaluation to view. Decisions and suppliers update when you change the run.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 rounded-lg border border-input bg-transparent">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0"
+                        onClick={() => {
+                          const idx = data.evaluationRuns.findIndex((r) => r.runId === selectedRunId)
+                          if (idx > 0) setSelectedRunId(data.evaluationRuns[idx - 1].runId)
+                        }}
+                        disabled={
+                          !selectedRunId ||
+                          data.evaluationRuns.findIndex((r) => r.runId === selectedRunId) <= 0
+                        }
+                        aria-label="Previous evaluation run"
+                      >
+                        <ChevronLeft className="size-4" />
+                      </Button>
+                      <Select
+                        value={selectedRunId ?? ""}
+                        onValueChange={(v) => setSelectedRunId(v || null)}
+                      >
+                        <SelectTrigger className="h-8 w-[220px] border-0 bg-transparent shadow-none focus:ring-0">
+                          <SelectValue placeholder="Select run" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {data.evaluationRuns.map((run, idx) => (
+                            <SelectItem key={run.runId} value={run.runId}>
+                              Run {idx + 1} — {formatDateTime(run.startedAt)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 shrink-0"
+                        onClick={() => {
+                          const idx = data.evaluationRuns.findIndex((r) => r.runId === selectedRunId)
+                          if (idx >= 0 && idx < data.evaluationRuns.length - 1)
+                            setSelectedRunId(data.evaluationRuns[idx + 1].runId)
+                        }}
+                        disabled={
+                          !selectedRunId ||
+                          data.evaluationRuns.findIndex((r) => r.runId === selectedRunId) >=
+                            data.evaluationRuns.length - 1
+                        }
+                        aria-label="Next evaluation run"
+                      >
+                        <ChevronRight className="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
             <Card>
               <CardHeader>
                 <CardTitle>Decision timeline</CardTitle>
               </CardHeader>
               <CardContent className="space-y-5">
-                {data.auditTrail.timeline.map((event, index) => (
-                  <div key={event.id} className="relative pl-7">
-                    {index !== data.auditTrail.timeline.length - 1 ? (
-                      <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
-                    ) : null}
-                    <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {formatDateTime(event.timestamp)}
-                    </p>
-                    <h3 className="mt-1 text-sm font-semibold">
-                      {event.title}
-                    </h3>
-                    <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
-                      {event.description}
-                    </p>
-                  </div>
-                ))}
+                {data.auditTrail.timeline.map((event, index) => {
+                  const isRunEvent = event.kind === "evaluation_run" && event.runId
+                  const content = (
+                    <>
+                      {index !== data.auditTrail.timeline.length - 1 ? (
+                        <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
+                      ) : null}
+                      <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {formatDateTime(event.timestamp)}
+                      </p>
+                      <h3 className="mt-1 text-sm font-semibold">
+                        {event.title}
+                      </h3>
+                      <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
+                        {event.description}
+                      </p>
+                    </>
+                  )
+                  return (
+                    <div key={event.id} className="relative pl-7">
+                      {isRunEvent ? (
+                        <Link
+                          href={`/cases/eval/${event.runId}`}
+                          className="block rounded-lg border border-transparent p-4 transition-colors hover:border-primary/30 hover:bg-muted/50"
+                        >
+                          {content}
+                        </Link>
+                      ) : (
+                        content
+                      )}
+                    </div>
+                  )
+                })}
               </CardContent>
             </Card>
 
@@ -1153,6 +1272,7 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
               </Card>
             </div>
           </div>
+          </div>
           </TabsContent>
         </div>
       </Tabs>
@@ -1219,7 +1339,7 @@ function SupplierDetailSheetContent({
             ruleId: c.rule_id,
             versionId: c.version_id,
             supplierId: c.supplier_id,
-            result: (c.skipped ? "skipped" : c.result) ?? "skipped",
+            result: ((c.skipped ? "skipped" : c.result) ?? "skipped") as RuleCheckResult,
             checkedAt: c.checked_at,
           })),
           policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
@@ -1227,7 +1347,7 @@ function SupplierDetailSheetContent({
             ruleId: c.rule_id,
             versionId: c.version_id,
             supplierId: c.supplier_id,
-            result: c.result,
+            result: c.result as RuleCheckResult,
             checkedAt: c.checked_at,
           })),
         })

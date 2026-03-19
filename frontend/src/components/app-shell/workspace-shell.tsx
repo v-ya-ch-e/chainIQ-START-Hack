@@ -219,7 +219,14 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
   }
 
   if (normalizedPath.startsWith("/cases/")) {
-    const caseId = decodeURIComponent(normalizedPath.split("/")[2] ?? "").trim()
+    const segments = normalizedPath.split("/").filter(Boolean)
+    if (segments[1] === "eval" && segments[2]) {
+      return [
+        { label: "Inbox", href: "/inbox" },
+        { label: "Evaluation run", href: undefined },
+      ]
+    }
+    const caseId = decodeURIComponent(segments[1] ?? "").trim()
     return [
       { label: "Inbox", href: "/inbox" },
       { label: caseId ? `Case ${caseId}` : "Case Detail" },

@@ -8,7 +8,9 @@ import type {
   EvaluationRunDetail,
   QueueEscalationItem,
   RecommendationStatus,
+  RuleCheckResult,
   ScenarioTag,
+  SupplierRow,
 } from "@/lib/types/case"
 
 type RequestListResponse = {
@@ -190,6 +192,8 @@ type EvaluationDetailApi = {
   status: string
   started_at: string
   finished_at: string | null
+  supplier_shortlist?: Array<Record<string, unknown>>
+  suppliers_excluded?: Array<{ supplier_id: string; supplier_name: string; reason: string }>
   supplier_breakdowns: Array<{
     supplier_id: string
     supplier_name: string | null
@@ -408,7 +412,55 @@ async function fetchEscalationRowsByRequest(
   return rows.map(mapEscalationQueueRow)
 }
 
+function extractPrice(entry: Record<string, unknown>, prefix: string): number {
+  for (const key of Object.keys(entry)) {
+    if (key.startsWith(prefix) && typeof entry[key] === "number") {
+      return entry[key] as number
+    }
+  }
+  return 0
+}
+
+function mapSupplierShortlistEntry(
+  entry: Record<string, unknown>,
+  index: number,
+): SupplierRow {
+  const totalPrice = extractPrice(entry, "total_price_") || extractPrice(entry, "total_price") || 0
+  const unitPrice = extractPrice(entry, "unit_price_") || extractPrice(entry, "unit_price") || 0
+  const expeditedTotal = extractPrice(entry, "expedited_total_") || extractPrice(entry, "expedited_total") || 0
+  const expeditedUnitPrice = extractPrice(entry, "expedited_unit_price_") || extractPrice(entry, "expedited_unit_price") || 0
+  return {
+    rank: (entry.rank as number) ?? index + 1,
+    supplierId: (entry.supplier_id as string) ?? "",
+    supplierName: (entry.supplier_name as string) ?? "",
+    preferred: (entry.preferred as boolean) ?? false,
+    incumbent: (entry.incumbent as boolean) ?? false,
+    pricingTierApplied: (entry.pricing_tier_applied as string) ?? "",
+    unitPrice,
+    totalPrice,
+    standardLeadTimeDays: (entry.standard_lead_time_days as number) ?? 0,
+    expeditedLeadTimeDays: (entry.expedited_lead_time_days as number) ?? 0,
+    expeditedUnitPrice,
+    expeditedTotal,
+    qualityScore: (entry.quality_score as number) ?? 0,
+    riskScore: (entry.risk_score as number) ?? 0,
+    esgScore: (entry.esg_score as number) ?? 0,
+    policyCompliant: (entry.policy_compliant as boolean) ?? true,
+    coversDeliveryCountry: (entry.covers_delivery_country as boolean) ?? true,
+    recommendationNote: (entry.recommendation_note as string) ?? "Eligible supplier after policy and region checks.",
+  }
+}
+
 function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
+  const supplierShortlist = (raw.supplier_shortlist ?? []).map((entry, i) =>
+    mapSupplierShortlistEntry(entry as Record<string, unknown>, i),
+  )
+  const excludedSuppliersFromRun = (raw.suppliers_excluded ?? []).map((e) => ({
+    supplierId: e.supplier_id,
+    supplierName: e.supplier_name,
+    reason: e.reason,
+    hardExclusion: (e.reason ?? "").toLowerCase().includes("restricted"),
+  }))
   return {
     runId: raw.run_id,
     requestId: raw.request_id,
@@ -426,7 +478,7 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         ruleId: check.rule_id,
         versionId: check.version_id,
         supplierId: check.supplier_id,
-        result: (check.skipped ? "skipped" : check.result) ?? "skipped",
+        result: ((check.skipped ? "skipped" : check.result) ?? "skipped") as RuleCheckResult,
         checkedAt: check.checked_at,
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
@@ -437,13 +489,15 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         ruleId: check.rule_id,
         versionId: check.version_id,
         supplierId: check.supplier_id,
-        result: check.result,
+        result: check.result as RuleCheckResult,
         checkedAt: check.checked_at,
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
         evidence: check.evidence ?? null,
       })),
     })),
+    supplierShortlist: supplierShortlist.length > 0 ? supplierShortlist : undefined,
+    excludedSuppliersFromRun: excludedSuppliersFromRun.length > 0 ? excludedSuppliersFromRun : undefined,
   }
 }
 
@@ -684,6 +738,26 @@ export async function getCaseList(): Promise<CaseListItem[]> {
   return buildCaseListFromData(rawData)
 }
 
+export async function getCaseDetailByRunId(
+  runId: string,
+): Promise<{ caseDetail: CaseDetail; runId: string } | null> {
+  let evalDetail: EvaluationDetailApi
+  try {
+    evalDetail = await fetchJson<EvaluationDetailApi>(
+      `/api/rule-versions/evaluations/${runId}`,
+    )
+  } catch (error) {
+    if (error instanceof BackendApiError && error.status === 404) {
+      return null
+    }
+    throw error
+  }
+  const requestId = evalDetail.request_id
+  const caseDetail = await getCaseDetail(requestId)
+  if (!caseDetail) return null
+  return { caseDetail, runId }
+}
+
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {
   let detail: RequestDetail
   try {
@@ -829,6 +903,14 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       title: `Escalation opened (${entry.rule})`,
       description: entry.trigger,
       kind: "escalation" as const,
+    })),
+    ...evaluationRunsRaw.map((run, idx) => ({
+      id: run.run_id,
+      timestamp: run.started_at,
+      title: `Evaluation run ${idx + 1}`,
+      description: `Decision snapshot from ${new Date(run.started_at).toLocaleString()}. Click to view full details.`,
+      kind: "evaluation_run" as const,
+      runId: run.run_id,
     })),
   ]
 
