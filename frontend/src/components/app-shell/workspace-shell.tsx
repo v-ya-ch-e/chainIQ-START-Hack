@@ -226,6 +226,13 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
     return [{ label: "Data" }]
   }
 
+  if (normalizedPath === "/cases/new") {
+    return [
+      { label: "Inbox", href: "/inbox" },
+      { label: "New Case" },
+    ]
+  }
+
   if (normalizedPath.startsWith("/cases/")) {
     const caseId = decodeURIComponent(normalizedPath.split("/")[2] ?? "").trim()
     return [

@@ -4,9 +4,14 @@ import { getDashboardPageData } from "@/lib/data/cases"
 export const dynamic = "force-dynamic"
 
 export default async function Page() {
-  const { metrics, cases, dataState } = await getDashboardPageData()
+  const { metrics, cases, dataState, insights } = await getDashboardPageData()
 
   return (
-    <OverviewPage metrics={metrics} cases={cases} dataState={dataState} />
+    <OverviewPage
+      metrics={metrics}
+      cases={cases}
+      dataState={dataState}
+      insights={insights}
+    />
   )
 }

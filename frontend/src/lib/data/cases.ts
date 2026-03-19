@@ -1,11 +1,17 @@
 import { chainIqApi } from "@/lib/api/client"
 import type {
   AuditFeedEvent,
+  CaseIntakeInput,
+  CaseDraftPayload,
   CaseDetail,
   CaseListItem,
   CaseStatus,
+  CategoryOption,
+  CreateCasePayload,
+  DashboardInsights,
   DashboardMetric,
   DashboardPageData,
+  ExtractionResult,
   QueueEscalationItem,
   RecommendationStatus,
   ScenarioTag,
@@ -198,9 +204,26 @@ type DashboardRawData = {
   escalationRows: QueueEscalationItem[]
 }
 
+type SpendByCategoryRow = {
+  category_l1?: string | null
+  category_l2?: string | null
+  total_spend?: string | number | null
+  award_count?: string | number | null
+}
+
+type DashboardAnalyticsData = {
+  spendByCategory: SpendByCategoryRow[]
+  spendBySupplier: Array<{
+    supplier_name?: string
+    total_spend?: string
+  }>
+  supplierWinRates: Array<{ win_rate?: string }>
+}
+
 type DashboardSnapshot = {
   metrics: DashboardMetric[]
   cases: CaseListItem[]
+  insights: DashboardInsights
   asOf: string
   cachedAtMs: number
 }
@@ -221,6 +244,16 @@ const STATUS_MAP: Record<string, CaseStatus> = {
 
 let dashboardSnapshot: DashboardSnapshot | null = null
 let dashboardSnapshotPromise: Promise<DashboardSnapshot> | null = null
+
+const statusLabels: Record<CaseStatus, string> = {
+  received: "Received",
+  parsed: "Parsed",
+  pending_review: "Pending review",
+  evaluated: "Evaluated",
+  recommended: "Recommended",
+  escalated: "Escalated",
+  resolved: "Resolved",
+}
 
 function toNumber(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null
@@ -383,18 +416,27 @@ async function fetchDashboardRawData(): Promise<DashboardRawData> {
   }
 }
 
-async function buildDashboardMetricsFromData({
-  requests,
-  awards,
-  escalationRows,
-}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">): Promise<
-  DashboardMetric[]
-> {
+async function fetchDashboardAnalyticsData(): Promise<DashboardAnalyticsData> {
   const [spendByCategory, spendBySupplier, supplierWinRates] = await Promise.all([
     chainIqApi.analytics.spendByCategory().catch(() => []),
     chainIqApi.analytics.spendBySupplier().catch(() => []),
     chainIqApi.analytics.supplierWinRates().catch(() => []),
   ])
+
+  return {
+    spendByCategory: spendByCategory as SpendByCategoryRow[],
+    spendBySupplier: spendBySupplier as DashboardAnalyticsData["spendBySupplier"],
+    supplierWinRates: supplierWinRates as DashboardAnalyticsData["supplierWinRates"],
+  }
+}
+
+async function buildDashboardMetricsFromData({
+  requests,
+  awards,
+  escalationRows,
+}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">, analytics?: DashboardAnalyticsData): Promise<DashboardMetric[]> {
+  const resolvedAnalytics = analytics ?? (await fetchDashboardAnalyticsData())
+  const { spendByCategory, spendBySupplier, supplierWinRates } = resolvedAnalytics
 
   const blockingCases = new Set(
     escalationRows
@@ -402,15 +444,12 @@ async function buildDashboardMetricsFromData({
       .map((entry) => entry.caseId),
   )
 
-  const totalSpend = (spendByCategory as Array<{ total_spend?: string }>)
+  const totalSpend = spendByCategory
     .map((row) => toNumber(row.total_spend ?? null) ?? 0)
     .reduce((acc, value) => acc + value, 0)
 
-  const topSupplier = (spendBySupplier as Array<{
-    supplier_name?: string
-    total_spend?: string
-  }>)[0]
-  const topWinRate = (supplierWinRates as Array<{ win_rate?: string }>)[0]
+  const topSupplier = spendBySupplier[0]
+  const topWinRate = supplierWinRates[0]
 
   return [
     {
@@ -545,6 +584,62 @@ function buildCaseListFromData({
   })
 }
 
+function buildDashboardInsights({
+  cases,
+  analytics,
+}: {
+  cases: CaseListItem[]
+  analytics: DashboardAnalyticsData
+}): DashboardInsights {
+  const statusCounts = new Map<CaseStatus, number>()
+  const categorySet = new Set<string>()
+  const countrySet = new Set<string>()
+
+  for (const entry of cases) {
+    statusCounts.set(entry.status, (statusCounts.get(entry.status) ?? 0) + 1)
+    categorySet.add(entry.category)
+    countrySet.add(entry.countryLabel)
+  }
+
+  const statusBreakdown = (Object.keys(statusLabels) as CaseStatus[])
+    .map((status) => ({
+      status,
+      label: statusLabels[status],
+      count: statusCounts.get(status) ?? 0,
+    }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.count - a.count)
+
+  const spendByCategory = analytics.spendByCategory
+    .map((entry) => {
+      const categoryL1 = entry.category_l1?.trim() ?? ""
+      const categoryL2 = entry.category_l2?.trim() ?? ""
+      const category = categoryL2
+        ? `${categoryL1} / ${categoryL2}`
+        : categoryL1 || "Unknown category"
+
+      return {
+        category,
+        totalSpend: toNumber(entry.total_spend ?? null) ?? 0,
+        awardCount: toNumber(entry.award_count ?? null) ?? 0,
+      }
+    })
+    .sort((a, b) => b.totalSpend - a.totalSpend)
+    .slice(0, 8)
+
+  return {
+    statusBreakdown,
+    spendByCategory,
+    filterOptions: {
+      statuses: (Object.keys(statusLabels) as CaseStatus[]).filter(
+        (status) => (statusCounts.get(status) ?? 0) > 0,
+      ),
+      categories: Array.from(categorySet).sort((a, b) => a.localeCompare(b)),
+      countries: Array.from(countrySet).sort((a, b) => a.localeCompare(b)),
+    },
+  }
+}
+
 function isDashboardSnapshotFresh(
   snapshot: DashboardSnapshot,
   nowMs: number,
@@ -560,6 +655,7 @@ function toDashboardPageData(
   return {
     metrics: snapshot.metrics,
     cases: snapshot.cases,
+    insights: snapshot.insights,
     dataState: {
       mode,
       asOf: snapshot.asOf,
@@ -570,10 +666,16 @@ function toDashboardPageData(
 
 async function refreshDashboardSnapshot(): Promise<DashboardSnapshot> {
   const rawData = await fetchDashboardRawData()
-  const metrics = await buildDashboardMetricsFromData(rawData)
+  const analytics = await fetchDashboardAnalyticsData()
+  const metrics = await buildDashboardMetricsFromData(rawData, analytics)
+  const cases = buildCaseListFromData(rawData)
   const snapshot: DashboardSnapshot = {
     metrics,
-    cases: buildCaseListFromData(rawData),
+    cases,
+    insights: buildDashboardInsights({
+      cases,
+      analytics,
+    }),
     asOf: new Date().toISOString(),
     cachedAtMs: Date.now(),
   }
@@ -1080,4 +1182,298 @@ export async function getAuditOverview(): Promise<{
       },
     ],
   }
+}
+
+const INTAKE_REQUIRED_FIELDS: Array<keyof CaseDraftPayload> = [
+  "title",
+  "requestText",
+  "requestChannel",
+  "requestLanguage",
+  "businessUnit",
+  "country",
+  "site",
+  "requesterId",
+  "submittedForId",
+  "categoryId",
+  "unitOfMeasure",
+  "currency",
+  "requiredByDate",
+  "contractTypeRequested",
+]
+
+function getApiBaseForRuntime() {
+  if (typeof window === "undefined") {
+    return process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000"
+  }
+  return ""
+}
+
+function getApiUrl(path: string) {
+  return `${getApiBaseForRuntime()}${path}`
+}
+
+async function fetchMutation<T>(path: string, init: RequestInit): Promise<T> {
+  const response = await fetch(getApiUrl(path), {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  })
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}) for ${path}`)
+  }
+  return response.json() as Promise<T>
+}
+
+function createRequestId() {
+  const stamp = Date.now().toString().slice(-8)
+  const random = Math.floor(Math.random() * 10_000)
+    .toString()
+    .padStart(4, "0")
+  return `REQ-${stamp}${random}`
+}
+
+function defaultRequiredByDate() {
+  const value = new Date()
+  value.setDate(value.getDate() + 14)
+  return value.toISOString().slice(0, 10)
+}
+
+function defaultDraftFromIntake(input: CaseIntakeInput): CaseDraftPayload {
+  const sourceText = input.sourceText.trim()
+  const firstLine =
+    sourceText.split("\n").find((line) => line.trim().length > 0)?.trim() ??
+    "New sourcing case"
+
+  return {
+    title: firstLine.slice(0, 120),
+    requestText: sourceText,
+    requestChannel: input.requestChannel ?? "portal",
+    requestLanguage: "en",
+    businessUnit: "General",
+    country: "CH",
+    site: "HQ",
+    requesterId: "UNKNOWN",
+    requesterRole: "Not specified",
+    submittedForId: "SELF",
+    categoryId: null,
+    quantity: null,
+    unitOfMeasure: "unit",
+    currency: "CHF",
+    budgetAmount: null,
+    requiredByDate: defaultRequiredByDate(),
+    deliveryCountries: [],
+    preferredSupplierMentioned: null,
+    incumbentSupplier: null,
+    contractTypeRequested: "one_time",
+    dataResidencyConstraint: false,
+    esgRequirement: false,
+    requesterInstruction: input.note?.trim() || null,
+    scenarioTags: ["standard"],
+    status: "new",
+  }
+}
+
+function isPresentValue(value: unknown) {
+  if (value === null || value === undefined) return false
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+export function computeMissingRequiredFields(
+  draft: CaseDraftPayload,
+): Array<keyof CaseDraftPayload> {
+  return INTAKE_REQUIRED_FIELDS.filter((field) => !isPresentValue(draft[field]))
+}
+
+type CategoryApiRow = {
+  id: number
+  category_l1: string
+  category_l2: string
+}
+
+export async function getCategoryOptions(): Promise<CategoryOption[]> {
+  const response = await fetch(getApiUrl("/api/categories/"), { cache: "no-store" })
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}) for /api/categories/`)
+  }
+  const rows = (await response.json()) as CategoryApiRow[]
+  return rows.map((row) => ({
+    id: row.id,
+    categoryL1: row.category_l1,
+    categoryL2: row.category_l2,
+  }))
+}
+
+type ExtractionResponse = {
+  draft: Record<string, unknown>
+  field_status: Record<string, { status: string; confidence: number; reason?: string }>
+  missing_required: string[]
+  warnings: Array<{ code: string; severity: Severity; message: string }>
+  extraction_strength: "strong" | "partial" | "low"
+}
+
+export async function extractCaseInput(
+  payload: CaseIntakeInput,
+): Promise<ExtractionResult> {
+  const fallbackDraft = defaultDraftFromIntake(payload)
+  try {
+    const response = await fetchMutation<ExtractionResponse>("/api/intake/extract", {
+      method: "POST",
+      body: JSON.stringify({
+        source_type: payload.sourceType,
+        source_text: payload.sourceText,
+        note: payload.note ?? null,
+        request_channel: payload.requestChannel ?? null,
+        file_names: payload.fileNames ?? [],
+      }),
+    })
+
+    const mergedDraft: CaseDraftPayload = {
+      ...fallbackDraft,
+      ...(response.draft as Partial<CaseDraftPayload>),
+      scenarioTags: Array.isArray(response.draft.scenarioTags)
+        ? (response.draft.scenarioTags as ScenarioTag[])
+        : fallbackDraft.scenarioTags,
+      deliveryCountries: Array.isArray(response.draft.deliveryCountries)
+        ? (response.draft.deliveryCountries as string[])
+        : fallbackDraft.deliveryCountries,
+    }
+
+    const fieldStatus: ExtractionResult["fieldStatus"] = {}
+    for (const [key, value] of Object.entries(response.field_status)) {
+      fieldStatus[key as keyof CaseDraftPayload] = {
+        status:
+          value.status === "confident" ||
+          value.status === "inferred" ||
+          value.status === "missing" ||
+          value.status === "needs_review"
+            ? value.status
+            : "needs_review",
+        confidence: value.confidence,
+        reason: value.reason,
+      }
+    }
+
+    return {
+      draft: mergedDraft,
+      fieldStatus,
+      missingRequired:
+        response.missing_required.length > 0
+          ? (response.missing_required as Array<keyof CaseDraftPayload>)
+          : computeMissingRequiredFields(mergedDraft),
+      warnings: response.warnings,
+      extractionStrength: response.extraction_strength,
+    }
+  } catch {
+    return {
+      draft: fallbackDraft,
+      fieldStatus: {
+        requestText: {
+          status: payload.sourceText.trim() ? "inferred" : "missing",
+          confidence: payload.sourceText.trim() ? 0.7 : 0,
+          reason: "Fallback extraction used because intake API is unavailable.",
+        },
+      },
+      missingRequired: computeMissingRequiredFields(fallbackDraft),
+      warnings: [
+        {
+          code: "INTAKE_FALLBACK",
+          severity: "medium",
+          message:
+            "Extraction service is unavailable. Continue with manual completion.",
+        },
+      ],
+      extractionStrength: "low",
+    }
+  }
+}
+
+type RequestMutationOut = { request_id: string }
+
+function toRequestMutationPayload(payload: CaseDraftPayload) {
+  return {
+    request_id: payload.requestId,
+    created_at: payload.createdAt,
+    request_channel: payload.requestChannel,
+    request_language: payload.requestLanguage,
+    business_unit: payload.businessUnit,
+    country: payload.country,
+    site: payload.site,
+    requester_id: payload.requesterId,
+    requester_role: payload.requesterRole || null,
+    submitted_for_id: payload.submittedForId,
+    category_id: payload.categoryId,
+    title: payload.title,
+    request_text: payload.requestText,
+    currency: payload.currency,
+    budget_amount: payload.budgetAmount,
+    quantity: payload.quantity,
+    unit_of_measure: payload.unitOfMeasure,
+    required_by_date: payload.requiredByDate,
+    preferred_supplier_mentioned: payload.preferredSupplierMentioned,
+    incumbent_supplier: payload.incumbentSupplier,
+    contract_type_requested: payload.contractTypeRequested,
+    data_residency_constraint: payload.dataResidencyConstraint,
+    esg_requirement: payload.esgRequirement,
+    status: payload.status,
+    delivery_countries: payload.deliveryCountries,
+    scenario_tags: payload.scenarioTags,
+  }
+}
+
+export async function createCase(
+  payload: CreateCasePayload,
+): Promise<{ requestId: string }> {
+  const draft: CaseDraftPayload = {
+    ...payload,
+    requestId: payload.requestId ?? createRequestId(),
+    createdAt: payload.createdAt ?? new Date().toISOString(),
+  }
+
+  const response = await fetchMutation<RequestMutationOut>("/api/requests/", {
+    method: "POST",
+    body: JSON.stringify(toRequestMutationPayload(draft)),
+  })
+  return { requestId: response.request_id }
+}
+
+export async function updateCaseDraft(
+  requestId: string,
+  payload: Partial<CaseDraftPayload>,
+): Promise<{ requestId: string }> {
+  const body = {
+    request_channel: payload.requestChannel,
+    request_language: payload.requestLanguage,
+    business_unit: payload.businessUnit,
+    country: payload.country,
+    site: payload.site,
+    requester_id: payload.requesterId,
+    requester_role: payload.requesterRole,
+    submitted_for_id: payload.submittedForId,
+    category_id: payload.categoryId,
+    title: payload.title,
+    request_text: payload.requestText,
+    currency: payload.currency,
+    budget_amount: payload.budgetAmount,
+    quantity: payload.quantity,
+    unit_of_measure: payload.unitOfMeasure,
+    required_by_date: payload.requiredByDate,
+    preferred_supplier_mentioned: payload.preferredSupplierMentioned,
+    incumbent_supplier: payload.incumbentSupplier,
+    contract_type_requested: payload.contractTypeRequested,
+    data_residency_constraint: payload.dataResidencyConstraint,
+    esg_requirement: payload.esgRequirement,
+    status: payload.status,
+    delivery_countries: payload.deliveryCountries,
+    scenario_tags: payload.scenarioTags,
+  }
+
+  await fetchMutation<RequestMutationOut>(`/api/requests/${requestId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  })
+  return { requestId }
 }

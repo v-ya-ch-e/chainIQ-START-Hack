@@ -7,7 +7,6 @@ import { ArrowRight, Loader2, Play, Search, Sparkles } from "lucide-react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
-import { IntakeWizardDialog } from "@/components/inbox/intake-wizard-dialog"
 import { JsonViewer } from "@/components/shared/json-viewer"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -57,7 +56,6 @@ const escalationOptions = [
 export function InboxPage({ cases }: InboxPageProps) {
   const router = useRouter()
   const [query, setQuery] = useState("")
-  const [isWizardOpen, setIsWizardOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState("all")
   const [escalationFilter, setEscalationFilter] = useState("all")
   const [attentionOnly, setAttentionOnly] = useState(false)
@@ -139,13 +137,11 @@ export function InboxPage({ cases }: InboxPageProps) {
           title="Case triage queue"
           description="Search, filter, and drill into individual sourcing cases."
         />
-        <Button onClick={() => setIsWizardOpen(true)}>
+        <Button render={<Link href="/cases/new" />}>
           <Sparkles className="mr-2 size-4" />
           New Request
         </Button>
       </div>
-
-      <IntakeWizardDialog open={isWizardOpen} onOpenChange={setIsWizardOpen} />
 
       {message ? (
         <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
@@ -399,8 +395,8 @@ export function InboxPage({ cases }: InboxPageProps) {
                 </>
               )}
             </Button>
-            <Button variant="outline" asChild>
-              <Link href="/audit">View audit diagnostics</Link>
+            <Button variant="outline" render={<Link href="/audit" />}>
+              View audit diagnostics
             </Button>
           </div>
         </CardContent>

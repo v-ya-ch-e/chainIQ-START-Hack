@@ -58,11 +58,14 @@ docker compose up --build
 ### CRUD
 - `GET/POST /api/categories/`, `GET/PUT/DELETE /api/categories/{id}`
 - `GET/POST /api/suppliers/`, `GET/PUT/DELETE /api/suppliers/{id}`, `GET /api/suppliers/{id}/categories|regions|pricing`
-- `GET/POST /api/requests/`, `GET/PUT/DELETE /api/requests/{id}`
+- `GET/POST /api/requests/`, `GET/PUT/DELETE /api/requests/{id}` (PUT now supports `delivery_countries` and `scenario_tags` replacement semantics)
 - `GET /api/awards/`, `GET /api/awards/{id}`, `GET /api/awards/by-request/{id}`
 - `GET /api/policies/approval-thresholds`, `GET /api/policies/preferred-suppliers`, `GET /api/policies/restricted-suppliers`
 - `GET /api/rules/category`, `GET /api/rules/geography`, `GET /api/rules/escalation`
 - `GET /api/escalations/queue`, `GET /api/escalations/by-request/{id}`
+
+### Intake
+- `POST /api/intake/extract` — deterministic extraction stub for flexible intake (returns normalized draft fields, per-field confidence/status, missing-required list, and warnings)
 
 ### Analytics
 - `GET /api/analytics/compliant-suppliers` — non-restricted suppliers for category+country

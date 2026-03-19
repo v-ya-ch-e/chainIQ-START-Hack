@@ -6,6 +6,7 @@ from app.routers import (
     awards,
     categories,
     escalations,
+    intake,
     policies,
     requests,
     rules,
@@ -34,6 +35,7 @@ app.include_router(escalations.router)
 app.include_router(policies.router)
 app.include_router(rules.router)
 app.include_router(analytics.router)
+app.include_router(intake.router)
 
 
 @app.get("/health", tags=["Health"])
