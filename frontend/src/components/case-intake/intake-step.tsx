@@ -11,7 +11,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
@@ -48,6 +47,12 @@ export function IntakeStep({
   onSelectedFilesChange,
   onExtract,
 }: IntakeStepProps) {
+  const requestChannelLabelByValue: Record<RequestChannel, string> = {
+    portal: "Portal",
+    email: "Email",
+    teams: "Teams",
+  }
+
   function handleFileInputChange(files: FileList | null) {
     if (!files) {
       onSelectedFilesChange([])
@@ -155,7 +160,9 @@ export function IntakeStep({
                 }
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue />
+                  <span className="truncate">
+                    {requestChannelLabelByValue[requestChannel] ?? "Portal"}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="portal">Portal</SelectItem>
