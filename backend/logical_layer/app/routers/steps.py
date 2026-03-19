@@ -59,7 +59,7 @@ async def run_validate(
     try:
         fetch_result = await fetch_overview(body.request_id, org, pl)
         await pl.flush_audit()
-        result = await validate_request(fetch_result, llm, pl, org)
+        result = await validate_request(fetch_result, llm, pl)
         await pl.flush_audit()
         return result.model_dump()
     except Exception as exc:
@@ -79,7 +79,7 @@ async def run_filter(
     try:
         fetch_result = await fetch_overview(body.request_id, org, pl)
         await pl.flush_audit()
-        await validate_request(fetch_result, llm, pl, org)
+        await validate_request(fetch_result, llm, pl)
         await pl.flush_audit()
         result = await filter_suppliers(fetch_result, pl)
         await pl.flush_audit()
@@ -101,7 +101,7 @@ async def run_comply(
     try:
         fetch_result = await fetch_overview(body.request_id, org, pl)
         await pl.flush_audit()
-        await validate_request(fetch_result, llm, pl, org)
+        await validate_request(fetch_result, llm, pl)
         await pl.flush_audit()
         filter_result = await filter_suppliers(fetch_result, pl)
         await pl.flush_audit()
@@ -125,7 +125,7 @@ async def run_rank(
     try:
         fetch_result = await fetch_overview(body.request_id, org, pl)
         await pl.flush_audit()
-        await validate_request(fetch_result, llm, pl, org)
+        await validate_request(fetch_result, llm, pl)
         await pl.flush_audit()
         filter_result = await filter_suppliers(fetch_result, pl)
         await pl.flush_audit()
@@ -151,7 +151,7 @@ async def run_escalate(
     try:
         fetch_result = await fetch_overview(body.request_id, org, pl)
         await pl.flush_audit()
-        validation_result = await validate_request(fetch_result, llm, pl, org)
+        validation_result = await validate_request(fetch_result, llm, pl)
         await pl.flush_audit()
         filter_result = await filter_suppliers(fetch_result, pl)
         await pl.flush_audit()
@@ -160,7 +160,7 @@ async def run_escalate(
         rank_result = await rank_suppliers(fetch_result, compliance_result, pl)
         await pl.flush_audit()
         result = await compute_escalations(
-            fetch_result, validation_result, compliance_result, rank_result, pl, org,
+            fetch_result, validation_result, compliance_result, rank_result, pl,
         )
         await pl.flush_audit()
         return result.model_dump()

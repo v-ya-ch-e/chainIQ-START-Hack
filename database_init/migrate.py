@@ -31,8 +31,6 @@ DROP_TABLES = [
     "audit_logs",
     "pipeline_log_entries",
     "pipeline_runs",
-    "rule_versions",
-    "rule_definitions",
     "escalation_rule_currencies",
     "escalation_rules",
     "geography_rule_applies_to_categories",
@@ -339,49 +337,6 @@ CREATE_TABLES = [
         currency  VARCHAR(5)  NOT NULL,
         UNIQUE KEY uq_esc_cur (rule_id, currency),
         FOREIGN KEY (rule_id) REFERENCES escalation_rules(rule_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    """,
-    # -- Rule definitions + versions (data-driven rule engine) --
-    """
-    CREATE TABLE rule_definitions (
-        rule_id             VARCHAR(10)  PRIMARY KEY,
-        rule_type           VARCHAR(30)  NOT NULL,
-        rule_name           VARCHAR(100) NOT NULL,
-        scope               VARCHAR(20)  NOT NULL DEFAULT 'request',
-        evaluation_mode     VARCHAR(20)  NOT NULL DEFAULT 'expression',
-        is_skippable        BOOLEAN      NOT NULL DEFAULT FALSE,
-        source              VARCHAR(10)  NOT NULL DEFAULT 'custom',
-        severity            VARCHAR(10)  NOT NULL DEFAULT 'high',
-        is_blocking         BOOLEAN      NOT NULL DEFAULT TRUE,
-        breaks_completeness BOOLEAN      NOT NULL DEFAULT FALSE,
-        action_type         VARCHAR(30)  NOT NULL DEFAULT 'escalate',
-        action_target       VARCHAR(120) NULL,
-        trigger_template    TEXT         NULL,
-        action_required     TEXT         NULL,
-        field_ref           VARCHAR(50)  NULL,
-        description         TEXT         NULL,
-        active              BOOLEAN      NOT NULL DEFAULT TRUE,
-        sort_order          INT          NOT NULL DEFAULT 100,
-        created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_rd_rule_type (rule_type),
-        INDEX idx_rd_scope (scope),
-        INDEX idx_rd_active (active)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-    """,
-    """
-    CREATE TABLE rule_versions (
-        version_id      CHAR(36)     NOT NULL,
-        rule_id         VARCHAR(10)  NOT NULL,
-        version_num     INT          NOT NULL,
-        rule_config     JSON         NOT NULL,
-        valid_from      DATETIME     NOT NULL,
-        valid_to        DATETIME     NULL,
-        changed_by      VARCHAR(100) NULL,
-        change_reason   TEXT         NULL,
-        PRIMARY KEY (version_id),
-        UNIQUE KEY uq_rule_version (rule_id, version_num),
-        INDEX idx_rule_valid_from (rule_id, valid_from),
-        FOREIGN KEY (rule_id) REFERENCES rule_definitions(rule_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
     # -- Pipeline logging --
@@ -750,158 +705,6 @@ def load_escalation_rules(raw: list[dict]) -> tuple[list[tuple], list[tuple]]:
     return rules, currencies
 
 
-def load_rule_definitions() -> list[tuple]:
-    """
-    Seed data for rule_definitions table.
-    Includes V6 original rules (HR/PC/ER) plus refactoring rules (VR/CR/PE).
-    Columns: rule_id, rule_type, rule_name, scope, evaluation_mode, is_skippable, source,
-    severity, is_blocking, breaks_completeness, action_type, action_target,
-    trigger_template, action_required, field_ref, description, active, sort_order
-    """
-    return [
-        # --- V6 hard rules (preserved) ---
-        ("HR-001", "hard_rule", "Budget ceiling check", "request", "expression", 1, "given", "critical", 1, 0, "validation_issue", None, "Budget of {currency} {budget_amount} cannot cover {quantity} units. Minimum: {currency} {min_supplier_total}.", "Requester must increase budget or reduce quantity.", "budget_amount", "Budget ceiling check", 1, 1),
-        ("HR-002", "hard_rule", "Delivery deadline feasibility", "request", "expression", 1, "given", "high", 1, 0, "validation_issue", None, "All suppliers expedited lead times exceed the {days_until_required}-day window.", "Requester must confirm delivery date constraint.", "required_by_date", "Delivery deadline feasibility", 1, 2),
-        ("HR-003", "hard_rule", "Supplier monthly capacity", "supplier", "expression", 1, "given", "high", 1, 0, "exclude_supplier", None, "Quantity {req_quantity} exceeds monthly capacity {sup_capacity_per_month}.", None, None, "Supplier monthly capacity check", 1, 3),
-        ("HR-004", "hard_rule", "Minimum order quantity", "supplier", "expression", 1, "given", "high", 1, 0, "exclude_supplier", None, "Quantity below MOQ.", None, None, "Minimum order quantity", 1, 4),
-        ("HR-005", "hard_rule", "Pricing tier validity window", "supplier", "expression", 1, "given", "medium", 0, 0, "informational", None, "Pricing tier outside validity window.", None, None, "Pricing tier validity window", 1, 5),
-        ("HR-006", "hard_rule", "Quantity/text discrepancy", "request", "expression", 1, "given", "high", 0, 0, "validation_issue", None, "Quantity field does not match quantity in request text.", None, "quantity", "Quantity/text discrepancy", 1, 6),
-        ("HR-007", "hard_rule", "Currency consistency", "supplier", "expression", 1, "custom", "high", 1, 0, "exclude_supplier", None, "Currency mismatch between request and supplier.", None, "currency", "Currency consistency", 1, 7),
-        # --- V6 policy rules (preserved) ---
-        ("PC-001", "policy", "Approval tier determination", "request", "expression", 0, "given", "medium", 0, 0, "informational", None, "Approval tier determined.", None, None, "Approval tier determination", 1, 8),
-        ("PC-002", "policy", "Quote count requirement", "request", "expression", 0, "given", "high", 1, 0, "escalate", None, "Insufficient quotes for value tier.", None, None, "Quote count requirement", 1, 9),
-        ("PC-003", "policy", "Preferred supplier check", "request", "expression", 0, "given", "medium", 0, 0, "informational", None, "Preferred supplier evaluation.", None, None, "Preferred supplier check", 1, 10),
-        ("PC-004", "policy", "Restricted supplier global", "supplier", "expression", 0, "given", "critical", 1, 0, "exclude_supplier", None, "Supplier is globally restricted.", None, None, "Restricted supplier global", 1, 11),
-        ("PC-005", "policy", "Restricted supplier country-scoped", "supplier", "expression", 0, "given", "critical", 1, 0, "exclude_supplier", None, "Supplier restricted in delivery country.", None, None, "Restricted supplier country-scoped", 1, 12),
-        ("PC-006", "policy", "Restricted supplier value-conditional", "supplier", "expression", 0, "given", "high", 1, 0, "exclude_supplier", None, "Supplier restricted above value threshold.", None, None, "Restricted supplier value-conditional", 1, 13),
-        ("PC-007", "policy", "Category sourcing rules", "request", "expression", 0, "given", "medium", 0, 0, "informational", None, "Category-specific sourcing rules applied.", None, None, "Category sourcing rules", 1, 14),
-        ("PC-008", "policy", "Data residency constraint", "supplier", "expression", 0, "given", "critical", 1, 0, "exclude_supplier", None, "Data residency constraint not satisfied.", None, None, "Data residency constraint", 1, 15),
-        ("PC-009", "policy", "Geography/delivery compliance", "supplier", "expression", 0, "given", "high", 1, 0, "exclude_supplier", None, "Supplier does not cover delivery countries.", None, None, "Geography/delivery compliance", 1, 16),
-        ("PC-010", "policy", "ESG requirement coverage", "supplier", "expression", 0, "given", "medium", 0, 0, "informational", None, "ESG requirement check.", None, None, "ESG requirement coverage", 1, 17),
-        ("PC-011", "policy", "Supplier registration/sanction", "supplier", "expression", 0, "given", "critical", 1, 0, "exclude_supplier", None, "Supplier not registered or sanctioned.", None, None, "Supplier registration/sanction", 1, 18),
-        ("PC-012", "policy", "Preferred supplier category mismatch", "request", "expression", 0, "custom", "high", 0, 0, "informational", None, "Preferred supplier category mismatch.", None, None, "Preferred supplier category mismatch", 1, 19),
-        ("PC-013", "policy", "Preferred supplier geo mismatch", "request", "expression", 0, "custom", "high", 0, 0, "informational", None, "Preferred supplier geo mismatch.", None, None, "Preferred supplier geo mismatch", 1, 20),
-        # --- Escalation rules (V6 ER-001..ER-010 + ER-AT) ---
-        ("ER-001", "escalation", "Missing required info", "request", "expression", 0, "given", "critical", 1, 0, "escalate", "Requester Clarification", "Missing required request information (budget, quantity, or category).", None, None, "Missing required request information.", 1, 100),
-        ("ER-002", "escalation", "Preferred supplier restricted", "request", "expression", 0, "given", "critical", 1, 0, "escalate", "Procurement Manager", "Preferred supplier is restricted for this request context.", None, None, "Preferred supplier is restricted.", 1, 101),
-        ("ER-003", "escalation", "Contract value exceeds tier", "request", "expression", 0, "given", "medium", 0, 0, "escalate", "Head of Strategic Sourcing", "Contract value falls into strategic sourcing approval tier.", None, None, "Strategic sourcing tier.", 1, 102),
-        ("ER-004", "escalation", "No compliant supplier found", "request", "expression", 0, "given", "critical", 1, 0, "escalate", "Head of Category", "No compliant supplier with valid pricing found.", None, None, "No compliant supplier found.", 1, 103),
-        ("ER-005", "escalation", "Data residency unsatisfiable", "request", "expression", 0, "given", "critical", 1, 0, "escalate", "Security and Compliance Review", "Data residency requirement cannot be satisfied.", None, None, "Data residency unsatisfiable.", 1, 104),
-        ("ER-006", "escalation", "Quantity exceeds capacity", "request", "expression", 0, "given", "high", 1, 0, "escalate", "Sourcing Excellence Lead", "Only one supplier can satisfy quantity/capacity constraints.", None, None, "Quantity exceeds capacity.", 1, 105),
-        ("ER-007", "escalation", "Brand safety concern", "request", "expression", 0, "given", "high", 1, 0, "escalate", "Marketing Governance Lead", "Brand-safety review required for influencer campaigns.", None, None, "Brand safety concern.", 1, 106),
-        ("ER-008", "escalation", "Supplier not registered/sanctioned", "request", "expression", 0, "given", "critical", 1, 0, "escalate", "Regional Compliance Lead", "Preferred supplier not registered for delivery countries in USD request.", None, None, "Supplier not registered.", 1, 107),
-        ("ER-009", "escalation", "Contradictory request content", "request", "llm", 0, "custom", "high", 0, 0, "escalate", "Requester Clarification", "(overridden by Claude)", None, None, "Contradictory request content.", 1, 108),
-        ("ER-010", "escalation", "Preferred supplier mismatch", "request", "expression", 0, "custom", "high", 0, 0, "escalate", "Procurement Manager", "Preferred supplier category or geo mismatch.", None, None, "Preferred supplier mismatch.", 1, 109),
-        ("ER-AT", "escalation", "AT-conflict: quotes vs single-supplier", "request", "expression", 0, "custom", "critical", 1, 0, "escalate", "dynamic", "Requester instruction conflicts with {threshold_id}: {threshold_quotes_required} quotes required.", None, None, "AT-conflict.", 1, 110),
-        # --- Validation rules (VR-001..VR-010 + VR-LLM) ---
-        ("VR-001", "validation", "Missing category L1", "request", "expression", 0, "custom", "critical", 1, 1, "validation_issue", None, "category_l1 is missing.", "Requester must specify L1 category.", "category_l1", "category_l1 is missing.", 1, 200),
-        ("VR-002", "validation", "Missing category L2", "request", "expression", 0, "custom", "critical", 1, 1, "validation_issue", None, "category_l2 is missing.", "Requester must specify L2 category.", "category_l2", "category_l2 is missing.", 1, 201),
-        ("VR-003", "validation", "Missing currency", "request", "expression", 0, "custom", "critical", 1, 1, "validation_issue", None, "currency is missing.", "Requester must specify currency.", "currency", "currency is missing.", 1, 202),
-        ("VR-004", "validation", "Missing budget", "request", "expression", 0, "custom", "high", 0, 0, "validation_issue", None, "budget_amount is null. Pipeline continues with degraded capability.", "Requester should provide a budget.", "budget_amount", "budget_amount is null.", 1, 203),
-        ("VR-005", "validation", "Missing quantity", "request", "expression", 0, "custom", "high", 0, 0, "validation_issue", None, "quantity is null. Pricing comparison limited to quality-only ranking.", "Requester should provide a quantity.", "quantity", "quantity is null.", 1, 204),
-        ("VR-006", "validation", "Missing delivery date", "request", "expression", 0, "custom", "medium", 0, 0, "validation_issue", None, "required_by_date is not specified.", "Requester should specify a delivery date.", "required_by_date", "required_by_date not specified.", 1, 205),
-        ("VR-007", "validation", "Missing delivery countries", "request", "expression", 0, "custom", "high", 0, 0, "validation_issue", None, "No delivery countries specified.", "Requester must specify at least one delivery country.", "delivery_countries", "No delivery countries.", 1, 206),
-        ("VR-008", "validation", "Date in the past", "request", "expression", 0, "custom", "critical", 0, 0, "validation_issue", None, "Required by date is in the past ({days_until_required} days ago).", "Requester must provide a future delivery date.", "required_by_date", "Required by date in the past.", 1, 207),
-        ("VR-009", "validation", "Budget insufficient", "request", "expression", 0, "custom", "critical", 0, 0, "validation_issue", None, "Budget of {currency} {budget_amount} cannot cover {quantity} units. Minimum: {currency} {min_supplier_total}.", "Requester must increase budget or reduce quantity.", "budget_amount", "Budget insufficient.", 1, 208),
-        ("VR-010", "validation", "Lead time infeasible", "request", "expression", 0, "custom", "high", 0, 0, "validation_issue", None, "All suppliers expedited lead times exceed the {days_until_required}-day window.", "Requester must confirm delivery date constraint.", "required_by_date", "Lead time infeasible.", 1, 209),
-        ("VR-LLM", "validation", "LLM contradiction detection", "request", "llm", 0, "custom", "medium", 0, 0, "validation_issue", None, "(overridden by Claude)", "Review and resolve the contradiction before proceeding.", None, "LLM contradiction detection.", 1, 210),
-        # --- Supplier compliance rules (CR-001..CR-004) ---
-        ("CR-001", "supplier_compliance", "Residency check", "supplier", "expression", 0, "custom", "high", 1, 0, "exclude_supplier", None, "Does not support data residency in {delivery_country}.", None, None, "Data residency not supported.", 1, 300),
-        ("CR-002", "supplier_compliance", "Capacity check", "supplier", "expression", 0, "custom", "high", 1, 0, "exclude_supplier", None, "Quantity {req_quantity} exceeds monthly capacity {sup_capacity_per_month}.", None, None, "Capacity exceeded.", 1, 301),
-        ("CR-003", "supplier_compliance", "Risk score check", "supplier", "expression", 0, "custom", "high", 1, 0, "exclude_supplier", None, "Risk score {sup_risk_score} exceeds threshold (30). Excluded on risk grounds.", None, None, "Risk score too high.", 1, 302),
-        ("CR-004", "supplier_compliance", "Restriction check", "supplier", "expression", 0, "custom", "high", 1, 0, "exclude_supplier", None, "Restricted: {sup_restriction_reason}.", None, None, "Restricted supplier.", 1, 303),
-        # --- Pipeline escalation rules (PE-001..PE-005 + PE-LLM) ---
-        ("PE-001", "pipeline_escalation", "Budget shortfall", "pipeline", "expression", 0, "custom", "critical", 1, 0, "escalate", "Requester Clarification", "Budget insufficient. Budget {currency} {budget_amount}, minimum total {currency} {min_ranked_total}.", None, None, "Budget insufficient.", 1, 400),
-        ("PE-002", "pipeline_escalation", "Lead time breach", "pipeline", "expression", 0, "custom", "critical", 1, 0, "escalate", "Head of Category", "Lead time infeasible: delivery in {days_until_required} days, fastest supplier needs {min_expedited_lead_time} days.", None, None, "Lead time infeasible.", 1, 401),
-        ("PE-003", "pipeline_escalation", "Residency gap", "pipeline", "expression", 0, "custom", "critical", 1, 0, "escalate", "Data Protection Officer", "No compliant supplier supports data residency in {country}.", None, None, "Data residency not satisfiable.", 1, 402),
-        ("PE-004", "pipeline_escalation", "No suppliers left", "pipeline", "expression", 0, "custom", "critical", 1, 0, "escalate", "Head of Category", "No supplier remains after compliance checks.", None, None, "No compliant suppliers.", 1, 403),
-        ("PE-005", "pipeline_escalation", "Preferred restricted", "pipeline", "expression", 0, "custom", "critical", 1, 0, "escalate", "Procurement Manager", "Preferred supplier was excluded as restricted.", None, None, "Preferred supplier restricted.", 1, 404),
-        ("PE-LLM", "pipeline_escalation", "LLM policy conflict", "pipeline", "llm", 0, "custom", "critical", 1, 0, "escalate", "Procurement Manager", "(overridden by Claude)", None, None, "LLM policy conflict detection.", 1, 405),
-    ]
-
-
-def load_rule_versions() -> list[tuple]:
-    """
-    Seed initial rule_versions (v1) for all rule_definitions.
-    rule_config JSON stores condition_expr or llm_prompt plus any version-specific config.
-    Columns: rule_id, version_num, rule_config_json_str, valid_from
-    UUID is generated at insert time.
-    """
-    import uuid as _uuid
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    def _cfg(condition_expr=None, llm_prompt=None, **extra):
-        cfg = {}
-        if condition_expr:
-            cfg["condition_expr"] = condition_expr
-        if llm_prompt:
-            cfg["llm_prompt"] = llm_prompt
-        cfg.update(extra)
-        return json.dumps(cfg)
-
-    rows = [
-        # --- V6 hard rules ---
-        (str(_uuid.uuid4()), "HR-001", 1, _cfg(supported_budget_types=["upper_limit","range","null"], null_action="skip_raise_ER001", range_strategy="use_max_conservative"), now),
-        (str(_uuid.uuid4()), "HR-002", 1, _cfg(min_lead_time_days_standard=1, expedited_allowed=True, null_date_action="skip_raise_ER001"), now),
-        (str(_uuid.uuid4()), "HR-003", 1, _cfg(condition_expr="req_quantity is not None and sup_capacity_per_month is not None and req_quantity > sup_capacity_per_month"), now),
-        (str(_uuid.uuid4()), "HR-004", 1, _cfg(check="requested_quantity >= pricing.moq", source_table="pricing_tiers"), now),
-        (str(_uuid.uuid4()), "HR-005", 1, _cfg(check="evaluation_date BETWEEN pricing.valid_from AND pricing.valid_to"), now),
-        (str(_uuid.uuid4()), "HR-006", 1, _cfg(check="quantity_field matches quantity_in_request_text", mismatch_action="raise_ER009"), now),
-        (str(_uuid.uuid4()), "HR-007", 1, _cfg(check="request.currency matches supplier.currency OR conversion_applied", allowed_currencies=["EUR","CHF","USD"]), now),
-        # --- V6 policy rules ---
-        (str(_uuid.uuid4()), "PC-001", 1, _cfg(tiers={"EUR":[{"tier":1,"max":25000},{"tier":2,"max":100000},{"tier":3,"max":500000},{"tier":4,"max":5000000},{"tier":5,"max":None}],"CHF":[{"tier":1,"max":27500},{"tier":2,"max":110000},{"tier":3,"max":550000},{"tier":4,"max":5500000},{"tier":5,"max":None}],"USD":[{"tier":1,"max":27000},{"tier":2,"max":108000},{"tier":3,"max":540000},{"tier":4,"max":5400000},{"tier":5,"max":None}]}), now),
-        (str(_uuid.uuid4()), "PC-002", 1, _cfg(quotes_required={"tier1":1,"tier2":2,"tier3":3,"tier4":3,"tier5":3}), now),
-        (str(_uuid.uuid4()), "PC-003", 1, _cfg(check="prefer preferred_supplier if policy_compliant and commercially_competitive"), now),
-        (str(_uuid.uuid4()), "PC-004", 1, _cfg(condition_expr="sup_is_restricted == True", check="supplier.is_restricted = false for global restrictions"), now),
-        (str(_uuid.uuid4()), "PC-005", 1, _cfg(check="restriction applies in delivery_country"), now),
-        (str(_uuid.uuid4()), "PC-006", 1, _cfg(check="contract_value <= restriction_value_threshold"), now),
-        (str(_uuid.uuid4()), "PC-007", 1, _cfg(check="category_rules applied: security_review, cv_review, brand_safety per category"), now),
-        (str(_uuid.uuid4()), "PC-008", 1, _cfg(condition_expr="req_data_residency_constraint == True and sup_data_residency_supported == False", raise_on_fail="ER-005"), now),
-        (str(_uuid.uuid4()), "PC-009", 1, _cfg(check="supplier.service_regions covers all delivery_countries"), now),
-        (str(_uuid.uuid4()), "PC-010", 1, _cfg(min_esg_score=60, check="esg_requirement = false OR supplier.esg_score >= min_esg_score"), now),
-        (str(_uuid.uuid4()), "PC-011", 1, _cfg(check="supplier registered and sanction-screened in each delivery_country"), now),
-        (str(_uuid.uuid4()), "PC-012", 1, _cfg(check="preferred_supplier_mentioned.category matches request.category"), now),
-        (str(_uuid.uuid4()), "PC-013", 1, _cfg(check="preferred_supplier_mentioned.service_regions covers request.delivery_countries"), now),
-        # --- Escalation rules ---
-        (str(_uuid.uuid4()), "ER-001", 1, _cfg(condition_expr="missing_required_information == True", target="Requester", event_type="NOTIFY_REQUESTER"), now),
-        (str(_uuid.uuid4()), "ER-002", 1, _cfg(condition_expr="preferred_supplier_restricted == True", target="Procurement Manager", event_type="NOTIFY_PROCUREMENT"), now),
-        (str(_uuid.uuid4()), "ER-003", 1, _cfg(condition_expr="strategic_tier == True", target="Head of Strategic Sourcing", event_type="REQUEST_EXCEPTION_APPROVAL"), now),
-        (str(_uuid.uuid4()), "ER-004", 1, _cfg(condition_expr="not missing_required_information and not has_compliant_priceable_supplier", target="Head of Category", event_type="BLOCK_AWARD"), now),
-        (str(_uuid.uuid4()), "ER-005", 1, _cfg(condition_expr="not missing_required_information and has_residency_compatible_supplier == False", target="Security/Compliance", event_type="SECURITY_REVIEW"), now),
-        (str(_uuid.uuid4()), "ER-006", 1, _cfg(condition_expr="not missing_required_information and single_supplier_capacity_risk == True", target="Sourcing Excellence Lead", event_type="NOTIFY_PROCUREMENT"), now),
-        (str(_uuid.uuid4()), "ER-007", 1, _cfg(condition_expr='category_label == "Marketing / Influencer Campaign Management"', target="Marketing Governance Lead", event_type="COMPLIANCE_REVIEW"), now),
-        (str(_uuid.uuid4()), "ER-008", 1, _cfg(condition_expr="preferred_supplier_unregistered_usd == True", target="Regional Compliance Lead", event_type="COMPLIANCE_REVIEW"), now),
-        (str(_uuid.uuid4()), "ER-009", 1, _cfg(llm_prompt="Detect contradictions between request_text and structured fields.", target="Requester", event_type="NOTIFY_REQUESTER"), now),
-        (str(_uuid.uuid4()), "ER-010", 1, _cfg(condition_expr="preferred_supplier_category_mismatch == True or preferred_supplier_geo_mismatch == True", target="Procurement Manager", event_type="NOTIFY_PROCUREMENT"), now),
-        (str(_uuid.uuid4()), "ER-AT", 1, _cfg(condition_expr="threshold_quotes_required >= 2 and has_single_supplier_instruction == True"), now),
-        # --- Validation rules ---
-        (str(_uuid.uuid4()), "VR-001", 1, _cfg(condition_expr='category_l1 is None or category_l1 == ""'), now),
-        (str(_uuid.uuid4()), "VR-002", 1, _cfg(condition_expr='category_l2 is None or category_l2 == ""'), now),
-        (str(_uuid.uuid4()), "VR-003", 1, _cfg(condition_expr='currency is None or currency == ""'), now),
-        (str(_uuid.uuid4()), "VR-004", 1, _cfg(condition_expr="budget_amount is None"), now),
-        (str(_uuid.uuid4()), "VR-005", 1, _cfg(condition_expr="quantity is None"), now),
-        (str(_uuid.uuid4()), "VR-006", 1, _cfg(condition_expr='required_by_date is None or required_by_date == ""'), now),
-        (str(_uuid.uuid4()), "VR-007", 1, _cfg(condition_expr="delivery_countries_count == 0"), now),
-        (str(_uuid.uuid4()), "VR-008", 1, _cfg(condition_expr="days_until_required is not None and days_until_required < 0"), now),
-        (str(_uuid.uuid4()), "VR-009", 1, _cfg(condition_expr="budget_amount is not None and quantity is not None and min_supplier_total is not None and budget_amount < min_supplier_total"), now),
-        (str(_uuid.uuid4()), "VR-010", 1, _cfg(condition_expr="days_until_required is not None and days_until_required >= 0 and min_expedited_lead_time is not None and days_until_required < min_expedited_lead_time"), now),
-        (str(_uuid.uuid4()), "VR-LLM", 1, _cfg(llm_prompt="You are a procurement validation assistant. You receive a purchase request with both free-text and structured fields. Your job is to find CONTRADICTIONS between the text and the structured data, and to extract any explicit requester instructions.\n\nRULES:\n1. Only flag two issue types: \"missing_info\" and \"contradictory\"\n2. A contradiction exists ONLY when: quantity in text differs from quantity field, budget in text differs from budget_amount field, date in text differs from required_by_date field, currency in text differs from currency field, category in text clearly doesn't match category_l1/category_l2\n3. These are NOT contradictions: preferred_supplier_mentioned vs incumbent_supplier, urgency language without a specific date, policy concerns expressed in text\n4. Be CONSERVATIVE. When in doubt, do NOT flag.\n5. The request_text may be in any language (en, fr, de, es, pt, ja). Analyze it in its original language.\n6. Extract any explicit requester instruction (e.g., \"no exception\", \"single supplier only\", \"must use X\")."), now),
-        # --- Supplier compliance rules ---
-        (str(_uuid.uuid4()), "CR-001", 1, _cfg(condition_expr="req_data_residency_constraint == True and sup_data_residency_supported == False"), now),
-        (str(_uuid.uuid4()), "CR-002", 1, _cfg(condition_expr="req_quantity is not None and sup_capacity_per_month is not None and req_quantity > sup_capacity_per_month"), now),
-        (str(_uuid.uuid4()), "CR-003", 1, _cfg(condition_expr="sup_preferred_supplier == False and sup_risk_score > 30"), now),
-        (str(_uuid.uuid4()), "CR-004", 1, _cfg(condition_expr="sup_is_restricted == True"), now),
-        # --- Pipeline escalation rules ---
-        (str(_uuid.uuid4()), "PE-001", 1, _cfg(condition_expr="has_budget_insufficient_issue == True and min_ranked_total is not None"), now),
-        (str(_uuid.uuid4()), "PE-002", 1, _cfg(condition_expr="has_lead_time_issue == True"), now),
-        (str(_uuid.uuid4()), "PE-003", 1, _cfg(condition_expr="req_data_residency_constraint == True and compliant_residency_count == 0 and compliant_count > 0"), now),
-        (str(_uuid.uuid4()), "PE-004", 1, _cfg(condition_expr="compliant_count == 0 and initial_supplier_count > 0"), now),
-        (str(_uuid.uuid4()), "PE-005", 1, _cfg(condition_expr="preferred_supplier_excluded_restricted == True"), now),
-        (str(_uuid.uuid4()), "PE-LLM", 1, _cfg(llm_prompt='The requester gave this instruction: "{requester_instruction}". Does this instruction conflict with the procurement policy that requires {threshold_quotes_required} quotes for this value tier? Only return true if there is a clear conflict.'), now),
-    ]
-    return rows
-
-
 # ---------------------------------------------------------------------------
 # Main migration
 # ---------------------------------------------------------------------------
@@ -920,7 +723,7 @@ def run_migration():
     conn.commit()
 
     # ---- Create tables ----
-    print("Creating 26 tables...")
+    print("Creating 24 tables...")
     for ddl in CREATE_TABLES:
         cursor.execute(ddl)
     conn.commit()
@@ -1141,27 +944,6 @@ def run_migration():
         esc_currencies)
     conn.commit()
 
-    # ---- 16. Rule definitions + versions (data-driven rule engine) ----
-    print("  Inserting rule_definitions...")
-    rd_rows = load_rule_definitions()
-    batch_insert(cursor,
-        """INSERT INTO rule_definitions (
-            rule_id, rule_type, rule_name, scope, evaluation_mode, is_skippable, source,
-            severity, is_blocking, breaks_completeness, action_type, action_target,
-            trigger_template, action_required, field_ref, description, active, sort_order
-        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-        rd_rows)
-    conn.commit()
-
-    print("  Inserting rule_versions...")
-    rv_rows = load_rule_versions()
-    batch_insert(cursor,
-        """INSERT INTO rule_versions (
-            version_id, rule_id, version_num, rule_config, valid_from
-        ) VALUES (%s,%s,%s,%s,%s)""",
-        rv_rows)
-    conn.commit()
-
     # ---- Verification ----
     print("\n=== Migration Summary ===")
     all_tables = [
@@ -1174,7 +956,6 @@ def run_migration():
         "category_rules",
         "geography_rules", "geography_rule_countries", "geography_rule_applies_to_categories",
         "escalation_rules", "escalation_rule_currencies",
-        "rule_definitions", "rule_versions",
         "pipeline_runs", "pipeline_log_entries", "audit_logs",
     ]
     total = 0

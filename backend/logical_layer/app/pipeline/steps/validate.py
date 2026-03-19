@@ -24,7 +24,6 @@ from app.utils import (
 
 if TYPE_CHECKING:
     from app.clients.llm import LLMClient
-    from app.clients.organisational import OrganisationalClient
 
 logger = logging.getLogger(__name__)
 
@@ -96,47 +95,10 @@ async def validate_request(
     quantity = coerce_quantity(req.quantity)
     delivery_country = primary_delivery_country(req.model_dump())
     days_until = compute_days_until_required(req.required_by_date, req.created_at)
-    countries = normalize_delivery_countries(req.delivery_countries)
-    min_total = _min_total_price(fetch_result.pricing) if fetch_result.pricing else None
-    min_expedited = _min_expedited_lead_time(fetch_result.pricing) if fetch_result.pricing else None
 
     async with pipeline_logger.step(STEP_NAME, {"request_id": req.request_id}) as ctx:
         issues: list[ValidationIssue] = []
         completeness = True
-        llm_used = False
-        llm_fallback = False
-        requester_instruction: str | None = None
-
-        # ── Phase A: Rule-based validation (VR-001..VR-010 + VR-LLM) ─────
-
-        request_context = {
-            "category_l1": req.category_l1,
-            "category_l2": req.category_l2,
-            "currency": req.currency,
-            "budget_amount": budget,
-            "quantity": quantity,
-            "required_by_date": req.required_by_date,
-            "days_until_required": days_until,
-            "delivery_countries_count": len(countries),
-            "min_supplier_total": min_total,
-            "min_expedited_lead_time": min_expedited,
-        }
-
-        rules: list[dict] = []
-        if org_client:
-            try:
-                rules = await org_client.get_procurement_rules(
-                    rule_type="validation",
-                    scope="request",
-                    enabled=True,
-                )
-            except Exception as exc:
-                logger.warning("Failed to fetch validation rules, using fallback: %s", exc)
-
-        if rules:
-            triggered = await evaluate_rules_async(
-                rules, request_context, llm_client=llm_client,
-            )
 
         # ── Phase A: Dynamic rule evaluation ──────────────────
 

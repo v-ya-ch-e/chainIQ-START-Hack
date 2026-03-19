@@ -11,10 +11,7 @@ from app.models.policies import (
     ApprovalThreshold,
     EscalationRule,
     RestrictedSupplierPolicy,
-    RuleDefinition,
-    RuleVersion,
 )
-from app.services.rule_evaluator import evaluate_rules
 from app.models.reference import PricingTier, Supplier
 from app.models.requests import Request
 
@@ -92,8 +89,6 @@ class EscalationRuleInput:
     threshold_quotes_required: int
     threshold_managers: list[str]
     threshold_deviation_approvers: list[str]
-    strategic_tier: bool = False
-    has_single_supplier_instruction: bool = False
 
 
 @dataclass
@@ -145,127 +140,105 @@ def is_restriction_active(
     return evaluated_amount >= conditional_amount
 
 
-def _rule_input_to_context(rule_input: EscalationRuleInput) -> dict:
-    """Build evaluation context from EscalationRuleInput for rule evaluator."""
-    return {
-        "missing_required_information": rule_input.missing_required_information,
-        "preferred_supplier_restricted": rule_input.preferred_supplier_restricted,
-        "has_compliant_priceable_supplier": rule_input.has_compliant_priceable_supplier,
-        "has_residency_compatible_supplier": rule_input.has_residency_compatible_supplier,
-        "single_supplier_capacity_risk": rule_input.single_supplier_capacity_risk,
-        "preferred_supplier_unregistered_usd": rule_input.preferred_supplier_unregistered_usd,
-        "strategic_tier": rule_input.strategic_tier,
-        "has_single_supplier_instruction": rule_input.has_single_supplier_instruction,
-        "category_label": rule_input.category_label,
-        "threshold_id": rule_input.threshold_id,
-        "threshold_quotes_required": rule_input.threshold_quotes_required,
-        "threshold_managers": rule_input.threshold_managers,
-        "threshold_deviation_approvers": rule_input.threshold_deviation_approvers,
-    }
-
-
-def _rule_def_to_dict(rule_def: RuleDefinition, version: RuleVersion | None) -> dict:
-    """Merge RuleDefinition + current RuleVersion into a flat dict for the evaluator."""
-    import json as _json
-    config = {}
-    if version and version.rule_config:
-        raw = version.rule_config
-        config = _json.loads(raw) if isinstance(raw, str) else raw
-
-    return {
-        "rule_id": rule_def.rule_id,
-        "evaluation_mode": rule_def.evaluation_mode,
-        "condition_expr": config.get("condition_expr"),
-        "llm_prompt": config.get("llm_prompt"),
-        "trigger_template": rule_def.trigger_template or "",
-        "action_target": rule_def.action_target,
-        "is_blocking": bool(rule_def.is_blocking),
-        "severity": rule_def.severity or "high",
-        "enabled": bool(rule_def.active),
-        "action_type": rule_def.action_type or "escalate",
-        "field_ref": rule_def.field_ref,
-        "action_required": rule_def.action_required,
-        "breaks_completeness": bool(rule_def.breaks_completeness),
-    }
-
-
-def _fetch_rules_from_db(
-    db: Session,
-    rule_type: str,
-    scope: str,
-    evaluation_mode: str | None = None,
-) -> list[dict]:
-    """Fetch rules from rule_definitions + rule_versions, return flat dicts."""
-    from sqlalchemy import and_
-
-    q = (
-        db.query(RuleDefinition)
-        .filter(
-            RuleDefinition.rule_type == rule_type,
-            RuleDefinition.scope == scope,
-            RuleDefinition.active == True,
-        )
-    )
-    if evaluation_mode:
-        q = q.filter(RuleDefinition.evaluation_mode == evaluation_mode)
-    q = q.order_by(RuleDefinition.sort_order)
-    rule_defs = q.all()
-
-    results = []
-    for rd in rule_defs:
-        version = (
-            db.query(RuleVersion)
-            .filter(
-                RuleVersion.rule_id == rd.rule_id,
-                RuleVersion.valid_to == None,
-            )
-            .order_by(RuleVersion.version_num.desc())
-            .first()
-        )
-        results.append(_rule_def_to_dict(rd, version))
-    return results
-
-
 def compute_escalations_for_rule_input(
     rule_input: EscalationRuleInput,
     escalation_rule_labels: dict[str, str],
     escalation_rule_targets: dict[str, str],
-    procurement_rules: list | None = None,
-    db: Session | None = None,
 ) -> list[ComputedEscalation]:
     rows: list[ComputedEscalation] = []
 
-    rules_to_eval: list[dict] = []
-    if procurement_rules is not None:
-        rules_to_eval = procurement_rules
-    elif db is not None:
-        rules_to_eval = _fetch_rules_from_db(db, "escalation", "request", "expression")
-
-    context = _rule_input_to_context(rule_input)
-    triggered = evaluate_rules(rules_to_eval, context)
-
-    for t in triggered:
-        rule_id = t["rule_id"]
-        if rule_id == "ER-AT":
-            continue  # Handled below as hardcoded special case
-        target = t.get("action_target") or escalation_rule_targets.get(rule_id)
-        if not target:
-            continue
+    def add_er(rule_id: str, trigger: str, blocking: bool = True):
+        if rule_id not in escalation_rule_targets:
+            return
         rows.append(
             ComputedEscalation(
                 rule_id=rule_id,
                 rule_label=escalation_rule_labels.get(rule_id, rule_id),
-                trigger=t.get("trigger", ""),
-                escalate_to=target,
-                blocking=t.get("is_blocking", True),
+                trigger=trigger,
+                escalate_to=escalation_rule_targets[rule_id],
+                blocking=blocking,
             )
         )
 
-    # ER-AT: hardcoded special case (dynamic action_target)
+    if rule_input.missing_required_information:
+        add_er(
+            "ER-001",
+            "Missing required request information (budget, quantity, or category context).",
+            blocking=True,
+        )
+
+    if rule_input.preferred_supplier_restricted:
+        add_er(
+            "ER-002",
+            "Preferred supplier is restricted for this request context.",
+            blocking=True,
+        )
+
+    strategic_roles = {
+        "head of strategic sourcing",
+        "cpo",
+    }
+    strategic_actors = [
+        *rule_input.threshold_managers,
+        *rule_input.threshold_deviation_approvers,
+    ]
+    if any(role.strip().lower() in strategic_roles for role in strategic_actors):
+        add_er(
+            "ER-003",
+            "Evaluated contract value falls into strategic sourcing approval tier.",
+            blocking=False,
+        )
+
+    if (
+        not rule_input.missing_required_information
+        and not rule_input.has_compliant_priceable_supplier
+    ):
+        add_er(
+            "ER-004",
+            "No compliant supplier with valid pricing can be identified.",
+            blocking=True,
+        )
+
+    if (
+        not rule_input.missing_required_information
+        and
+        rule_input.has_residency_compatible_supplier is not None
+        and not rule_input.has_residency_compatible_supplier
+    ):
+        add_er(
+            "ER-005",
+            "Data residency requirement cannot be satisfied by available compliant suppliers.",
+            blocking=True,
+        )
+
+    if (
+        not rule_input.missing_required_information
+        and rule_input.single_supplier_capacity_risk
+    ):
+        add_er(
+            "ER-006",
+            "Only one supplier can satisfy the required quantity/capacity constraints.",
+            blocking=True,
+        )
+
+    if rule_input.category_label == "Marketing / Influencer Campaign Management":
+        add_er(
+            "ER-007",
+            "Brand-safety review is required before final award in influencer campaigns.",
+            blocking=True,
+        )
+
+    if rule_input.preferred_supplier_unregistered_usd:
+        add_er(
+            "ER-008",
+            "Preferred supplier is not registered for all delivery countries in this USD request.",
+            blocking=True,
+        )
+
     if (
         rule_input.threshold_id
         and rule_input.threshold_quotes_required >= 2
-        and rule_input.has_single_supplier_instruction
+        and has_single_supplier_instruction(rule_input.request_text)
     ):
         if rule_input.threshold_deviation_approvers:
             escalation_target = rule_input.threshold_deviation_approvers[0]
@@ -543,18 +516,6 @@ def evaluate_escalation_queue(
                 ]
                 break
 
-        strategic_roles = {"head of strategic sourcing", "cpo"}
-        strategic_actors = [
-            *threshold_managers,
-            *threshold_deviation_approvers,
-        ]
-        strategic_tier = any(
-            role.strip().lower() in strategic_roles for role in strategic_actors
-        )
-        has_single_supplier_instruction = has_single_supplier_instruction(
-            request.request_text
-        )
-
         rule_input = EscalationRuleInput(
             request_id=request.request_id,
             title=request.title,
@@ -581,15 +542,12 @@ def evaluate_escalation_queue(
             threshold_quotes_required=threshold_quotes_required,
             threshold_managers=threshold_managers,
             threshold_deviation_approvers=threshold_deviation_approvers,
-            strategic_tier=strategic_tier,
-            has_single_supplier_instruction=has_single_supplier_instruction,
         )
 
         computed = compute_escalations_for_rule_input(
             rule_input=rule_input,
             escalation_rule_labels=escalation_rule_labels,
             escalation_rule_targets=escalation_rule_targets,
-            db=db,
         )
         if not computed:
             continue

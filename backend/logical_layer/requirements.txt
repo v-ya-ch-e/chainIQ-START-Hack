@@ -4,8 +4,6 @@ httpx
 pydantic-settings
 python-dotenv
 anthropic
-simpleeval
-reportlab
 
 # Test dependencies
 pytest

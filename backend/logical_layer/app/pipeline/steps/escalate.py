@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from app.clients.organisational import OrganisationalClient
 from app.models.pipeline_io import (
     Escalation,
     EscalationResult,
@@ -122,8 +121,8 @@ async def compute_escalations(
 
     req = fetch_result.request
     budget = coerce_budget(req.budget_amount)
+    quantity = coerce_quantity(req.quantity)
     currency = req.currency or "EUR"
-    interp = validation_result.request_interpretation
 
     async with pipeline_logger.step(
         STEP_NAME,
@@ -199,71 +198,18 @@ async def compute_escalations(
         return result
 
 
-async def _discover_pipeline_issues(
+def _discover_pipeline_issues(
     fetch_result: FetchResult,
     validation_result: ValidationResult,
     compliance_result: ComplianceResult,
     rank_result: RankResult,
     budget: float | None,
+    quantity: int | None,
     currency: str,
-    org_client: OrganisationalClient | None,
 ) -> list[PipelineEscalation]:
     """Fallback: discover escalation-worthy issues from pipeline steps 2-5 (hardcoded)."""
 
     issues: list[PipelineEscalation] = []
-    req = fetch_result.request
-    interp = validation_result.request_interpretation
-
-    has_budget_insufficient = any(vi.type == "budget_insufficient" for vi in validation_result.issues)
-    has_lead_time_issue = any(vi.type == "lead_time_infeasible" for vi in validation_result.issues)
-
-    min_ranked_total = None
-    for s in rank_result.ranked_suppliers:
-        if s.total_price is not None:
-            if min_ranked_total is None or s.total_price < min_ranked_total:
-                min_ranked_total = s.total_price
-
-    compliant_residency_count = sum(
-        1 for s in compliance_result.compliant if s.data_residency_supported
-    )
-    preferred_excluded_restricted = False
-    if req.preferred_supplier_mentioned:
-        for exc in compliance_result.excluded:
-            if (
-                req.preferred_supplier_mentioned.lower() in exc.supplier_name.lower()
-                and "restricted" in exc.reason.lower()
-            ):
-                preferred_excluded_restricted = True
-                break
-
-    pipeline_context = {
-        "has_budget_insufficient_issue": has_budget_insufficient,
-        "has_lead_time_issue": has_lead_time_issue,
-        "days_until_required": interp.days_until_required,
-        "min_expedited_lead_time": None,  # Could add from rank/filter if needed
-        "compliant_count": len(compliance_result.compliant),
-        "initial_supplier_count": len(compliance_result.compliant) + len(compliance_result.excluded),
-        "compliant_residency_count": compliant_residency_count,
-        "preferred_supplier_excluded_restricted": preferred_excluded_restricted,
-        "min_ranked_total": min_ranked_total,
-        "req_data_residency_constraint": req.data_residency_constraint,
-        "budget_amount": budget,
-        "currency": currency,
-        "country": req.country or "unknown",
-        "requester_instruction": interp.requester_instruction or "",
-        "threshold_quotes_required": fetch_result.approval_tier.get_quotes_required() if fetch_result.approval_tier else 2,
-    }
-
-    rules: list[dict] = []
-    if org_client:
-        try:
-            rules = await org_client.get_procurement_rules(
-                rule_type="pipeline_escalation",
-                scope="pipeline",
-                enabled=True,
-            )
-        except Exception as exc:
-            logger.warning("Failed to fetch pipeline escalation rules: %s", exc)
 
     for vi in validation_result.issues:
         if vi.type == "budget_insufficient" and budget is not None:
@@ -296,7 +242,7 @@ async def _discover_pipeline_issues(
                     max_exp = max(max_exp, s.expedited_lead_time_days) if max_exp is not None else s.expedited_lead_time_days
             range_str = f"{min_exp}–{max_exp}" if min_exp is not None and max_exp is not None and min_exp != max_exp else str(min_exp or max_exp or "?")
             issues.append(PipelineEscalation(
-                rule_id="PE-001",
+                rule_id="ER-004",
                 trigger=(
                     f"Lead time infeasible: required delivery {interp.required_by_date} "
                     f"({interp.days_until_required} days). All suppliers' expedited lead times are "
@@ -315,8 +261,8 @@ async def _discover_pipeline_issues(
         if not has_residency and compliance_result.compliant:
             country = fetch_result.request.country or "unknown"
             issues.append(PipelineEscalation(
-                rule_id="PE-003",
-                trigger=f"No compliant supplier supports data residency in {req.country or 'unknown'}",
+                rule_id="ER-005",
+                trigger=f"No compliant supplier supports data residency in {country}",
                 escalate_to="Data Protection Officer",
                 blocking=True,
                 source="pipeline",
