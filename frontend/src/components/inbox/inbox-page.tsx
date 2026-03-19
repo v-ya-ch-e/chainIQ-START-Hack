@@ -2,10 +2,12 @@
 
 import Link from "next/link"
 import { useMemo, useState } from "react"
-import { ArrowRight, Search } from "lucide-react"
+import { ArrowRight, Search, Sparkles } from "lucide-react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
+import { IntakeWizardDialog } from "@/components/inbox/intake-wizard-dialog"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
@@ -49,6 +51,7 @@ const escalationOptions = [
 
 export function InboxPage({ cases }: InboxPageProps) {
   const [query, setQuery] = useState("")
+  const [isWizardOpen, setIsWizardOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState("all")
   const [escalationFilter, setEscalationFilter] = useState("all")
   const [attentionOnly, setAttentionOnly] = useState(false)
@@ -82,13 +85,19 @@ export function InboxPage({ cases }: InboxPageProps) {
 
   return (
     <div className="space-y-6">
-      <div className="animate-fade-in-up">
+      <div className="animate-fade-in-up flex items-start justify-between">
         <SectionHeading
           eyebrow="Inbox"
           title="Case triage queue"
           description="Search, filter, and drill into individual sourcing cases."
         />
+        <Button onClick={() => setIsWizardOpen(true)}>
+          <Sparkles className="mr-2 size-4" />
+          New Request
+        </Button>
       </div>
+
+      <IntakeWizardDialog open={isWizardOpen} onOpenChange={setIsWizardOpen} />
 
       <Card className="animate-fade-in-up" style={{ animationDelay: "80ms" }}>
         <CardHeader className="border-b pb-4">
