@@ -48,9 +48,10 @@ type RequestRow = {
   data_residency_constraint: boolean
   esg_requirement: boolean
   status: string
+  scenario_tags?: string[]
 }
 
-type RequestDetail = RequestRow & {
+type RequestDetail = Omit<RequestRow, "scenario_tags"> & {
   delivery_countries: Array<{ id: number; country_code: string }>
   scenario_tags: Array<{ id: number; tag: string }>
   category_l1: string | null
@@ -163,8 +164,30 @@ type RequestOverview = {
   }>
 }
 
-const BASE_API_URL = (process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000").replace(/\/$/, "")
-let hasLoggedBackendWarning = false
+type EscalationQueueApiRow = {
+  escalation_id: string
+  request_id: string
+  title: string
+  category: string
+  business_unit: string
+  country: string
+  rule_id: string
+  rule_label: string
+  trigger: string
+  escalate_to: string
+  blocking: boolean
+  status: "open" | "resolved"
+  created_at: string
+  last_updated: string
+  recommendation_status: RecommendationStatus
+}
+
+const backendInternalUrl = process.env.BACKEND_INTERNAL_URL
+if (!backendInternalUrl) {
+  throw new Error("BACKEND_INTERNAL_URL is required for backend data fetching.")
+}
+
+const BASE_API_URL = backendInternalUrl.replace(/\/$/, "")
 
 const STATUS_MAP: Record<string, CaseStatus> = {
   new: "received",
@@ -190,7 +213,17 @@ const SCENARIO_TAGS = new Set<ScenarioTag>([
   "multi_country",
 ])
 
-const requestCache = new Map<string, Promise<unknown>>()
+class BackendApiError extends Error {
+  status: number
+  path: string
+
+  constructor(path: string, status: number, detail: string) {
+    super(`Backend request failed (${status}) for ${path}: ${detail}`)
+    this.name = "BackendApiError"
+    this.status = status
+    this.path = path
+  }
+}
 
 function toNumber(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null
@@ -202,8 +235,14 @@ function normalizeStatus(status: string): CaseStatus {
   return STATUS_MAP[status] ?? "received"
 }
 
-function normalizeTag(tag: string): ScenarioTag {
-  return SCENARIO_TAGS.has(tag as ScenarioTag) ? (tag as ScenarioTag) : "standard"
+function normalizeTag(tag: string): ScenarioTag | null {
+  return SCENARIO_TAGS.has(tag as ScenarioTag) ? (tag as ScenarioTag) : null
+}
+
+function normalizeTags(tags: string[]): ScenarioTag[] {
+  return tags
+    .map(normalizeTag)
+    .filter((tag): tag is ScenarioTag => tag !== null)
 }
 
 function recommendationStatusFrom(
@@ -224,28 +263,21 @@ function getRequestUrl(path: string): string {
 
 async function fetchJson<T>(path: string): Promise<T> {
   const url = getRequestUrl(path)
-  if (!requestCache.has(url)) {
-    requestCache.set(
-      url,
-      fetch(url, { cache: "no-store" }).then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Request failed (${response.status}) for ${path}`)
-        }
-        return response.json()
-      }),
-    )
+  const response = await fetch(url, { cache: "no-store" })
+  if (!response.ok) {
+    let detail = response.statusText || "Unknown backend error"
+    try {
+      const payload = (await response.json()) as { detail?: string }
+      if (payload.detail) {
+        detail = payload.detail
+      }
+    } catch {
+      // Keep status text when backend response is not JSON.
+    }
+    throw new BackendApiError(path, response.status, detail)
   }
 
-  return requestCache.get(url) as Promise<T>
-}
-
-function logBackendUnavailable(error: unknown) {
-  if (hasLoggedBackendWarning) return
-  hasLoggedBackendWarning = true
-  console.warn(
-    "[cases-data] Backend API unavailable. Falling back to empty/default UI data.",
-    error,
-  )
+  return response.json() as Promise<T>
 }
 
 async function fetchAllPagedItems<T extends { total: number; skip: number; limit: number; items: U[] }, U>(
@@ -268,36 +300,55 @@ async function fetchAllPagedItems<T extends { total: number; skip: number; limit
 }
 
 async function getCategoriesMap() {
-  try {
-    const categories = await fetchJson<CategoryRow[]>("/api/categories/")
-    return new Map<number, string>(
-      categories.map((category) => [
-        category.id,
-        `${category.category_l1} / ${category.category_l2}`,
-      ]),
-    )
-  } catch (error) {
-    logBackendUnavailable(error)
-    return new Map<number, string>()
-  }
+  const categories = await fetchJson<CategoryRow[]>("/api/categories/")
+  return new Map<number, string>(
+    categories.map((category) => [
+      category.id,
+      `${category.category_l1} / ${category.category_l2}`,
+    ]),
+  )
 }
 
 async function getAllRequests() {
-  try {
-    return await fetchAllPagedItems<RequestListResponse, RequestRow>("/api/requests/")
-  } catch (error) {
-    logBackendUnavailable(error)
-    return []
-  }
+  return await fetchAllPagedItems<RequestListResponse, RequestRow>("/api/requests/")
 }
 
 async function getAllAwards() {
-  try {
-    return await fetchAllPagedItems<HistoricalAwardListResponse, HistoricalAward>("/api/awards/")
-  } catch (error) {
-    logBackendUnavailable(error)
-    return []
+  return await fetchAllPagedItems<HistoricalAwardListResponse, HistoricalAward>("/api/awards/")
+}
+
+function mapEscalationQueueRow(row: EscalationQueueApiRow): QueueEscalationItem {
+  return {
+    escalationId: row.escalation_id,
+    caseId: row.request_id,
+    title: row.title,
+    category: row.category,
+    businessUnit: row.business_unit,
+    country: row.country,
+    ruleId: row.rule_id,
+    ruleLabel: row.rule_label,
+    trigger: row.trigger,
+    escalateTo: row.escalate_to,
+    blocking: row.blocking,
+    status: row.status,
+    createdAt: row.created_at,
+    lastUpdated: row.last_updated,
+    recommendationStatus: row.recommendation_status,
   }
+}
+
+async function fetchEscalationQueueRows(): Promise<QueueEscalationItem[]> {
+  const rows = await fetchJson<EscalationQueueApiRow[]>("/api/escalations/queue")
+  return rows.map(mapEscalationQueueRow)
+}
+
+async function fetchEscalationRowsByRequest(
+  requestId: string,
+): Promise<QueueEscalationItem[]> {
+  const rows = await fetchJson<EscalationQueueApiRow[]>(
+    `/api/escalations/by-request/${requestId}`,
+  )
+  return rows.map(mapEscalationQueueRow)
 }
 
 function toAuditFeedEvent(
@@ -322,11 +373,16 @@ function toAuditFeedEvent(
 }
 
 export async function getDashboardMetrics(): Promise<DashboardMetric[]> {
-  const [requests, awards] = await Promise.all([getAllRequests(), getAllAwards()])
-  const openEscalations = awards.filter(
-    (entry) => entry.escalation_required && !entry.policy_compliant,
+  const [requests, awards, escalationRows] = await Promise.all([
+    getAllRequests(),
+    getAllAwards(),
+    fetchEscalationQueueRows(),
+  ])
+  const blockingCases = new Set(
+    escalationRows
+      .filter((entry) => entry.blocking && entry.status !== "resolved")
+      .map((entry) => entry.caseId),
   )
-  const blockingCases = new Set(openEscalations.map((entry) => entry.request_id))
 
   return [
     {
@@ -361,10 +417,11 @@ export async function getDashboardMetrics(): Promise<DashboardMetric[]> {
 }
 
 export async function getCaseList(): Promise<CaseListItem[]> {
-  const [requests, awards, categoriesMap] = await Promise.all([
+  const [requests, awards, categoriesMap, escalationRows] = await Promise.all([
     getAllRequests(),
     getAllAwards(),
     getCategoriesMap(),
+    fetchEscalationQueueRows(),
   ])
 
   const awardsByRequest = new Map<string, HistoricalAward[]>()
@@ -373,13 +430,23 @@ export async function getCaseList(): Promise<CaseListItem[]> {
     bucket.push(award)
     awardsByRequest.set(award.request_id, bucket)
   }
+  const escalationsByRequest = new Map<string, QueueEscalationItem[]>()
+  for (const escalation of escalationRows) {
+    const bucket = escalationsByRequest.get(escalation.caseId) ?? []
+    bucket.push(escalation)
+    escalationsByRequest.set(escalation.caseId, bucket)
+  }
 
   return requests.map((request) => {
     const requestAwards = awardsByRequest.get(request.request_id) ?? []
-    const hasBlockingEscalation = requestAwards.some(
-      (entry) => entry.escalation_required && !entry.policy_compliant,
+    const requestEscalations = escalationsByRequest.get(request.request_id) ?? []
+    const normalizedTags = normalizeTags(request.scenario_tags ?? [])
+    const hasBlockingEscalation = requestEscalations.some(
+      (entry) => entry.blocking && entry.status !== "resolved",
     )
-    const hasEscalation = requestAwards.some((entry) => entry.escalation_required)
+    const hasEscalation = requestEscalations.some(
+      (entry) => entry.status !== "resolved",
+    )
     const status = normalizeStatus(request.status)
     const recommendationStatus = recommendationStatusFrom(
       hasBlockingEscalation,
@@ -399,7 +466,7 @@ export async function getCaseList(): Promise<CaseListItem[]> {
       currency: request.currency,
       requiredByDate: request.required_by_date,
       status,
-      scenarioTags: ["standard"],
+      scenarioTags: normalizedTags.length > 0 ? normalizedTags : ["standard"],
       recommendationStatus,
       escalationStatus: hasBlockingEscalation
         ? "blocking"
@@ -426,50 +493,16 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
   try {
     detail = await fetchJson<RequestDetail>(`/api/requests/${caseId}`)
   } catch (error) {
-    logBackendUnavailable(error)
-    return null
+    if (error instanceof BackendApiError && error.status === 404) {
+      return null
+    }
+    throw error
   }
 
-  const [overview, awards] = await Promise.all([
-    fetchJson<RequestOverview>(`/api/analytics/request-overview/${caseId}`).catch(
-      (error) => {
-        logBackendUnavailable(error)
-        return {
-          request: {
-            request_id: detail.request_id,
-            title: detail.title,
-            category_l1: detail.category_l1,
-            category_l2: detail.category_l2,
-            currency: detail.currency,
-            budget_amount:
-              detail.budget_amount === null ? null : String(detail.budget_amount),
-            quantity: detail.quantity === null ? null : String(detail.quantity),
-            country: detail.country,
-            delivery_countries: detail.delivery_countries.map(
-              (entry) => entry.country_code,
-            ),
-            scenario_tags: detail.scenario_tags.map((entry) => entry.tag),
-            required_by_date: detail.required_by_date,
-            data_residency_constraint: detail.data_residency_constraint,
-            esg_requirement: detail.esg_requirement,
-            preferred_supplier_mentioned: detail.preferred_supplier_mentioned,
-            incumbent_supplier: detail.incumbent_supplier,
-            status: detail.status,
-          },
-          compliant_suppliers: [],
-          pricing: [],
-          applicable_rules: { category_rules: [], geography_rules: [] },
-          approval_tier: null,
-          historical_awards: [],
-        } satisfies RequestOverview
-      },
-    ),
-    fetchJson<HistoricalAward[]>(`/api/awards/by-request/${caseId}`).catch(
-      (error) => {
-        logBackendUnavailable(error)
-        return []
-      },
-    ),
+  const [overview, awards, escalationRows] = await Promise.all([
+    fetchJson<RequestOverview>(`/api/analytics/request-overview/${caseId}`),
+    fetchJson<HistoricalAward[]>(`/api/awards/by-request/${caseId}`),
+    fetchEscalationRowsByRequest(caseId),
   ])
 
   const pricingBySupplier = new Map(
@@ -518,10 +551,26 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
 
   const hasBlockingValidation = (detail.budget_amount ?? null) === null || (detail.quantity ?? null) === null
 
-  const hasBlockingEscalation = awards.some(
-    (entry) => entry.escalation_required && !entry.policy_compliant,
+  const escalations: CaseDetail["escalations"] = escalationRows.map((entry) => ({
+    escalationId: entry.escalationId,
+    rule: entry.ruleId,
+    ruleLabel: entry.ruleLabel,
+    trigger: entry.trigger,
+    escalateTo: entry.escalateTo,
+    blocking: entry.blocking,
+    status: entry.status,
+    nextAction:
+      entry.status === "resolved"
+        ? "Escalation resolved with documented outcome."
+        : entry.blocking
+          ? `Coordinate decision with ${entry.escalateTo}.`
+          : `Document advisory input from ${entry.escalateTo}.`,
+  }))
+
+  const hasBlockingEscalation = escalations.some(
+    (entry) => entry.blocking && entry.status !== "resolved",
   )
-  const hasEscalation = awards.some((entry) => entry.escalation_required)
+  const hasEscalation = escalations.some((entry) => entry.status !== "resolved")
   const status = normalizeStatus(detail.status)
   const recommendationStatus = recommendationStatusFrom(
     hasBlockingValidation || hasBlockingEscalation || shortlist.length === 0,
@@ -552,33 +601,6 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     })),
   ]
 
-  const escalations: CaseDetail["escalations"] = awards
-    .filter((entry) => entry.escalation_required)
-    .map((entry, index) => ({
-      escalationId: `${caseId}-ESC-${index + 1}`,
-      rule: entry.policy_compliant ? "manual_review" : "policy_non_compliance",
-      trigger: entry.decision_rationale,
-      escalateTo: entry.escalated_to ?? "Procurement Manager",
-      blocking: !entry.policy_compliant,
-      status: status === "resolved" ? "resolved" : "open",
-      nextAction:
-        status === "resolved"
-          ? "Escalation resolved with documented outcome."
-          : "Review policy conflict and confirm award decision.",
-    }))
-
-  if (escalations.length === 0 && recommendationStatus !== "proceed") {
-    escalations.push({
-      escalationId: `${caseId}-ESC-1`,
-      rule: "validation_missing_data",
-      trigger: "Missing budget or quantity prevents autonomous decisioning.",
-      escalateTo: "Category Manager",
-      blocking: true,
-      status: "open",
-      nextAction: "Collect missing request details and rerun evaluation.",
-    })
-  }
-
   const timeline = [
     {
       id: `${caseId}-source`,
@@ -603,7 +625,9 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     },
     ...escalations.map((entry) => ({
       id: `${entry.escalationId}-timeline`,
-      timestamp: detail.created_at,
+      timestamp:
+        escalationRows.find((row) => row.escalationId === entry.escalationId)
+          ?.createdAt ?? detail.created_at,
       title: `Escalation opened (${entry.rule})`,
       description: entry.trigger,
       kind: "escalation" as const,
@@ -710,10 +734,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       requesterRole: detail.requester_role ?? "Not specified",
       submittedForId: detail.submitted_for_id,
       status,
-      scenarioTags:
-        detail.scenario_tags.length > 0
-          ? detail.scenario_tags.map((entry) => normalizeTag(entry.tag))
-          : ["standard"],
+      scenarioTags: normalizeTags(detail.scenario_tags.map((entry) => entry.tag)),
       categoryL1: detail.category_l1 ?? "Unknown",
       categoryL2: detail.category_l2 ?? "Unknown",
       title: detail.title,
@@ -816,33 +837,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
 }
 
 export async function getEscalationQueue(): Promise<QueueEscalationItem[]> {
-  const [cases, awards] = await Promise.all([getCaseList(), getAllAwards()])
-  const caseById = new Map(cases.map((entry) => [entry.requestId, entry]))
-
-  const escalationRows: QueueEscalationItem[] = awards
-    .filter((entry) => entry.escalation_required)
-    .map((entry, index) => {
-      const caseItem = caseById.get(entry.request_id)
-      const isResolved = caseItem?.status === "resolved"
-      return {
-        escalationId: `${entry.award_id}-Q${index + 1}`,
-        caseId: entry.request_id,
-        title: caseItem?.title ?? "Sourcing request",
-        category: caseItem?.category ?? "Unknown",
-        businessUnit: caseItem?.businessUnit ?? "Unknown",
-        country: caseItem?.countryLabel ?? "Unknown",
-        rule: entry.policy_compliant ? "manual_review" : "policy_non_compliance",
-        escalateTo: entry.escalated_to ?? "Procurement Manager",
-        blocking: !entry.policy_compliant,
-        status: isResolved ? "resolved" : "open",
-        createdAt: entry.award_date,
-        lastUpdated: caseItem?.lastUpdated ?? entry.award_date,
-        trigger: entry.decision_rationale,
-        recommendationStatus:
-          caseItem?.recommendationStatus ?? "proceed_with_conditions",
-      }
-    })
-
+  const escalationRows = await fetchEscalationQueueRows()
   return escalationRows.sort(
     (a, b) =>
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -866,8 +861,11 @@ export async function getAuditFeed(): Promise<AuditFeedEvent[]> {
 export async function getAuditOverview(): Promise<{
   summary: Array<{ label: string; value: string; helper: string }>
 }> {
-  const [requests, awards] = await Promise.all([getAllRequests(), getAllAwards()])
-  const escalated = awards.filter((entry) => entry.escalation_required)
+  const [requests, awards, escalationRows] = await Promise.all([
+    getAllRequests(),
+    getAllAwards(),
+    fetchEscalationQueueRows(),
+  ])
   const policyConflicts = awards.filter((entry) => !entry.policy_compliant)
 
   return {
@@ -884,8 +882,8 @@ export async function getAuditOverview(): Promise<{
       },
       {
         label: "Escalation Events",
-        value: escalated.length.toString(),
-        helper: "Rows that triggered human-review workflow",
+        value: escalationRows.length.toString(),
+        helper: "Deterministic escalation objects generated by current policy logic",
       },
       {
         label: "Policy Conflicts",
