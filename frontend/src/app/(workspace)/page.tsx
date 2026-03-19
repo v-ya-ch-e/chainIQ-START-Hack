@@ -1,13 +1,12 @@
 import { OverviewPage } from "@/components/overview/overview-page"
-import { getCaseList, getDashboardMetrics } from "@/lib/data/cases"
+import { getDashboardPageData } from "@/lib/data/cases"
+
+export const dynamic = "force-dynamic"
 
 export default async function Page() {
-  const [metrics, cases] = await Promise.all([
-    getDashboardMetrics(),
-    getCaseList(),
-  ])
+  const { metrics, cases, dataState } = await getDashboardPageData()
 
   return (
-    <OverviewPage metrics={metrics} cases={cases} />
+    <OverviewPage metrics={metrics} cases={cases} dataState={dataState} />
   )
 }

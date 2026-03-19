@@ -23,5 +23,11 @@ export default async function Page({
       ? tab
       : undefined
 
-  return <CaseWorkspace data={data} initialTab={initialTab} />
+  return (
+    <CaseWorkspace
+      key={`${data.id}-${initialTab ?? "overview"}`}
+      data={data}
+      initialTab={initialTab}
+    />
+  )
 }

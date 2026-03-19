@@ -72,6 +72,11 @@
   --chart-4: oklch(0.64 0.18 20);
   --chart-5: oklch(0.61 0.14 310);
   --radius: 0.625rem;
+  --layout-inner-padding: 0.75rem;
+  --layout-inner-radius: calc(var(--radius) * 1.4);
+  --layout-outer-radius: calc(
+    var(--layout-inner-radius) + var(--layout-inner-padding)
+  );
   --sidebar: oklch(0.98 0.002 258);
   --sidebar-foreground: oklch(0.145 0.015 258);
   --sidebar-primary: oklch(0.205 0.02 258);

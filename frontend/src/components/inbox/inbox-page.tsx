@@ -93,7 +93,7 @@ export function InboxPage({ cases }: InboxPageProps) {
                 value={statusFilter}
                 onValueChange={(v) => setStatusFilter(v ?? "all")}
               >
-                <SelectTrigger className="h-9 w-[160px]">
+                <SelectTrigger className="w-[160px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

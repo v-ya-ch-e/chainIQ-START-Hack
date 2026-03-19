@@ -35,6 +35,8 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar"
+import { buttonVariants } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 
 interface WorkspaceShellProps {
   children: ReactNode
@@ -51,6 +53,10 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
         {
           "--sidebar-width": "calc(var(--spacing) * 72)",
           "--header-height": "calc(var(--spacing) * 12)",
+          "--layout-inner-padding": "clamp(0.75rem, 1.2vw, 1rem)",
+          "--layout-inner-radius": "calc(var(--radius) * 1.4)",
+          "--layout-outer-radius":
+            "calc(var(--layout-inner-radius) + var(--layout-inner-padding))",
           height: "100svh",
           minHeight: 0,
           overflow: "hidden",
@@ -87,7 +93,12 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
           <SidebarMenu>
             <SidebarMenuItem>
               <DropdownMenu>
-                <DropdownMenuTrigger className="flex w-full items-center gap-2 rounded-lg p-2 text-left text-sm outline-none ring-sidebar-ring hover:bg-sidebar-accent focus-visible:ring-2">
+                <DropdownMenuTrigger
+                  className={cn(
+                    buttonVariants({ variant: "ghost", size: "lg" }),
+                    "w-full justify-start gap-2 rounded-lg px-2 text-left ring-sidebar-ring hover:bg-sidebar-accent focus-visible:ring-2",
+                  )}
+                >
                   <Avatar className="size-8 rounded-lg">
                     <AvatarFallback className="rounded-lg text-xs">
                       MA
@@ -168,11 +179,11 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
           </nav>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="@container/main flex flex-col gap-2">
-            <div className="m-3 flex min-w-0 flex-col gap-4 rounded-xl border bg-white p-4 shadow-sm md:m-4 md:gap-6 md:p-6">
-              <PageTransition>{children}</PageTransition>
-            </div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-[var(--layout-inner-padding)]">
+          <div className="@container/main min-w-0 rounded-[var(--layout-inner-radius)]">
+            <PageTransition>
+              {children}
+            </PageTransition>
           </div>
         </div>
       </SidebarInset>
