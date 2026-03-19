@@ -32,8 +32,6 @@ async def get_pipeline_status(
         raise HTTPException(status_code=404, detail="No pipeline runs found")
 
     latest = runs[0] if isinstance(runs, list) else runs
-    if isinstance(runs, list) and runs:
-        latest = runs[0]
 
     cached = runner.get_cached_result(request_id)
 

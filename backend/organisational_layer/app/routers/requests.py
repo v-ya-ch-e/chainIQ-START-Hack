@@ -115,11 +115,13 @@ def update_request(
 
     if delivery_countries is not None:
         req.delivery_countries.clear()
+        db.flush()
         for country_code in delivery_countries:
             req.delivery_countries.append(RequestDeliveryCountry(country_code=country_code))
 
     if scenario_tags is not None:
         req.scenario_tags.clear()
+        db.flush()
         for tag in scenario_tags:
             req.scenario_tags.append(RequestScenarioTag(tag=tag))
 

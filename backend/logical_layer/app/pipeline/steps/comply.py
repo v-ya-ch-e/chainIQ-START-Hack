@@ -131,7 +131,10 @@ async def _check_supplier(
             if restriction.get("is_restricted"):
                 reason = restriction.get("restriction_reason", "Policy restriction")
                 return f"Restricted: {reason}"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Restriction check failed for %s — treating as non-restricted: %s",
+                supplier.supplier_id, exc,
+            )
 
     return None

@@ -80,6 +80,7 @@ def find_compliant_suppliers(
             Supplier.supplier_name,
             Supplier.country_hq,
             Supplier.currency,
+            Supplier.capacity_per_month,
             SupplierCategory.quality_score,
             SupplierCategory.risk_score,
             SupplierCategory.esg_score,
@@ -112,6 +113,7 @@ def find_compliant_suppliers(
             esg_score=r.esg_score,
             preferred_supplier=r.preferred_supplier,
             data_residency_supported=r.data_residency_supported,
+            capacity_per_month=r.capacity_per_month,
         )
         for r in rows
     ]
@@ -339,6 +341,11 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
     """
     Comprehensive read-only evaluation of a request: details, compliant suppliers
     with pricing, applicable rules, approval tier, and historical awards.
+
+    For multi-country deliveries, suppliers must serve ALL delivery countries,
+    restrictions are checked against ALL countries, pricing is looked up for
+    each unique pricing region, and geography rules are collected for every
+    delivery country.
     """
     req = (
         db.query(Request)
@@ -355,126 +362,166 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
 
     cat = req.category
     delivery_codes = [dc.country_code for dc in req.delivery_countries]
-    primary_country = delivery_codes[0] if delivery_codes else req.country
-    region = COUNTRY_TO_REGION.get(primary_country, "EU")
+    countries_to_check = delivery_codes if delivery_codes else [req.country]
+    regions = list(dict.fromkeys(
+        COUNTRY_TO_REGION.get(c, "EU") for c in countries_to_check
+    ))
 
     request_dict = {
         "request_id": req.request_id,
-        "title": req.title,
+        "created_at": req.created_at.isoformat() if req.created_at else None,
+        "request_channel": req.request_channel,
+        "request_language": req.request_language,
+        "business_unit": req.business_unit,
+        "country": req.country,
+        "site": req.site,
+        "requester_id": req.requester_id,
+        "requester_role": req.requester_role,
+        "submitted_for_id": req.submitted_for_id,
+        "category_id": req.category_id,
         "category_l1": cat.category_l1 if cat else None,
         "category_l2": cat.category_l2 if cat else None,
+        "title": req.title,
+        "request_text": req.request_text,
         "currency": req.currency,
         "budget_amount": str(req.budget_amount) if req.budget_amount is not None else None,
         "quantity": str(req.quantity) if req.quantity is not None else None,
-        "country": req.country,
-        "delivery_countries": delivery_codes,
-        "scenario_tags": [t.tag for t in req.scenario_tags],
+        "unit_of_measure": req.unit_of_measure,
         "required_by_date": str(req.required_by_date),
-        "data_residency_constraint": req.data_residency_constraint,
-        "esg_requirement": req.esg_requirement,
         "preferred_supplier_mentioned": req.preferred_supplier_mentioned,
         "incumbent_supplier": req.incumbent_supplier,
+        "contract_type_requested": req.contract_type_requested,
+        "delivery_countries": delivery_codes,
+        "data_residency_constraint": req.data_residency_constraint,
+        "esg_requirement": req.esg_requirement,
         "status": req.status,
+        "scenario_tags": [t.tag for t in req.scenario_tags],
     }
 
-    # Compliant suppliers
+    # Compliant suppliers — must serve ALL delivery countries and not be
+    # restricted in ANY of them.
     compliant = []
     if cat:
-        restricted_sub = (
-            db.query(RestrictedSupplierPolicy.supplier_id)
-            .join(RestrictedSupplierScope)
-            .filter(
-                RestrictedSupplierPolicy.category_l1 == cat.category_l1,
-                RestrictedSupplierPolicy.category_l2 == cat.category_l2,
-                or_(
-                    RestrictedSupplierScope.scope_value == "all",
-                    RestrictedSupplierScope.scope_value == primary_country,
-                ),
+        restricted_ids: set[str] = set()
+        for country in countries_to_check:
+            sub = (
+                db.query(RestrictedSupplierPolicy.supplier_id)
+                .join(RestrictedSupplierScope)
+                .filter(
+                    RestrictedSupplierPolicy.category_l1 == cat.category_l1,
+                    RestrictedSupplierPolicy.category_l2 == cat.category_l2,
+                    or_(
+                        RestrictedSupplierScope.scope_value == "all",
+                        RestrictedSupplierScope.scope_value == country,
+                    ),
+                )
             )
-            .subquery()
-        )
+            restricted_ids.update(row[0] for row in sub.all())
 
-        supplier_rows = (
-            db.query(
-                Supplier.supplier_id,
-                Supplier.supplier_name,
-                Supplier.country_hq,
-                Supplier.currency,
-                SupplierCategory.quality_score,
-                SupplierCategory.risk_score,
-                SupplierCategory.esg_score,
-                SupplierCategory.preferred_supplier,
-                SupplierCategory.data_residency_supported,
-            )
-            .join(SupplierCategory, Supplier.supplier_id == SupplierCategory.supplier_id)
-            .join(Category, SupplierCategory.category_id == Category.id)
-            .join(
-                SupplierServiceRegion,
-                Supplier.supplier_id == SupplierServiceRegion.supplier_id,
-            )
-            .filter(
-                Category.category_l1 == cat.category_l1,
-                Category.category_l2 == cat.category_l2,
-                SupplierServiceRegion.country_code == primary_country,
-                ~Supplier.supplier_id.in_(db.query(restricted_sub)),
-            )
-            .all()
-        )
+        candidate_sets: list[set[str]] = []
+        for country in countries_to_check:
+            ids = {
+                row[0]
+                for row in (
+                    db.query(Supplier.supplier_id)
+                    .join(SupplierCategory, Supplier.supplier_id == SupplierCategory.supplier_id)
+                    .join(Category, SupplierCategory.category_id == Category.id)
+                    .join(SupplierServiceRegion, Supplier.supplier_id == SupplierServiceRegion.supplier_id)
+                    .filter(
+                        Category.category_l1 == cat.category_l1,
+                        Category.category_l2 == cat.category_l2,
+                        SupplierServiceRegion.country_code == country,
+                    )
+                    .all()
+                )
+            }
+            candidate_sets.append(ids)
 
-        compliant = [
-            CompliantSupplierOut(
-                supplier_id=r.supplier_id,
-                supplier_name=r.supplier_name,
-                country_hq=r.country_hq,
-                currency=r.currency,
-                quality_score=r.quality_score,
-                risk_score=r.risk_score,
-                esg_score=r.esg_score,
-                preferred_supplier=r.preferred_supplier,
-                data_residency_supported=r.data_residency_supported,
-            )
-            for r in supplier_rows
-        ]
+        valid_ids = candidate_sets[0] if candidate_sets else set()
+        for s in candidate_sets[1:]:
+            valid_ids &= s
+        valid_ids -= restricted_ids
 
-    # Pricing for compliant suppliers
+        if valid_ids:
+            supplier_rows = (
+                db.query(
+                    Supplier.supplier_id,
+                    Supplier.supplier_name,
+                    Supplier.country_hq,
+                    Supplier.currency,
+                    Supplier.capacity_per_month,
+                    SupplierCategory.quality_score,
+                    SupplierCategory.risk_score,
+                    SupplierCategory.esg_score,
+                    SupplierCategory.preferred_supplier,
+                    SupplierCategory.data_residency_supported,
+                )
+                .join(SupplierCategory, Supplier.supplier_id == SupplierCategory.supplier_id)
+                .join(Category, SupplierCategory.category_id == Category.id)
+                .filter(
+                    Category.category_l1 == cat.category_l1,
+                    Category.category_l2 == cat.category_l2,
+                    Supplier.supplier_id.in_(valid_ids),
+                )
+                .all()
+            )
+
+            compliant = [
+                CompliantSupplierOut(
+                    supplier_id=r.supplier_id,
+                    supplier_name=r.supplier_name,
+                    country_hq=r.country_hq,
+                    currency=r.currency,
+                    quality_score=r.quality_score,
+                    risk_score=r.risk_score,
+                    esg_score=r.esg_score,
+                    preferred_supplier=r.preferred_supplier,
+                    data_residency_supported=r.data_residency_supported,
+                    capacity_per_month=r.capacity_per_month,
+                )
+                for r in supplier_rows
+            ]
+
+    # Pricing for compliant suppliers — look up across ALL unique regions.
     pricing = []
     quantity = int(req.quantity) if req.quantity is not None else None
     if cat and quantity is not None and compliant:
         for sup in compliant:
-            pts = (
-                db.query(PricingTier)
-                .join(Category, PricingTier.category_id == Category.id)
-                .filter(
-                    PricingTier.supplier_id == sup.supplier_id,
-                    Category.category_l1 == cat.category_l1,
-                    Category.category_l2 == cat.category_l2,
-                    PricingTier.region == region,
-                    PricingTier.min_quantity <= quantity,
-                    PricingTier.max_quantity >= quantity,
-                )
-                .all()
-            )
-            for pt in pts:
-                pricing.append(
-                    PricingLookupOut(
-                        pricing_id=pt.pricing_id,
-                        supplier_id=pt.supplier_id,
-                        supplier_name=sup.supplier_name,
-                        region=pt.region,
-                        currency=pt.currency,
-                        min_quantity=pt.min_quantity,
-                        max_quantity=pt.max_quantity,
-                        unit_price=pt.unit_price,
-                        expedited_unit_price=pt.expedited_unit_price,
-                        total_price=pt.unit_price * quantity,
-                        expedited_total_price=pt.expedited_unit_price * quantity,
-                        standard_lead_time_days=pt.standard_lead_time_days,
-                        expedited_lead_time_days=pt.expedited_lead_time_days,
-                        moq=pt.moq,
+            for rgn in regions:
+                pts = (
+                    db.query(PricingTier)
+                    .join(Category, PricingTier.category_id == Category.id)
+                    .filter(
+                        PricingTier.supplier_id == sup.supplier_id,
+                        Category.category_l1 == cat.category_l1,
+                        Category.category_l2 == cat.category_l2,
+                        PricingTier.region == rgn,
+                        PricingTier.min_quantity <= quantity,
+                        PricingTier.max_quantity >= quantity,
                     )
+                    .all()
                 )
+                for pt in pts:
+                    pricing.append(
+                        PricingLookupOut(
+                            pricing_id=pt.pricing_id,
+                            supplier_id=pt.supplier_id,
+                            supplier_name=sup.supplier_name,
+                            region=pt.region,
+                            currency=pt.currency,
+                            min_quantity=pt.min_quantity,
+                            max_quantity=pt.max_quantity,
+                            unit_price=pt.unit_price,
+                            expedited_unit_price=pt.expedited_unit_price,
+                            total_price=pt.unit_price * quantity,
+                            expedited_total_price=pt.expedited_unit_price * quantity,
+                            standard_lead_time_days=pt.standard_lead_time_days,
+                            expedited_lead_time_days=pt.expedited_lead_time_days,
+                            moq=pt.moq,
+                        )
+                    )
 
-    # Applicable rules
+    # Applicable rules — collect for ALL delivery countries.
     rules = ApplicableRulesOut(category_rules=[], geography_rules=[])
     if cat:
         cat_rules = (
@@ -486,21 +533,30 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
             )
             .all()
         )
-        single_geo = (
-            db.query(GeographyRule)
-            .filter(GeographyRule.country == primary_country)
-            .all()
-        )
-        region_geo = (
-            db.query(GeographyRule)
-            .join(GeographyRuleCountry)
-            .join(GeographyRuleAppliesToCategory)
-            .filter(
-                GeographyRuleCountry.country_code == primary_country,
-                GeographyRuleAppliesToCategory.category_l1 == cat.category_l1,
+
+        seen_geo_ids: set[str] = set()
+        all_geo: list[GeographyRule] = []
+        for country in countries_to_check:
+            single_geo = (
+                db.query(GeographyRule)
+                .filter(GeographyRule.country == country)
+                .all()
             )
-            .all()
-        )
+            region_geo = (
+                db.query(GeographyRule)
+                .join(GeographyRuleCountry)
+                .join(GeographyRuleAppliesToCategory)
+                .filter(
+                    GeographyRuleCountry.country_code == country,
+                    GeographyRuleAppliesToCategory.category_l1 == cat.category_l1,
+                )
+                .all()
+            )
+            for r in single_geo + region_geo:
+                if r.rule_id not in seen_geo_ids:
+                    seen_geo_ids.add(r.rule_id)
+                    all_geo.append(r)
+
         rules = ApplicableRulesOut(
             category_rules=[
                 {
@@ -519,7 +575,7 @@ def get_request_overview(request_id: str, db: Session = Depends(get_db)):
                     "rule_type": r.rule_type,
                     "rule_text": r.rule_text,
                 }
-                for r in single_geo + region_geo
+                for r in all_geo
             ],
         )
 

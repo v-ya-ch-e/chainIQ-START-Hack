@@ -184,10 +184,10 @@ class PipelineLogger:
 
 
 def _now_iso() -> str:
-    """Current UTC time in ISO format."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    """Current UTC time in ISO format with Z suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _now_iso_ms() -> str:
-    """Current UTC time in ISO format with milliseconds."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+    """Current UTC time in ISO format with milliseconds and Z suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"

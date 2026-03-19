@@ -1,3 +1,5 @@
+import uuid as _uuid
+
 from sqlalchemy import (
     Boolean,
     Column,
@@ -34,6 +36,7 @@ class Supplier(Base):
     __tablename__ = "suppliers"
 
     supplier_id = Column(String(20), primary_key=True)
+    uuid = Column(String(36), unique=True, nullable=False, default=lambda: str(_uuid.uuid4()))
     supplier_name = Column(String(120), nullable=False)
     country_hq = Column(String(5), nullable=False)
     currency = Column(String(5), nullable=False)

@@ -88,10 +88,11 @@ async def rank_suppliers(
 
             # Log pricing details
             if total_price is not None:
+                unit_str = f"{currency} {unit_price:,.2f}" if unit_price is not None else "N/A"
                 pipeline_logger.audit(
                     "pricing", "info", STEP_NAME,
                     f"{supplier.supplier_id}: tier {supplier.pricing_tier_applied}, "
-                    f"unit {currency} {unit_price:,.2f}, "
+                    f"unit {unit_str}, "
                     f"total {currency} {total_price:,.2f}, "
                     f"lead {supplier.standard_lead_time_days}d standard / "
                     f"{supplier.expedited_lead_time_days}d expedited",
