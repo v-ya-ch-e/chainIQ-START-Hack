@@ -1,19 +1,82 @@
 # Scripts Documentation
 
+Both scripts expose their core logic as **importable Python functions** and support **stdin/stdout JSON** for easy API integration, while remaining backward-compatible with the original file-based CLI mode.
+
+## Integration Patterns
+
+### 1. Import as a module (recommended for FastAPI / in-process)
+
+```python
+from scripts.filterCompaniesByProduct import filter_suppliers
+from scripts.rankCompanies import rank_suppliers
+
+# Step 1: filter
+filter_result = filter_suppliers(request_data)   # dict in → dict out
+
+# Step 2: rank
+rank_result = rank_suppliers(request_data, filter_result["suppliers"])  # dicts in → dict out
+```
+
+### 2. Subprocess with stdin/stdout (for process isolation)
+
+```python
+import subprocess, json
+
+# filterCompaniesByProduct
+proc = subprocess.run(
+    ["python3", "scripts/filterCompaniesByProduct.py"],
+    input=json.dumps(request_data),
+    capture_output=True, text=True,
+)
+filter_result = json.loads(proc.stdout)
+
+# rankCompanies
+proc = subprocess.run(
+    ["python3", "scripts/rankCompanies.py"],
+    input=json.dumps({"request": request_data, "suppliers": filter_result["suppliers"]}),
+    capture_output=True, text=True,
+)
+rank_result = json.loads(proc.stdout)
+```
+
+### 3. Original file-based CLI (still works)
+
+```bash
+python3 scripts/filterCompaniesByProduct.py request.json suppliers.json
+python3 scripts/rankCompanies.py request.json suppliers.json ranked.json
+```
+
+---
+
 ## filterCompaniesByProduct.py
 
 Filters suppliers from the ChainIQ database to only those serving the same product category as a given purchase request.
 
-### Usage
+### Function API
 
-```bash
-python3 scripts/filterCompaniesByProduct.py <input_request.json> <output_suppliers.json>
+```python
+filter_suppliers(request_data: dict) -> dict
 ```
 
-| Argument | Description |
-|----------|-------------|
-| `input_request.json` | Path to a purchase request JSON file (same structure as `examples/example_request.json`) |
-| `output_suppliers.json` | Path where the filtered supplier list will be written |
+**Input** — a purchase request dict (same structure as `examples/example_request.json`). Required keys: `category_l1`, `category_l2`.
+
+**Output:**
+
+```json
+{
+  "suppliers": [ ...supplier_category rows... ],
+  "category_l1": "IT",
+  "category_l2": "Hardware",
+  "count": 5
+}
+```
+
+### CLI Usage
+
+| Mode | Command |
+|------|---------|
+| stdin/stdout | `echo '{"category_l1":"IT","category_l2":"Hardware"}' \| python3 scripts/filterCompaniesByProduct.py` |
+| File-based | `python3 scripts/filterCompaniesByProduct.py <input_request.json> <output_suppliers.json>` |
 
 ### How It Works
 
@@ -22,11 +85,8 @@ python3 scripts/filterCompaniesByProduct.py <input_request.json> <output_supplie
 3. Queries `GET /api/suppliers?category_l1={category_l1}` to get all suppliers serving that L1 category.
 4. For each supplier, queries `GET /api/suppliers/{supplier_id}/categories` to retrieve their per-category rows.
 5. Keeps only rows where `category_id` matches the exact L1+L2 combination from the request.
-6. Writes the filtered rows to the output file.
 
-### Output Format
-
-A JSON array of `supplier_categories` rows (database schema 1.3). Each element has the following fields:
+### Supplier Fields (inside `suppliers` array)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -43,14 +103,6 @@ A JSON array of `supplier_categories` rows (database schema 1.3). Each element h
 | `data_residency_supported` | bool | Whether supplier supports in-country data residency |
 | `notes` | string/null | Additional notes |
 
-### Example
-
-```bash
-python3 scripts/filterCompaniesByProduct.py examples/example_request.json output.json
-```
-
-This reads the example request (IT / Docking Stations) and writes the matching suppliers to `output.json`.
-
 ### Dependencies
 
 None -- uses only Python standard library (`json`, `sys`, `urllib`).
@@ -65,17 +117,35 @@ Queries the ChainIQ Organisational Layer API at `http://18.197.20.103:8000`. See
 
 Ranks filtered suppliers by computing a "true cost" -- the effective price inflated by quality gaps and risk exposure. The score answers: "how much am I really paying once I account for imperfect quality and risk?"
 
-### Usage
+### Function API
 
-```bash
-python3 scripts/rankCompanies.py <request.json> <suppliers.json> <output.json>
+```python
+rank_suppliers(request_data: dict, suppliers: list) -> dict
 ```
 
-| Argument | Description |
-|----------|-------------|
-| `request.json` | Path to a purchase request JSON file (same structure as `examples/example_request.json`) |
-| `suppliers.json` | Path to the filtered supplier list (output of `filterCompaniesByProduct.py`) |
-| `output.json` | Path where the ranked results will be written |
+**Input:**
+- `request_data` — purchase request dict. Required keys: `category_l1`, `category_l2`. Optional: `quantity`, `esg_requirement`, `delivery_countries`, `country`.
+- `suppliers` — list of supplier dicts (the `suppliers` array from `filter_suppliers()` output).
+
+**Output:**
+
+```json
+{
+  "ranked": [ ...ranked supplier rows... ],
+  "category_l1": "IT",
+  "category_l2": "Hardware",
+  "count": 5
+}
+```
+
+### CLI Usage
+
+| Mode | Command |
+|------|---------|
+| stdin/stdout | `echo '{"request": {...}, "suppliers": [...]}' \| python3 scripts/rankCompanies.py` |
+| File-based | `python3 scripts/rankCompanies.py <request.json> <suppliers.json> <output.json>` |
+
+When using stdin/stdout, the input JSON must have two top-level keys: `"request"` and `"suppliers"`.
 
 ### How It Works
 
@@ -101,9 +171,7 @@ true_cost = total_price / (quality_score / 100) / ((100 - risk_score) / 100) / (
 
 Lower `true_cost` = better deal. The score is in currency units and represents the effective price once you factor in the hidden costs of imperfect quality and risk exposure. The `overpayment` field (`true_cost - total_price`) shows how much extra you're effectively paying. ESG is only factored in when the request requires it.
 
-### Output Format
-
-A JSON array sorted by `true_cost` ascending, each element containing:
+### Ranked Supplier Fields (inside `ranked` array)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -123,13 +191,6 @@ A JSON array sorted by `true_cost` ascending, each element containing:
 | `is_restricted` | bool | Restriction hint flag |
 
 When `quantity` is null in the request, pricing is skipped and suppliers are sorted by `quality_score` descending instead.
-
-### Example
-
-```bash
-python3 scripts/filterCompaniesByProduct.py examples/example_request.json /tmp/suppliers.json
-python3 scripts/rankCompanies.py examples/example_request.json /tmp/suppliers.json /tmp/ranked.json
-```
 
 ### Dependencies
 
