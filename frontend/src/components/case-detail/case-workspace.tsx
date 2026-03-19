@@ -18,6 +18,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Separator } from "@/components/ui/separator"
 import {
   Sheet,
   SheetContent,
@@ -36,6 +37,7 @@ import {
 import type {
   CaseDetail,
   EvaluationRunDetail,
+  RuleCheckResult,
   SupplierRuleBreakdown,
   SupplierRuleCheck,
   SupplierRow,
@@ -89,6 +91,50 @@ function livePhaseTone(phase: "queued" | "running" | "completed" | "failed" | "u
   }
 }
 
+function toRuleCheckResult(value: string | null | undefined): RuleCheckResult {
+  if (value === "passed" || value === "failed" || value === "warned" || value === "skipped") {
+    return value
+  }
+  return "skipped"
+}
+
+function getSupplierBreakdown(
+  supplierId: string,
+  runs: EvaluationRunDetail[],
+  preferredRun: EvaluationRunDetail | null,
+): SupplierRuleBreakdown | null {
+  if (preferredRun) {
+    const preferredMatch = preferredRun.supplierBreakdowns.find(
+      (entry) => entry.supplierId === supplierId,
+    )
+    if (preferredMatch) return preferredMatch
+  }
+
+  const fallbackRuns = runs
+    .filter((run) => (preferredRun ? run.runId !== preferredRun.runId : true))
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    )
+
+  for (const run of fallbackRuns) {
+    const match = run.supplierBreakdowns.find(
+      (entry) => entry.supplierId === supplierId,
+    )
+    if (match) return match
+  }
+
+  return null
+}
+
+function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
+  if (!breakdown || breakdown.excluded) return false
+  const failedHard = breakdown.hardRuleChecks.some((check) => check.result === "failed")
+  const failedPolicy = breakdown.policyChecks.some((check) => check.result === "failed")
+  return !failedHard && !failedPolicy
+}
+
 export function CaseWorkspace({
   data,
   initialTab = "overview",
@@ -99,6 +145,11 @@ export function CaseWorkspace({
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const [runId, setRunId] = useState("")
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [suppliersExpanded, setSuppliersExpanded] = useState(false)
+  const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<{
+    supplier: SupplierRow
+    breakdown: SupplierRuleBreakdown | null
+  } | null>(null)
   const [statusResult, setStatusResult] = useState<unknown>(null)
   const [pipelineResult, setPipelineResult] = useState<unknown>(null)
   const [runsResult, setRunsResult] = useState<unknown>(null)
@@ -141,35 +192,6 @@ export function CaseWorkspace({
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
-
-  async function handleRerun() {
-    if (isRerunning) return
-    setIsRerunning(true)
-    try {
-      const res = await fetch("/api/pipeline/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ request_id: data.id }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        const detail = err.detail
-        const msg =
-          typeof detail === "string"
-            ? detail
-            : Array.isArray(detail)
-              ? detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join("; ") || `HTTP ${res.status}`
-              : `HTTP ${res.status}`
-        throw new Error(msg)
-      }
-      router.refresh()
-    } catch (err) {
-      console.error("Re-run failed:", err)
-      alert(err instanceof Error ? err.message : "Re-run failed. Check console.")
-    } finally {
-      setIsRerunning(false)
-    }
-  }
 
   const shortlistWithBreakdown = data.supplierShortlist.map((s) => ({
     supplier: s,
@@ -1684,7 +1706,7 @@ function SupplierDetailSheetContent({
             ruleId: c.rule_id,
             versionId: c.version_id,
             supplierId: c.supplier_id,
-            result: (c.skipped ? "skipped" : c.result) ?? "skipped",
+            result: c.skipped ? "skipped" : toRuleCheckResult(c.result),
             checkedAt: c.checked_at,
           })),
           policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
@@ -1692,7 +1714,7 @@ function SupplierDetailSheetContent({
             ruleId: c.rule_id,
             versionId: c.version_id,
             supplierId: c.supplier_id,
-            result: c.result,
+            result: toRuleCheckResult(c.result),
             checkedAt: c.checked_at,
           })),
         })

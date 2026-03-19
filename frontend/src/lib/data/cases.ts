@@ -15,8 +15,10 @@ import type {
   DashboardMetric,
   DashboardPageData,
   ExtractionResult,
+  EvaluationRunDetail,
   QueueEscalationItem,
   RecommendationStatus,
+  RuleCheckResult,
   ScenarioTag,
   Severity,
 } from "@/lib/types/case"
@@ -203,6 +205,37 @@ type EscalationQueueApiRow = {
   created_at: string
   last_updated: string
   recommendation_status: RecommendationStatus
+}
+
+type EvaluationCheckApi = {
+  check_id: string
+  rule_id: string
+  version_id: string
+  supplier_id: string | null
+  result: string | null
+  checked_at: string
+  skipped?: boolean | null
+  skip_reason?: string | null
+  evidence?: Record<string, unknown> | null
+}
+
+type SupplierBreakdownApi = {
+  supplier_id: string
+  supplier_name: string | null
+  hard_rule_checks: EvaluationCheckApi[]
+  policy_checks: EvaluationCheckApi[]
+  excluded: boolean
+  exclusion_rule_id: string | null
+  exclusion_reason: string | null
+}
+
+type EvaluationDetailApi = {
+  run_id: string
+  request_id: string
+  status: string
+  started_at: string
+  finished_at: string | null
+  supplier_breakdowns: SupplierBreakdownApi[]
 }
 
 type DashboardRawData = {
@@ -458,7 +491,38 @@ async function fetchEscalationRowsByRequest(
   return rows.map(mapEscalationQueueRow)
 }
 
+async function fetchEvaluationRunsByRequest(
+  requestId: string,
+): Promise<EvaluationDetailApi[]> {
+  const urls = getApiUrlCandidates(
+    `/api/rule-versions/evaluations/by-request/${encodeURIComponent(requestId)}`,
+  )
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, { cache: "no-store" })
+      if (!response.ok) continue
+      const payload = (await response.json()) as unknown
+      return Array.isArray(payload) ? (payload as EvaluationDetailApi[]) : []
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return []
+}
+
 function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
+  const normalizeCheckResult = (value: string | null | undefined): RuleCheckResult => {
+    if (
+      value === "passed" ||
+      value === "failed" ||
+      value === "warned" ||
+      value === "skipped"
+    ) {
+      return value
+    }
+    return "skipped"
+  }
+
   return {
     runId: raw.run_id,
     requestId: raw.request_id,
@@ -476,7 +540,7 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         ruleId: check.rule_id,
         versionId: check.version_id,
         supplierId: check.supplier_id,
-        result: (check.skipped ? "skipped" : check.result) ?? "skipped",
+        result: check.skipped ? "skipped" : normalizeCheckResult(check.result),
         checkedAt: check.checked_at,
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
@@ -487,7 +551,7 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         ruleId: check.rule_id,
         versionId: check.version_id,
         supplierId: check.supplier_id,
-        result: check.result,
+        result: normalizeCheckResult(check.result),
         checkedAt: check.checked_at,
         skipped: check.skipped ?? null,
         skipReason: check.skip_reason ?? null,
@@ -931,12 +995,13 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     throw error
   }
 
-  const [overview, awards, escalationRows, auditLogs, auditSummary] = await Promise.all([
+  const [overview, awards, escalationRows, auditLogs, auditSummary, evaluationRunsRaw] = await Promise.all([
     chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
     chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
     fetchEscalationRowsByRequest(caseId),
     fetchCaseAuditLogs(caseId),
     fetchCaseAuditSummary(caseId),
+    fetchEvaluationRunsByRequest(caseId),
   ])
 
   const pricingBySupplier = new Map(
