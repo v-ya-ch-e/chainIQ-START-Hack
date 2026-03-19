@@ -684,7 +684,7 @@ export function CaseWorkspace({
               className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
             >
               <ArrowLeft className="size-3.5" />
-              Return to latest evaluation
+              Back to latest
             </Link>
           ) : null}
           <Button
@@ -1845,6 +1845,47 @@ export function CaseWorkspace({
                   />
                 </CardContent>
               </Card>
+
+              {data.evaluationRuns.length > 0 ? (
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Evaluation runs</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {[...data.evaluationRuns]
+                      .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+                      .map((run, index) => (
+                      <Link
+                        key={run.runId}
+                        href={`/cases/eval/${run.runId}`}
+                        className={cn(
+                          "flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-accent/60",
+                          run.runId === selectedRunId && "border-primary bg-primary/5",
+                        )}
+                      >
+                        <div>
+                          <p className="text-sm font-medium">
+                            Evaluation {index + 1}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDateTime(run.startedAt)}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          label={run.status}
+                          tone={
+                            run.status === "completed"
+                              ? "success"
+                              : run.status === "failed"
+                                ? "destructive"
+                                : "neutral"
+                          }
+                        />
+                      </Link>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
 
               <Card className="bg-card/70">
                 <CardHeader>
