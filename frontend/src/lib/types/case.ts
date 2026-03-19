@@ -143,6 +143,8 @@ export interface EvaluationRunDetail {
   startedAt: string
   finishedAt: string | null
   supplierBreakdowns: SupplierRuleBreakdown[]
+  supplierShortlist?: SupplierRow[]
+  excludedSuppliersFromRun?: ExcludedSupplier[]
 }
 
 export interface ExcludedSupplier {
