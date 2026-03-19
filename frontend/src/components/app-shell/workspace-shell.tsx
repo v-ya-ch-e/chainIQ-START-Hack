@@ -214,10 +214,6 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
     return [{ label: "Intake" }]
   }
 
-  if (normalizedPath === "/pipeline") {
-    return [{ label: "Pipeline" }]
-  }
-
   if (normalizedPath === "/escalations") {
     return [{ label: "Escalations" }]
   }
