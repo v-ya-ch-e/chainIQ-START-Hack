@@ -639,19 +639,6 @@ export function CaseWorkspace({
 
   return (
     <div className="space-y-6">
-      {showReturnToLatest ? (
-        <Link
-          href={`/cases/${data.id}`}
-          className={cn(
-            buttonVariants({ variant: "default", size: "sm" }),
-            "fixed left-4 top-4 z-50 gap-1.5 shadow-lg",
-          )}
-        >
-          <ArrowLeft className="size-3.5" />
-          Return to latest evaluation
-        </Link>
-      ) : null}
-
       {/* Page header */}
       <div className="animate-fade-in-up flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="space-y-2">
@@ -691,6 +678,15 @@ export function CaseWorkspace({
         </div>
 
         <div className="flex flex-wrap gap-2">
+          {showReturnToLatest ? (
+            <Link
+              href={`/cases/${data.id}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+            >
+              <ArrowLeft className="size-3.5" />
+              Back to latest
+            </Link>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
