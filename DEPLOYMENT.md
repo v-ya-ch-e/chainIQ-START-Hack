@@ -306,10 +306,10 @@ docker compose ps
 
 # Start frontend (no MySQL needed — using RDS)
 cd ..
-docker compose -f docker-compose.dev.yml up -d --build
+docker compose up -d --build
 ```
 
-> On AWS the root compose doesn't need the local MySQL service. If you only need the frontend, the MySQL container will start but remain unused since backend connects directly to RDS. To avoid starting MySQL, you can scale it to zero: `docker compose -f docker-compose.dev.yml up -d --build`
+> On AWS the root compose doesn't need the local MySQL service. If you only need the frontend, the MySQL container will start but remain unused since backend connects directly to RDS. To avoid starting MySQL, you can scale it to zero: `docker compose up -d --build`
 
 ### 2.7 Bootstrap the database (first run only)
 
