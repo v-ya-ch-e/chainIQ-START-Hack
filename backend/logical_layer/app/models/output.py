@@ -39,6 +39,8 @@ class ValidationOutput(BaseModel):
 
     completeness: str = "pass"
     issues_detected: list[ValidationIssueOutput] = Field(default_factory=list)
+    llm_used: bool = False
+    llm_fallback: bool = False
 
 
 class ApprovalThresholdOutput(BaseModel):
@@ -108,6 +110,8 @@ class RecommendationOutput(BaseModel):
     minimum_budget_required: float | None = None
     minimum_budget_currency: str | None = None
     confidence_score: int = 0
+    llm_used: bool = False
+    llm_fallback: bool = False
 
 
 class AuditTrailOutput(BaseModel):

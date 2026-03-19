@@ -270,3 +270,119 @@ class OrganisationalClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    # ── Dynamic rules ──────────────────────────────────────────────
+
+    async def get_active_rules(self, stage: str | None = None) -> list[dict]:
+        """GET /api/dynamic-rules/active — fetch all active dynamic rules."""
+        params = {}
+        if stage:
+            params["stage"] = stage
+        try:
+            resp = await self._client.get(
+                f"{self._base}/api/dynamic-rules/active",
+                params=params,
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("Failed to fetch dynamic rules (stage=%s): %s", stage, exc)
+            return []
+
+    async def store_evaluation_results(self, results: list[dict]) -> None:
+        """POST /api/dynamic-rules/evaluation-results — persist rule evaluation results."""
+        if not results:
+            return
+        try:
+            resp = await self._client.post(
+                f"{self._base}/api/dynamic-rules/evaluation-results",
+                json={"results": results},
+                timeout=LOG_TIMEOUT,
+            )
+            resp.raise_for_status()
+        except Exception as exc:
+            logger.warning("Failed to store evaluation results (%d): %s", len(results), exc)
+
+    # ── Pipeline result persistence ────────────────────────────────────────
+
+    async def save_pipeline_result(
+        self,
+        run_id: str,
+        request_id: str,
+        processed_at: str,
+        output: dict,
+        status: str = "processed",
+        recommendation_status: str | None = None,
+    ) -> dict | None:
+        """POST /api/pipeline-results/ — persist the full pipeline output."""
+        try:
+            resp = await self._client.post(
+                f"{self._base}/api/pipeline-results/",
+                json={
+                    "run_id": run_id,
+                    "request_id": request_id,
+                    "status": status,
+                    "recommendation_status": recommendation_status,
+                    "processed_at": processed_at,
+                    "output": output,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("Failed to save pipeline result for %s: %s", request_id, exc)
+            return None
+
+    async def get_latest_pipeline_result(self, request_id: str) -> dict | None:
+        """GET /api/pipeline-results/latest/{request_id} — fetch latest persisted result."""
+        try:
+            resp = await self._client.get(
+                f"{self._base}/api/pipeline-results/latest/{request_id}",
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("Failed to get pipeline result for %s: %s", request_id, exc)
+            return None
+
+    async def list_pipeline_results(self, **filters: Any) -> dict:
+        """GET /api/pipeline-results/ with query filters."""
+        resp = await self._client.get(
+            f"{self._base}/api/pipeline-results/",
+            params={k: v for k, v in filters.items() if v is not None},
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ── Evaluation persistence ────────────────────────────────────────────
+
+    async def persist_evaluation_run(
+        self,
+        request_id: str,
+        run_id: str,
+        output_snapshot: dict,
+        triggered_by: str = "agent",
+        agent_version: str = "1.0",
+        trigger_reason: str | None = "manual_recheck",
+    ) -> dict:
+        """POST /api/rule-versions/evaluations/from-pipeline. Persists evaluation with checks."""
+        resp = await self._client.post(
+            f"{self._base}/api/rule-versions/evaluations/from-pipeline",
+            json={
+                "request_id": request_id,
+                "run_id": run_id,
+                "triggered_by": triggered_by,
+                "agent_version": agent_version,
+                "trigger_reason": trigger_reason,
+                "output_snapshot": output_snapshot,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()

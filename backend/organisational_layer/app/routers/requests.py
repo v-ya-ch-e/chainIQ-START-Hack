@@ -106,8 +106,25 @@ def update_request(
     req = db.query(Request).filter(Request.request_id == request_id).first()
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+    delivery_countries = update_data.pop("delivery_countries", None)
+    scenario_tags = update_data.pop("scenario_tags", None)
+
+    for field, value in update_data.items():
         setattr(req, field, value)
+
+    if delivery_countries is not None:
+        req.delivery_countries.clear()
+        db.flush()
+        for country_code in delivery_countries:
+            req.delivery_countries.append(RequestDeliveryCountry(country_code=country_code))
+
+    if scenario_tags is not None:
+        req.scenario_tags.clear()
+        db.flush()
+        for tag in scenario_tags:
+            req.scenario_tags.append(RequestScenarioTag(tag=tag))
+
     db.commit()
     db.refresh(req)
     return req

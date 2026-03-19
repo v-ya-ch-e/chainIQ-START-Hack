@@ -1,8 +1,8 @@
 import { AuditPage } from "@/components/audit/audit-page"
-import { getAuditFeed, getAuditOverview } from "@/lib/data/cases"
+import { getAuditPageData } from "@/lib/data/cases"
 
 export default async function Page() {
-  const [data, feed] = await Promise.all([getAuditOverview(), getAuditFeed()])
+  const data = await getAuditPageData()
 
-  return <AuditPage summary={data.summary} feed={feed} />
+  return <AuditPage summary={data.summary} feed={data.feed} feedMeta={data.feedMeta} />
 }

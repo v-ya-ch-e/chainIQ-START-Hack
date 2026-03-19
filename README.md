@@ -50,6 +50,39 @@ docker compose --profile localdb up -d mysql
 docker compose --profile tools run --rm migrator
 ```
 
+## Simplified run modes
+
+Use the root `Makefile` to run both local and deployed setups with one command.
+
+```bash
+# list available commands
+make help
+
+# local full stack (mysql + migrator + backend + frontend)
+make local-up
+
+# local full stack with frontend hot reload
+make local-dev
+
+# deployed mode (frontend only; points to deployed backend URLs)
+make deployed-up
+
+# stop local stacks
+make local-down
+```
+
+First-time setup for mode-specific env files:
+
+```bash
+make env-local
+make env-deployed
+```
+
+Then edit:
+
+- `.env.local` for local container URLs
+- `.env.deployed` for deployed backend URLs
+
 ## Notes
 
 - `docker-compose.override.yml` is intentionally minimal for deployment safety.
@@ -76,6 +109,18 @@ cd backend && docker compose logs -f organisational-layer
 
 - Frontend routes under `/api/*` are proxied to the backend via Next.js rewrites.
 - Server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal requests.
+
+## Intake API guardrails
+
+- `POST /api/chat/intake` (frontend route) requires `ANTHROPIC_API_KEY` in frontend runtime env.
+- If `ANTHROPIC_API_KEY` is missing, `POST /api/chat/intake` returns `503` with code `ANTHROPIC_NOT_CONFIGURED`.
+- `POST /api/intake/extract` is deterministic in the current architecture (not Anthropic-backed).
+- The logical layer stays operational without Anthropic config, but runs with deterministic fallback. Set `backend/logical_layer/.env` `ANTHROPIC_API_KEY` to enable LLM-assisted behavior.
+
+## Backlog follow-ups
+
+- Unify duplicate deterministic intake extraction paths into one backend source of truth.
+- Migrate organisational parse service Anthropic calls to an async-safe execution model.
 
 ## Deployment
 

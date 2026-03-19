@@ -392,3 +392,222 @@ The pipeline should emit audit logs at key decision points:
 7. **Recommendation** — Log the final decision with `category: "recommendation"`
 
 Use `POST /api/logs/audit/batch` to flush all logs for a step in a single HTTP call.
+
+---
+
+# Rule Management API
+
+The Organisational Layer also exposes endpoints for managing **rule definitions**, **rule versions**, and **rule change logs** under `/api/rule-versions/`. These support the evaluation traceability system that links every procurement decision back to the exact rule config that was active at evaluation time.
+
+## Database Tables
+
+### `rule_definitions`
+
+One row per evaluable rule (HR-*, PC-*, ER-*).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `rule_id` | VARCHAR(10) PK | Rule identifier (e.g. `HR-001`, `PC-003`, `ER-001`) |
+| `rule_type` | VARCHAR(20) | `hard_rule`, `policy_check`, or `escalation` |
+| `rule_name` | VARCHAR(100) | Human-readable name |
+| `is_skippable` | BOOLEAN | Whether the rule can be skipped |
+| `source` | VARCHAR(10) | Origin: `given` (from dataset) or `custom` |
+| `active` | BOOLEAN | Whether the rule is active (soft-delete sets to false) |
+| `created_at` | DATETIME | Creation timestamp |
+
+### `rule_versions`
+
+Versioned rule configurations. `valid_to = NULL` marks the currently active version.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `version_id` | CHAR(36) PK | UUID |
+| `rule_id` | VARCHAR(10) FK | References `rule_definitions.rule_id` |
+| `version_num` | INT | Sequential version number per rule |
+| `rule_config` | JSON | The rule configuration (immutable once created) |
+| `valid_from` | DATETIME | When this version became active |
+| `valid_to` | DATETIME | When this version was superseded (NULL = current) |
+| `changed_by` | VARCHAR(100) | Who created this version |
+| `change_reason` | TEXT | Why this version was created |
+
+### `rule_change_logs`
+
+Audit trail for rule version changes. Automatically populated when a new version is created via `POST /api/rule-versions/versions`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `log_id` | CHAR(36) PK | UUID |
+| `rule_id` | VARCHAR(10) FK | References `rule_definitions.rule_id` |
+| `old_version_id` | CHAR(36) | Previous version UUID (NULL for first version) |
+| `new_version_id` | CHAR(36) FK | New version UUID |
+| `changed_at` | DATETIME | When the change occurred |
+| `changed_by` | VARCHAR(100) | Who made the change |
+| `change_reason` | TEXT | Why the change was made |
+| `affected_runs` | JSON | List of evaluation run IDs affected |
+
+## Endpoints
+
+### `GET /api/rule-versions/definitions`
+
+List all rule definitions.
+
+**Response `200`:** `RuleDefinitionOut[]`
+
+```json
+[
+  {
+    "rule_id": "HR-001",
+    "rule_type": "hard_rule",
+    "rule_name": "Budget ceiling check",
+    "is_skippable": false,
+    "source": "given",
+    "active": true,
+    "created_at": "2026-03-19T00:01:34"
+  }
+]
+```
+
+### `GET /api/rule-versions/definitions/{rule_id}`
+
+Get a single rule definition by ID.
+
+**Response `200`:** `RuleDefinitionOut`
+**Response `404`:** Rule definition not found
+
+### `POST /api/rule-versions/definitions`
+
+Create a new rule definition.
+
+**Request body:**
+
+```json
+{
+  "rule_id": "HR-010",
+  "rule_type": "hard_rule",
+  "rule_name": "Custom budget check",
+  "is_skippable": false,
+  "source": "custom"
+}
+```
+
+**Response `201`:** `RuleDefinitionOut` (auto-sets `active=true`, `created_at=now`)
+**Response `409`:** Rule ID already exists
+
+### `PATCH /api/rule-versions/definitions/{rule_id}`
+
+Update mutable fields on a rule definition.
+
+**Request body (all fields optional):**
+
+```json
+{
+  "rule_name": "Updated name",
+  "is_skippable": true,
+  "active": false
+}
+```
+
+**Response `200`:** Updated `RuleDefinitionOut`
+**Response `404`:** Rule definition not found
+
+### `DELETE /api/rule-versions/definitions/{rule_id}`
+
+Soft-delete a rule definition by setting `active=false`.
+
+**Response `204`:** No content
+**Response `404`:** Rule definition not found
+
+### `GET /api/rule-versions/versions`
+
+List rule versions with optional filters.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rule_id` | string | - | Filter by rule ID |
+| `active_only` | bool | false | Only return versions where `valid_to IS NULL` |
+
+**Response `200`:** `RuleVersionWithDefinitionOut[]` (includes `rule_name` and `rule_type`)
+
+### `POST /api/rule-versions/versions`
+
+Create a new rule version. Automatically invalidates the previous active version (`valid_to=NOW()`) and inserts a `rule_change_logs` entry. Uses ACID transaction.
+
+**Request body:**
+
+```json
+{
+  "rule_id": "HR-001",
+  "rule_config": {"null_action": "skip_raise_ER001", "range_strategy": "use_max_conservative"},
+  "changed_by": "admin@company.com",
+  "change_reason": "Tightened budget validation"
+}
+```
+
+**Response `200`:** `RuleVersionOut`
+**Response `404`:** Rule definition not found
+
+### `GET /api/rule-versions/versions/active/{rule_id}`
+
+Get the currently active version for a rule (`valid_to IS NULL`).
+
+**Response `200`:** `RuleVersionOut`
+**Response `404`:** No active version found
+
+### `GET /api/rule-versions/versions/{version_id}`
+
+Get a single rule version by UUID, including parent definition metadata.
+
+**Response `200`:** `RuleVersionWithDefinitionOut`
+**Response `404`:** Rule version not found
+
+### `PATCH /api/rule-versions/versions/{version_id}`
+
+Update metadata on a rule version. The `rule_config` is immutable — to change config, create a new version via `POST /versions`.
+
+**Request body (all fields optional):**
+
+```json
+{
+  "changed_by": "admin@company.com",
+  "change_reason": "Added attribution"
+}
+```
+
+**Response `200`:** Updated `RuleVersionOut`
+**Response `404`:** Rule version not found
+
+### `GET /api/rule-versions/logs/rule-change`
+
+List rule change log entries.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `rule_id` | string | - | Filter by rule ID |
+
+**Response `200`:** `RuleChangeLogOut[]`
+
+```json
+[
+  {
+    "log_id": "550e8400-...",
+    "rule_id": "HR-001",
+    "old_version_id": "cacde910-...",
+    "new_version_id": "d1f2a3b4-...",
+    "changed_at": "2026-03-19T15:00:00",
+    "changed_by": "admin@company.com",
+    "change_reason": "Tightened budget validation",
+    "affected_runs": null
+  }
+]
+```
+
+### `GET /api/rule-versions/logs/rule-change/{log_id}`
+
+Get a single rule change log entry by UUID.
+
+**Response `200`:** `RuleChangeLogOut`
+**Response `404`:** Rule change log not found

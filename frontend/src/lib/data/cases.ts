@@ -1,28 +1,27 @@
+import { chainIqApi } from "@/lib/api/client"
 import type {
   AuditFeedEvent,
+  AuditFeedMeta,
+  AuditPageData,
+  AuditSummaryMetric,
+  CaseIntakeInput,
+  CaseDraftPayload,
   CaseDetail,
   CaseListItem,
   CaseStatus,
-  DashboardPageData,
+  CategoryOption,
+  CreateCasePayload,
+  DashboardInsights,
   DashboardMetric,
+  DashboardPageData,
+  ExtractionResult,
+  EvaluationRunDetail,
   QueueEscalationItem,
   RecommendationStatus,
+  RuleCheckResult,
   ScenarioTag,
+  Severity,
 } from "@/lib/types/case"
-
-type RequestListResponse = {
-  items: RequestRow[]
-  total: number
-  skip: number
-  limit: number
-}
-
-type HistoricalAwardListResponse = {
-  items: HistoricalAward[]
-  total: number
-  skip: number
-  limit: number
-}
 
 type RequestRow = {
   request_id: string
@@ -52,35 +51,46 @@ type RequestRow = {
   scenario_tags?: string[]
 }
 
-type RequestDetail = Omit<RequestRow, "scenario_tags"> & {
+type RequestDetail = RequestRow & {
   delivery_countries: Array<{ id: number; country_code: string }>
   scenario_tags: Array<{ id: number; tag: string }>
   category_l1: string | null
   category_l2: string | null
 }
 
-type CategoryRow = {
-  id: number
-  category_l1: string
-  category_l2: string
-}
-
 type HistoricalAward = {
   award_id: string
   request_id: string
   award_date: string
+  category_id: number
+  country: string
+  business_unit: string
   supplier_id: string
   supplier_name: string
   total_value: string | number
   currency: string
+  quantity: string | number
+  required_by_date: string
   awarded: boolean
   award_rank: number
   decision_rationale: string
   policy_compliant: boolean
+  preferred_supplier_used: boolean
   escalation_required: boolean
   escalated_to: string | null
   savings_pct: string | number
   lead_time_days: number
+  risk_score_at_award: number
+  notes: string | null
+}
+
+type CategoryRow = {
+  id: number
+  category_l1: string
+  category_l2: string
+  category_description: string
+  typical_unit: string
+  pricing_model: string
 }
 
 type RequestOverview = {
@@ -130,39 +140,53 @@ type RequestOverview = {
     moq: number
   }>
   applicable_rules: {
-    category_rules: Array<{
-      rule_id: string
-      rule_type: string
-      rule_text: string
-    }>
-    geography_rules: Array<{
-      rule_id: string
-      rule_type: string | null
-      rule_text: string
-      region: string | null
-      country: string | null
-    }>
+    category_rules: Array<Record<string, unknown>>
+    geography_rules: Array<Record<string, unknown>>
   }
   approval_tier: {
     threshold_id: string
     currency: string
+    min_amount: string
+    max_amount: string | null
     min_supplier_quotes: number
     policy_note: string | null
     managers: string[]
     deviation_approvers: string[]
   } | null
-  historical_awards: Array<{
-    award_id: string
-    supplier_id: string
-    supplier_name: string
-    total_value: string | number
-    currency: string
-    awarded: boolean
-    award_rank: number
-    decision_rationale: string
-    savings_pct: string | number
-    lead_time_days: number
+  historical_awards: Array<Record<string, unknown>>
+}
+
+type AuditListOut = {
+  items: Array<{
+    id: number
+    request_id: string
+    run_id: string | null
+    timestamp: string
+    level: string
+    category: string
+    step_name: string | null
+    message: string
+    details: Record<string, unknown> | null
+    source: string
   }>
+  total: number
+}
+
+type AuditSummaryOut = {
+  request_id: string
+  total_entries: number
+  by_level: Array<{ level: string; count: number }>
+  by_category: Array<{ category: string; count: number }>
+  distinct_policies: string[]
+  distinct_suppliers: string[]
+  escalation_count: number
+  first_event?: string | null
+  last_event?: string | null
+}
+
+type AuditFetchResult = {
+  audit: AuditListOut
+  meta: AuditFeedMeta
 }
 
 type EscalationQueueApiRow = {
@@ -183,13 +207,70 @@ type EscalationQueueApiRow = {
   recommendation_status: RecommendationStatus
 }
 
-const backendInternalUrl = process.env.BACKEND_INTERNAL_URL
-if (!backendInternalUrl) {
-  throw new Error("BACKEND_INTERNAL_URL is required for backend data fetching.")
+type EvaluationCheckApi = {
+  check_id: string
+  rule_id: string
+  version_id: string
+  supplier_id: string | null
+  result: string | null
+  checked_at: string
+  skipped?: boolean | null
+  skip_reason?: string | null
+  evidence?: Record<string, unknown> | null
 }
 
-const BASE_API_URL = backendInternalUrl.replace(/\/$/, "")
+type SupplierBreakdownApi = {
+  supplier_id: string
+  supplier_name: string | null
+  hard_rule_checks: EvaluationCheckApi[]
+  policy_checks: EvaluationCheckApi[]
+  excluded: boolean
+  exclusion_rule_id: string | null
+  exclusion_reason: string | null
+}
+
+type EvaluationDetailApi = {
+  run_id: string
+  request_id: string
+  status: string
+  started_at: string
+  finished_at: string | null
+  supplier_breakdowns: SupplierBreakdownApi[]
+}
+
+type DashboardRawData = {
+  requests: RequestRow[]
+  awards: HistoricalAward[]
+  categoriesMap: Map<number, string>
+  escalationRows: QueueEscalationItem[]
+}
+
+type SpendByCategoryRow = {
+  category_l1?: string | null
+  category_l2?: string | null
+  total_spend?: string | number | null
+  award_count?: string | number | null
+}
+
+type DashboardAnalyticsData = {
+  spendByCategory: SpendByCategoryRow[]
+  spendBySupplier: Array<{
+    supplier_name?: string
+    total_spend?: string
+  }>
+  supplierWinRates: Array<{ win_rate?: string }>
+}
+
+type DashboardSnapshot = {
+  metrics: DashboardMetric[]
+  cases: CaseListItem[]
+  insights: DashboardInsights
+  asOf: string
+  cachedAtMs: number
+}
+
 const DASHBOARD_CACHE_TTL_MS = 15_000
+const AUDIT_FEED_LIMIT = 500
 
 const STATUS_MAP: Record<string, CaseStatus> = {
   new: "received",
@@ -203,28 +284,17 @@ const STATUS_MAP: Record<string, CaseStatus> = {
   parsed: "parsed",
 }
 
-const SCENARIO_TAGS = new Set<ScenarioTag>([
-  "standard",
-  "threshold",
-  "lead_time",
-  "missing_info",
-  "contradictory",
-  "restricted",
-  "multilingual",
-  "capacity",
-  "multi_country",
-])
+let dashboardSnapshot: DashboardSnapshot | null = null
+let dashboardSnapshotPromise: Promise<DashboardSnapshot> | null = null
 
-class BackendApiError extends Error {
-  status: number
-  path: string
-
-  constructor(path: string, status: number, detail: string) {
-    super(`Backend request failed (${status}) for ${path}: ${detail}`)
-    this.name = "BackendApiError"
-    this.status = status
-    this.path = path
-  }
+const statusLabels: Record<CaseStatus, string> = {
+  received: "Received",
+  parsed: "Parsed",
+  pending_review: "Pending review",
+  evaluated: "Evaluated",
+  recommended: "Recommended",
+  escalated: "Escalated",
+  resolved: "Resolved",
 }
 
 function toNumber(value: string | number | null | undefined): number | null {
@@ -237,14 +307,8 @@ function normalizeStatus(status: string): CaseStatus {
   return STATUS_MAP[status] ?? "received"
 }
 
-function normalizeTag(tag: string): ScenarioTag | null {
-  return SCENARIO_TAGS.has(tag as ScenarioTag) ? (tag as ScenarioTag) : null
-}
-
 function normalizeTags(tags: string[]): ScenarioTag[] {
-  return tags
-    .map(normalizeTag)
-    .filter((tag): tag is ScenarioTag => tag !== null)
+  return tags.filter(Boolean)
 }
 
 function recommendationStatusFrom(
@@ -258,83 +322,6 @@ function recommendationStatusFrom(
   }
   return "proceed"
 }
-
-function getRequestUrl(path: string): string {
-  return `${BASE_API_URL}${path}`
-}
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const url = getRequestUrl(path)
-  const response = await fetch(url, { cache: "no-store" })
-  if (!response.ok) {
-    let detail = response.statusText || "Unknown backend error"
-    try {
-      const payload = (await response.json()) as { detail?: string }
-      if (payload.detail) {
-        detail = payload.detail
-      }
-    } catch {
-      // Keep status text when backend response is not JSON.
-    }
-    throw new BackendApiError(path, response.status, detail)
-  }
-
-  return response.json() as Promise<T>
-}
-
-async function fetchAllPagedItems<T extends { total: number; skip: number; limit: number; items: U[] }, U>(
-  basePath: string,
-  limit = 200,
-): Promise<U[]> {
-  let skip = 0
-  let total = 0
-  const items: U[] = []
-
-  do {
-    const separator = basePath.includes("?") ? "&" : "?"
-    const page = await fetchJson<T>(`${basePath}${separator}skip=${skip}&limit=${limit}`)
-    items.push(...page.items)
-    total = page.total
-    skip += page.limit
-  } while (skip < total)
-
-  return items
-}
-
-async function getCategoriesMap() {
-  const categories = await fetchJson<CategoryRow[]>("/api/categories/")
-  return new Map<number, string>(
-    categories.map((category) => [
-      category.id,
-      `${category.category_l1} / ${category.category_l2}`,
-    ]),
-  )
-}
-
-async function getAllRequests() {
-  return await fetchAllPagedItems<RequestListResponse, RequestRow>("/api/requests/")
-}
-
-async function getAllAwards() {
-  return await fetchAllPagedItems<HistoricalAwardListResponse, HistoricalAward>("/api/awards/")
-}
-
-type DashboardRawData = {
-  requests: RequestRow[]
-  awards: HistoricalAward[]
-  categoriesMap: Map<number, string>
-  escalationRows: QueueEscalationItem[]
-}
-
-type DashboardSnapshot = {
-  metrics: DashboardMetric[]
-  cases: CaseListItem[]
-  asOf: string
-  cachedAtMs: number
-}
-
-let dashboardSnapshot: DashboardSnapshot | null = null
-let dashboardSnapshotPromise: Promise<DashboardSnapshot> | null = null
 
 function mapEscalationQueueRow(row: EscalationQueueApiRow): QueueEscalationItem {
   return {
@@ -356,18 +343,222 @@ function mapEscalationQueueRow(row: EscalationQueueApiRow): QueueEscalationItem 
   }
 }
 
+function isNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return (
+    error.message.includes("404") ||
+    error.message.includes("Not Found") ||
+    error.message.includes("not found")
+  )
+}
+
+function fallbackReasonFromError(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return "Unable to refresh dashboard data from backend."
+}
+
+function parseAuditKind(category: string): AuditFeedEvent["kind"] {
+  if (category === "escalation") return "escalation"
+  if (category === "policy") return "policy"
+  if (category === "supplier_filter" || category === "compliance") return "supplier"
+  if (category === "validation" || category === "recommendation") return "interpretation"
+  if (category === "data_access") return "source"
+  return "audit"
+}
+
+function severityFrom(value: unknown): Severity {
+  if (value === "critical" || value === "high" || value === "medium") {
+    return value
+  }
+  return "low"
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return null
+}
+
+function emptyAuditList(): AuditListOut {
+  return {
+    items: [],
+    total: 0,
+  }
+}
+
+function emptyAuditSummary(requestId: string): AuditSummaryOut {
+  return {
+    request_id: requestId,
+    total_entries: 0,
+    by_level: [],
+    by_category: [],
+    distinct_policies: [],
+    distinct_suppliers: [],
+    escalation_count: 0,
+    first_event: null,
+    last_event: null,
+  }
+}
+
+async function fetchCaseAuditLogs(requestId: string): Promise<AuditListOut> {
+  try {
+    return (await chainIqApi.orgLogs.audit.byRequest(requestId, {
+      limit: 500,
+    })) as AuditListOut
+  } catch {
+    try {
+      return (await chainIqApi.pipeline.audit(requestId, {
+        limit: 500,
+      })) as AuditListOut
+    } catch {
+      return emptyAuditList()
+    }
+  }
+}
+
+async function fetchCaseAuditSummary(requestId: string): Promise<AuditSummaryOut> {
+  try {
+    return (await chainIqApi.orgLogs.audit.summary(requestId)) as AuditSummaryOut
+  } catch {
+    try {
+      return (await chainIqApi.pipeline.auditSummary(requestId)) as AuditSummaryOut
+    } catch {
+      return emptyAuditSummary(requestId)
+    }
+  }
+}
+
+async function getAllRequests(): Promise<RequestRow[]> {
+  const limit = 200
+  let skip = 0
+  const items: RequestRow[] = []
+
+  while (true) {
+    const page = (await chainIqApi.requests.list({
+      skip,
+      limit,
+    })) as { items: RequestRow[]; total: number; limit: number }
+    items.push(...page.items)
+    skip += page.limit
+    if (skip >= page.total) break
+  }
+
+  return items
+}
+
+async function getAllAwards(): Promise<HistoricalAward[]> {
+  const limit = 200
+  let skip = 0
+  const items: HistoricalAward[] = []
+
+  while (true) {
+    const page = (await chainIqApi.awards.list({
+      skip,
+      limit,
+    })) as { items: HistoricalAward[]; total: number; limit: number }
+    items.push(...page.items)
+    skip += page.limit
+    if (skip >= page.total) break
+  }
+
+  return items
+}
+
+async function getCategoriesMap() {
+  const categories = (await chainIqApi.categories.list()) as CategoryRow[]
+  return new Map<number, string>(
+    categories.map((category) => [
+      category.id,
+      `${category.category_l1} / ${category.category_l2}`,
+    ]),
+  )
+}
+
 async function fetchEscalationQueueRows(): Promise<QueueEscalationItem[]> {
-  const rows = await fetchJson<EscalationQueueApiRow[]>("/api/escalations/queue")
+  const rows = (await chainIqApi.escalations.queue()) as EscalationQueueApiRow[]
   return rows.map(mapEscalationQueueRow)
 }
 
 async function fetchEscalationRowsByRequest(
   requestId: string,
 ): Promise<QueueEscalationItem[]> {
-  const rows = await fetchJson<EscalationQueueApiRow[]>(
-    `/api/escalations/by-request/${requestId}`,
-  )
+  const rows = (await chainIqApi.escalations.byRequest(
+    requestId,
+  )) as EscalationQueueApiRow[]
   return rows.map(mapEscalationQueueRow)
+}
+
+async function fetchEvaluationRunsByRequest(
+  requestId: string,
+): Promise<EvaluationDetailApi[]> {
+  const urls = getApiUrlCandidates(
+    `/api/rule-versions/evaluations/by-request/${encodeURIComponent(requestId)}`,
+  )
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, { cache: "no-store" })
+      if (!response.ok) continue
+      const payload = (await response.json()) as unknown
+      return Array.isArray(payload) ? (payload as EvaluationDetailApi[]) : []
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return []
+}
+
+function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
+  const normalizeCheckResult = (value: string | null | undefined): RuleCheckResult => {
+    if (
+      value === "passed" ||
+      value === "failed" ||
+      value === "warned" ||
+      value === "skipped"
+    ) {
+      return value
+    }
+    return "skipped"
+  }
+
+  return {
+    runId: raw.run_id,
+    requestId: raw.request_id,
+    status: raw.status,
+    startedAt: raw.started_at,
+    finishedAt: raw.finished_at,
+    supplierBreakdowns: raw.supplier_breakdowns.map((entry) => ({
+      supplierId: entry.supplier_id,
+      supplierName: entry.supplier_name,
+      excluded: entry.excluded,
+      exclusionRuleId: entry.exclusion_rule_id,
+      exclusionReason: entry.exclusion_reason,
+      hardRuleChecks: entry.hard_rule_checks.map((check) => ({
+        checkId: check.check_id,
+        ruleId: check.rule_id,
+        versionId: check.version_id,
+        supplierId: check.supplier_id,
+        result: check.skipped ? "skipped" : normalizeCheckResult(check.result),
+        checkedAt: check.checked_at,
+        skipped: check.skipped ?? null,
+        skipReason: check.skip_reason ?? null,
+        evidence: check.evidence ?? null,
+      })),
+      policyChecks: entry.policy_checks.map((check) => ({
+        checkId: check.check_id,
+        ruleId: check.rule_id,
+        versionId: check.version_id,
+        supplierId: check.supplier_id,
+        result: normalizeCheckResult(check.result),
+        checkedAt: check.checked_at,
+        skipped: check.skipped ?? null,
+        skipReason: check.skip_reason ?? null,
+        evidence: check.evidence ?? null,
+      })),
+    })),
+  }
 }
 
 async function fetchDashboardRawData(): Promise<DashboardRawData> {
@@ -386,16 +577,40 @@ async function fetchDashboardRawData(): Promise<DashboardRawData> {
   }
 }
 
-function buildDashboardMetricsFromData({
+async function fetchDashboardAnalyticsData(): Promise<DashboardAnalyticsData> {
+  const [spendByCategory, spendBySupplier, supplierWinRates] = await Promise.all([
+    chainIqApi.analytics.spendByCategory().catch(() => []),
+    chainIqApi.analytics.spendBySupplier().catch(() => []),
+    chainIqApi.analytics.supplierWinRates().catch(() => []),
+  ])
+
+  return {
+    spendByCategory: spendByCategory as SpendByCategoryRow[],
+    spendBySupplier: spendBySupplier as DashboardAnalyticsData["spendBySupplier"],
+    supplierWinRates: supplierWinRates as DashboardAnalyticsData["supplierWinRates"],
+  }
+}
+
+async function buildDashboardMetricsFromData({
   requests,
   awards,
   escalationRows,
-}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">): DashboardMetric[] {
+}: Pick<DashboardRawData, "requests" | "awards" | "escalationRows">, analytics?: DashboardAnalyticsData): Promise<DashboardMetric[]> {
+  const resolvedAnalytics = analytics ?? (await fetchDashboardAnalyticsData())
+  const { spendByCategory, spendBySupplier, supplierWinRates } = resolvedAnalytics
+
   const blockingCases = new Set(
     escalationRows
       .filter((entry) => entry.blocking && entry.status !== "resolved")
       .map((entry) => entry.caseId),
   )
+
+  const totalSpend = spendByCategory
+    .map((row) => toNumber(row.total_spend ?? null) ?? 0)
+    .reduce((acc, value) => acc + value, 0)
+
+  const topSupplier = spendBySupplier[0]
+  const topWinRate = supplierWinRates[0]
 
   return [
     {
@@ -425,6 +640,26 @@ function buildDashboardMetricsFromData({
       value: awards.filter((entry) => entry.awarded).length,
       helper: "Historical decisions with a selected supplier",
       tone: "success",
+    },
+    {
+      label: "Awarded Spend",
+      value: totalSpend,
+      valueLabel: `EUR ${new Intl.NumberFormat("en-GB", {
+        maximumFractionDigits: 0,
+      }).format(totalSpend)}`,
+      helper: "Aggregated winner spend across categories",
+      tone: "info",
+    },
+    {
+      label: "Top Supplier",
+      value: toNumber(topWinRate?.win_rate ?? null) ?? 0,
+      valueLabel: topSupplier?.supplier_name
+        ? `${topSupplier.supplier_name}`
+        : "No data",
+      helper: topWinRate?.win_rate
+        ? `Win rate ${(Number(topWinRate.win_rate) * 100).toFixed(1)}%`
+        : "Supplier win-rate data unavailable",
+      tone: "info",
     },
   ]
 }
@@ -465,8 +700,13 @@ function buildCaseListFromData({
       hasEscalation,
       status,
     )
-    const winner = requestAwards.find((entry) => entry.awarded && entry.award_rank === 1)
+    const winner = requestAwards.find(
+      (entry) => entry.awarded && entry.award_rank === 1,
+    )
     const fallbackSupplier = requestAwards.find((entry) => entry.award_rank === 1)
+    const lastEscalationUpdate = requestEscalations
+      .map((entry) => new Date(entry.lastUpdated).getTime())
+      .sort((a, b) => b - a)[0]
 
     return {
       requestId: request.request_id,
@@ -485,7 +725,12 @@ function buildCaseListFromData({
         : hasEscalation
           ? "advisory"
           : "none",
-      lastUpdated: request.created_at,
+      lastUpdated: new Date(
+        Math.max(
+          new Date(request.created_at).getTime(),
+          lastEscalationUpdate ?? 0,
+        ),
+      ).toISOString(),
       supplierLabel:
         winner?.supplier_name ??
         fallbackSupplier?.supplier_name ??
@@ -500,19 +745,67 @@ function buildCaseListFromData({
   })
 }
 
+function buildDashboardInsights({
+  cases,
+  analytics,
+}: {
+  cases: CaseListItem[]
+  analytics: DashboardAnalyticsData
+}): DashboardInsights {
+  const statusCounts = new Map<CaseStatus, number>()
+  const categorySet = new Set<string>()
+  const countrySet = new Set<string>()
+
+  for (const entry of cases) {
+    statusCounts.set(entry.status, (statusCounts.get(entry.status) ?? 0) + 1)
+    categorySet.add(entry.category)
+    countrySet.add(entry.countryLabel)
+  }
+
+  const statusBreakdown = (Object.keys(statusLabels) as CaseStatus[])
+    .map((status) => ({
+      status,
+      label: statusLabels[status],
+      count: statusCounts.get(status) ?? 0,
+    }))
+    .filter((entry) => entry.count > 0)
+    .sort((a, b) => b.count - a.count)
+
+  const spendByCategory = analytics.spendByCategory
+    .map((entry) => {
+      const categoryL1 = entry.category_l1?.trim() ?? ""
+      const categoryL2 = entry.category_l2?.trim() ?? ""
+      const category = categoryL2
+        ? `${categoryL1} / ${categoryL2}`
+        : categoryL1 || "Unknown category"
+
+      return {
+        category,
+        totalSpend: toNumber(entry.total_spend ?? null) ?? 0,
+        awardCount: toNumber(entry.award_count ?? null) ?? 0,
+      }
+    })
+    .sort((a, b) => b.totalSpend - a.totalSpend)
+    .slice(0, 8)
+
+  return {
+    statusBreakdown,
+    spendByCategory,
+    filterOptions: {
+      statuses: (Object.keys(statusLabels) as CaseStatus[]).filter(
+        (status) => (statusCounts.get(status) ?? 0) > 0,
+      ),
+      categories: Array.from(categorySet).sort((a, b) => a.localeCompare(b)),
+      countries: Array.from(countrySet).sort((a, b) => a.localeCompare(b)),
+    },
+  }
+}
+
 function isDashboardSnapshotFresh(
   snapshot: DashboardSnapshot,
   nowMs: number,
 ): boolean {
   return nowMs - snapshot.cachedAtMs < DASHBOARD_CACHE_TTL_MS
-}
-
-function fallbackReasonFromError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message
-  }
-
-  return "Unable to refresh dashboard data from backend."
 }
 
 function toDashboardPageData(
@@ -523,6 +816,7 @@ function toDashboardPageData(
   return {
     metrics: snapshot.metrics,
     cases: snapshot.cases,
+    insights: snapshot.insights,
     dataState: {
       mode,
       asOf: snapshot.asOf,
@@ -533,9 +827,16 @@ function toDashboardPageData(
 
 async function refreshDashboardSnapshot(): Promise<DashboardSnapshot> {
   const rawData = await fetchDashboardRawData()
+  const analytics = await fetchDashboardAnalyticsData()
+  const metrics = await buildDashboardMetricsFromData(rawData, analytics)
+  const cases = buildCaseListFromData(rawData)
   const snapshot: DashboardSnapshot = {
-    metrics: buildDashboardMetricsFromData(rawData),
-    cases: buildCaseListFromData(rawData),
+    metrics,
+    cases,
+    insights: buildDashboardInsights({
+      cases,
+      analytics,
+    }),
     asOf: new Date().toISOString(),
     cachedAtMs: Date.now(),
   }
@@ -546,33 +847,109 @@ async function refreshDashboardSnapshot(): Promise<DashboardSnapshot> {
 
 async function loadDashboardSnapshotWithDeduping(): Promise<DashboardSnapshot> {
   if (!dashboardSnapshotPromise) {
-    dashboardSnapshotPromise = refreshDashboardSnapshot()
-      .finally(() => {
-        dashboardSnapshotPromise = null
-      })
+    dashboardSnapshotPromise = refreshDashboardSnapshot().finally(() => {
+      dashboardSnapshotPromise = null
+    })
   }
 
   return await dashboardSnapshotPromise
 }
 
-function toAuditFeedEvent(
-  award: HistoricalAward,
+function mapAuditEvent(
+  entry: AuditListOut["items"][number],
   titleByRequestId: Map<string, string>,
 ): AuditFeedEvent {
-  const kind = award.escalation_required
-    ? "escalation"
-    : award.policy_compliant
-      ? "policy"
-      : "audit"
-
   return {
-    id: award.award_id,
-    timestamp: award.award_date,
-    kind,
-    title: `${award.supplier_name} ranked #${award.award_rank}`,
-    description: award.decision_rationale,
-    caseId: award.request_id,
-    caseTitle: titleByRequestId.get(award.request_id) ?? "Sourcing request",
+    id: `${entry.request_id}-${entry.id}`,
+    timestamp: entry.timestamp,
+    kind: parseAuditKind(entry.category),
+    title: entry.message,
+    description: entry.step_name
+      ? `${entry.category} · ${entry.step_name}`
+      : `${entry.category}`,
+    caseId: entry.request_id,
+    caseTitle: titleByRequestId.get(entry.request_id) ?? "Sourcing request",
+    level: entry.level,
+    category: entry.category,
+    stepName: entry.step_name,
+    source: entry.source,
+    details: entry.details,
+  }
+}
+
+function buildAuditFeedMeta({
+  mode,
+  source,
+  totalKnown,
+  fetchedCount,
+  warning,
+}: {
+  mode: AuditFeedMeta["mode"]
+  source: AuditFeedMeta["source"]
+  totalKnown: number
+  fetchedCount: number
+  warning?: string
+}): AuditFeedMeta {
+  return {
+    mode,
+    source,
+    totalKnown,
+    fetchedCount,
+    isTruncated: totalKnown > fetchedCount,
+    asOf: new Date().toISOString(),
+    ...(warning ? { warning } : {}),
+  }
+}
+
+async function fetchAuditListWithFallback(
+  limit = AUDIT_FEED_LIMIT,
+): Promise<AuditFetchResult> {
+  try {
+    const audit = (await chainIqApi.orgLogs.audit.list({ limit })) as AuditListOut
+    const totalKnown = Number.isFinite(audit.total) ? audit.total : audit.items.length
+    return {
+      audit,
+      meta: buildAuditFeedMeta({
+        mode: "fresh",
+        source: "orgLogs",
+        totalKnown,
+        fetchedCount: audit.items.length,
+      }),
+    }
+  } catch (primaryError) {
+    try {
+      const fallbackAudit = (await chainIqApi.orgLogs.audit.list()) as AuditListOut
+      const totalKnown = Number.isFinite(fallbackAudit.total)
+        ? fallbackAudit.total
+        : fallbackAudit.items.length
+      const slicedItems = fallbackAudit.items.slice(0, limit)
+      return {
+        audit: {
+          ...fallbackAudit,
+          items: slicedItems,
+          total: totalKnown,
+        },
+        meta: buildAuditFeedMeta({
+          mode: "degraded",
+          source: "orgLogsFallback",
+          totalKnown,
+          fetchedCount: slicedItems.length,
+          warning:
+            "Primary audit feed query failed. Fallback snapshot loaded with reduced reliability.",
+        }),
+      }
+    } catch {
+      return {
+        audit: { items: [], total: 0 },
+        meta: buildAuditFeedMeta({
+          mode: "degraded",
+          source: "none",
+          totalKnown: 0,
+          fetchedCount: 0,
+          warning: `Audit data is temporarily unavailable. ${fallbackReasonFromError(primaryError)}`,
+        }),
+      }
+    }
   }
 }
 
@@ -610,18 +987,21 @@ export async function getCaseList(): Promise<CaseListItem[]> {
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {
   let detail: RequestDetail
   try {
-    detail = await fetchJson<RequestDetail>(`/api/requests/${caseId}`)
+    detail = (await chainIqApi.requests.get(caseId)) as RequestDetail
   } catch (error) {
-    if (error instanceof BackendApiError && error.status === 404) {
+    if (isNotFoundError(error)) {
       return null
     }
     throw error
   }
 
-  const [overview, awards, escalationRows] = await Promise.all([
-    fetchJson<RequestOverview>(`/api/analytics/request-overview/${caseId}`),
-    fetchJson<HistoricalAward[]>(`/api/awards/by-request/${caseId}`),
+  const [overview, awards, escalationRows, auditLogs, auditSummary, evaluationRunsRaw] = await Promise.all([
+    chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
+    chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
     fetchEscalationRowsByRequest(caseId),
+    fetchCaseAuditLogs(caseId),
+    fetchCaseAuditSummary(caseId),
+    fetchEvaluationRunsByRequest(caseId),
   ])
 
   const pricingBySupplier = new Map(
@@ -636,9 +1016,15 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       return {
         supplierId: supplier.supplier_id,
         supplierName: supplier.supplier_name,
+        countryHq: supplier.country_hq,
+        currency: supplier.currency,
         preferred: supplier.preferred_supplier,
         incumbent: supplier.supplier_name === detail.incumbent_supplier,
         pricingTierApplied: pricing.pricing_id,
+        region: pricing.region,
+        minQuantity: pricing.min_quantity,
+        maxQuantity: pricing.max_quantity,
+        moq: pricing.moq,
         unitPrice: toNumber(pricing.unit_price) ?? 0,
         totalPrice: toNumber(pricing.total_price) ?? 0,
         standardLeadTimeDays: pricing.standard_lead_time_days,
@@ -650,6 +1036,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
         esgScore: supplier.esg_score,
         policyCompliant: true,
         coversDeliveryCountry: true,
+        dataResidencySupported: supplier.data_residency_supported,
         recommendationNote:
           "Eligible supplier after policy and region checks.",
       }
@@ -668,7 +1055,41 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       hardExclusion: !entry.policy_compliant || entry.escalation_required,
     }))
 
-  const hasBlockingValidation = (detail.budget_amount ?? null) === null || (detail.quantity ?? null) === null
+  const escalationIssues = auditLogs.items
+    .filter((entry) => entry.category === "escalation")
+    .map((entry, index) => {
+      const details = asRecord(entry.details)
+      return {
+        issueId: `ESC-${index + 1}`,
+        severity: "critical" as Severity,
+        type: "escalation",
+        description: entry.message,
+        actionRequired: `Escalate to ${(details?.escalate_to as string | undefined) ?? "assigned stakeholder"}.`,
+        blocking: Boolean(details?.blocking ?? true),
+      }
+    })
+
+  const validationIssues = [
+    ...auditLogs.items
+      .filter((entry) => entry.category === "validation")
+      .map((entry, index) => {
+        const details = asRecord(entry.details)
+        const severity = details?.severity as string | undefined
+        return {
+          issueId:
+            (details?.issue_type as string | undefined)?.toUpperCase() ??
+            `VAL-${index + 1}`,
+          severity: severityFrom(severity),
+          type: entry.category,
+          description: entry.message,
+          actionRequired:
+            (details?.action_required as string | undefined) ??
+            "Review validation findings and update request input.",
+          blocking: severity === "critical" || severity === "high",
+        }
+      }),
+    ...escalationIssues,
+  ]
 
   const escalations: CaseDetail["escalations"] = escalationRows.map((entry) => ({
     escalationId: entry.escalationId,
@@ -686,6 +1107,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
           : `Document advisory input from ${entry.escalateTo}.`,
   }))
 
+  const hasBlockingValidation = validationIssues.some((issue) => issue.blocking)
   const hasBlockingEscalation = escalations.some(
     (entry) => entry.blocking && entry.status !== "resolved",
   )
@@ -697,64 +1119,34 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     status,
   )
 
-  const topSupplier = shortlist[0]
   const winner = awards.find((entry) => entry.awarded && entry.award_rank === 1)
+  const topSupplier = shortlist[0]
 
   const policyCards = [
-    ...overview.applicable_rules.category_rules.map((rule) => ({
+    ...overview.applicable_rules.category_rules.map((rule, index) => ({
       title: "Category Policy",
-      ruleId: rule.rule_id,
+      ruleId: String(rule.rule_id ?? `CATEGORY-${index + 1}`),
       status: "informative" as const,
-      summary: rule.rule_text,
-      detail: [{ label: "Rule Type", value: rule.rule_type }],
-    })),
-    ...overview.applicable_rules.geography_rules.map((rule) => ({
-      title: "Geography Policy",
-      ruleId: rule.rule_id,
-      status: "informative" as const,
-      summary: rule.rule_text,
+      summary: String(rule.rule_text ?? "Category rule applied."),
       detail: [
-        { label: "Country", value: rule.country ?? "Regional" },
-        { label: "Region", value: rule.region ?? "N/A" },
+        {
+          label: "Rule Type",
+          value: String(rule.rule_type ?? "category_policy"),
+        },
+      ],
+    })),
+    ...overview.applicable_rules.geography_rules.map((rule, index) => ({
+      title: "Geography Policy",
+      ruleId: String(rule.rule_id ?? `GEO-${index + 1}`),
+      status: "informative" as const,
+      summary: String(rule.rule_text ?? "Geography rule applied."),
+      detail: [
+        { label: "Country", value: String(rule.country ?? "Regional") },
+        { label: "Region", value: String(rule.region ?? "N/A") },
       ],
     })),
   ]
 
-  const timeline = [
-    {
-      id: `${caseId}-source`,
-      timestamp: detail.created_at,
-      title: "Request ingested",
-      description: "Procurement request persisted in organisational data layer.",
-      kind: "source" as const,
-    },
-    {
-      id: `${caseId}-policy`,
-      timestamp: detail.created_at,
-      title: "Policy and geography rules applied",
-      description: `${policyCards.length} relevant rules evaluated for this context.`,
-      kind: "policy" as const,
-    },
-    {
-      id: `${caseId}-suppliers`,
-      timestamp: detail.created_at,
-      title: "Supplier shortlist generated",
-      description: `${shortlist.length} compliant suppliers with pricing matched.`,
-      kind: "supplier" as const,
-    },
-    ...escalations.map((entry) => ({
-      id: `${entry.escalationId}-timeline`,
-      timestamp:
-        escalationRows.find((row) => row.escalationId === entry.escalationId)
-          ?.createdAt ?? detail.created_at,
-      title: `Escalation opened (${entry.rule})`,
-      description: entry.trigger,
-      kind: "escalation" as const,
-    })),
-  ]
-
-  const approvalTier = overview.approval_tier?.threshold_id ?? "Threshold unavailable"
-  const quotesRequired = overview.approval_tier?.min_supplier_quotes ?? 0
   const deliveryCountries =
     detail.delivery_countries.map((entry) => entry.country_code) || []
 
@@ -791,44 +1183,30 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     },
   ]
 
-  const validationIssues = [
-    ...(detail.budget_amount === null
-      ? [
-          {
-            issueId: "VAL-BUDGET-MISSING",
-            severity: "high" as const,
-            type: "missing_info",
-            description: "No explicit budget amount provided in request data.",
-            actionRequired: "Requester must provide budget to proceed autonomously.",
-            blocking: true,
-          },
-        ]
-      : []),
-    ...(detail.quantity === null
-      ? [
-          {
-            issueId: "VAL-QUANTITY-MISSING",
-            severity: "high" as const,
-            type: "missing_info",
-            description: "Quantity is missing, so pricing tier cannot be validated robustly.",
-            actionRequired: "Requester must confirm quantity for final supplier ranking.",
-            blocking: true,
-          },
-        ]
-      : []),
-    ...(shortlist.length === 0
-      ? [
-          {
-            issueId: "VAL-NO-COMPLIANT-SUPPLIER",
-            severity: "critical" as const,
-            type: "restricted",
-            description: "No compliant supplier with valid pricing could be shortlisted.",
-            actionRequired: "Escalate to sourcing manager for exception handling.",
-            blocking: true,
-          },
-        ]
-      : []),
-  ]
+  const timeline = auditLogs.items
+    .map((entry) => ({
+      id: `${entry.request_id}-${entry.id}`,
+      timestamp: entry.timestamp,
+      title: entry.message,
+      description: entry.step_name
+        ? `${entry.category} · ${entry.step_name}`
+        : entry.category,
+      kind: parseAuditKind(entry.category),
+      level: entry.level,
+      category: entry.category,
+      stepName: entry.step_name,
+      source: entry.source,
+      details: asRecord(entry.details),
+    }))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+
+  const scenarioTags = detail.scenario_tags
+    .map((entry) =>
+      typeof entry === "string" ? entry : (entry as { tag?: string }).tag ?? "",
+    )
+    .filter(Boolean)
+
+  const evaluationRuns = evaluationRunsRaw.map(mapEvaluationRunDetail)
 
   return {
     id: caseId,
@@ -841,6 +1219,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
           : "Cannot proceed",
     rawRequest: {
       requestId: detail.request_id,
+      categoryId: detail.category_id,
       createdAt: detail.created_at,
       requestChannel:
         detail.request_channel === "teams" || detail.request_channel === "email"
@@ -850,10 +1229,11 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       businessUnit: detail.business_unit,
       country: detail.country,
       site: detail.site,
+      requesterId: detail.requester_id,
       requesterRole: detail.requester_role ?? "Not specified",
       submittedForId: detail.submitted_for_id,
       status,
-      scenarioTags: normalizeTags(detail.scenario_tags.map((entry) => entry.tag)),
+      scenarioTags: normalizeTags(scenarioTags),
       categoryL1: detail.category_l1 ?? "Unknown",
       categoryL2: detail.category_l2 ?? "Unknown",
       title: detail.title,
@@ -887,8 +1267,13 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       totalPrice: winner ? toNumber(winner.total_value) : topSupplier?.totalPrice ?? null,
       minimumBudgetRequired: topSupplier?.totalPrice ?? null,
       currency: detail.currency,
-      approvalTier,
-      quotesRequired,
+      approvalTier: overview.approval_tier?.threshold_id ?? "Threshold unavailable",
+      minAmount: toNumber(overview.approval_tier?.min_amount),
+      maxAmount: toNumber(overview.approval_tier?.max_amount ?? null),
+      managers: overview.approval_tier?.managers ?? [],
+      deviationApprovers: overview.approval_tier?.deviation_approvers ?? [],
+      policyNote: overview.approval_tier?.policy_note ?? null,
+      quotesRequired: overview.approval_tier?.min_supplier_quotes ?? 0,
       complianceStatus:
         recommendationStatus === "cannot_proceed"
           ? "Blocked"
@@ -901,33 +1286,41 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     policyCards,
     supplierShortlist: shortlist,
     excludedSuppliers,
+    evaluationRuns,
     escalations,
     auditTrail: {
-      policiesChecked: policyCards.map((entry) => entry.ruleId),
-      supplierIdsEvaluated: overview.compliant_suppliers.map((entry) => entry.supplier_id),
+      policiesChecked:
+        auditSummary.distinct_policies.length > 0
+          ? auditSummary.distinct_policies
+          : policyCards.map((entry) => entry.ruleId),
+      supplierIdsEvaluated:
+        auditSummary.distinct_suppliers.length > 0
+          ? auditSummary.distinct_suppliers
+          : overview.compliant_suppliers.map((entry) => entry.supplier_id),
       pricingTiersApplied:
         overview.pricing.map((entry) => entry.pricing_id).join(", ") || "None",
       dataSourcesUsed: [
         "requests",
         "analytics.request-overview",
         "awards",
-        "categories",
+        "escalations",
+        "logs.audit",
       ],
       historicalAwardsConsulted: awards.length > 0,
       historicalAwardNote:
         awards.length > 0
           ? `${awards.length} historical award rows referenced.`
           : "No historical awards for this request.",
-      reasoningTrace: [
-        "Parse and validate request fields (budget, quantity, delivery scope).",
-        "Apply category and geography policy constraints.",
-        "Build compliant supplier shortlist and price by tier.",
-        "Determine approval tier and escalation requirements.",
-      ],
-      timeline: timeline.sort(
-        (a, b) =>
-          new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-      ),
+      reasoningTrace:
+        auditLogs.items.length > 0
+          ? auditLogs.items.slice(0, 8).map((entry) => entry.message)
+          : [
+              "Parse and validate request fields (budget, quantity, delivery scope).",
+              "Apply category and geography policy constraints.",
+              "Build compliant supplier shortlist and price by tier.",
+              "Determine approval tier and escalation requirements.",
+            ],
+      timeline,
     },
     historicalPrecedent:
       awards.length > 0
@@ -951,64 +1344,413 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
             ],
           }
         : undefined,
-    lastUpdated: new Date().toISOString(),
+    lastUpdated:
+      auditSummary.last_event ??
+      timeline.at(-1)?.timestamp ??
+      new Date().toISOString(),
   }
 }
 
 export async function getEscalationQueue(): Promise<QueueEscalationItem[]> {
   const escalationRows = await fetchEscalationQueueRows()
   return escalationRows.sort(
-    (a, b) =>
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   )
 }
 
-export async function getAuditFeed(): Promise<AuditFeedEvent[]> {
-  const [requests, awards] = await Promise.all([getAllRequests(), getAllAwards()])
+export async function getAuditPageData(): Promise<AuditPageData> {
+  const [requests, escalationRows, auditResult] = await Promise.all([
+    getAllRequests(),
+    fetchEscalationQueueRows(),
+    fetchAuditListWithFallback(),
+  ])
+
   const titleByRequestId = new Map(
     requests.map((entry) => [entry.request_id, entry.title]),
   )
 
-  return awards
-    .map((award) => toAuditFeedEvent(award, titleByRequestId))
-    .sort(
-      (a, b) =>
-        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-    )
+  const feed = auditResult.audit.items
+    .map((entry) => mapAuditEvent(entry, titleByRequestId))
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+  const casesWithTrace = new Set(
+    auditResult.audit.items.map((entry) => entry.request_id).filter(Boolean),
+  )
+  const policyConflicts = auditResult.audit.items.filter(
+    (entry) => entry.category === "policy" && entry.level === "error",
+  )
+
+  const summary: AuditSummaryMetric[] = [
+    {
+      label: "Cases With Audit Trace",
+      value: casesWithTrace.size.toString(),
+      helper: `${casesWithTrace.size} of ${requests.length} requests have captured audit events.`,
+    },
+    {
+      label: "Audit Entries",
+      value: auditResult.meta.totalKnown.toString(),
+      helper: auditResult.meta.isTruncated
+        ? `Showing ${auditResult.meta.fetchedCount} of ${auditResult.meta.totalKnown} entries (current fetch limit ${AUDIT_FEED_LIMIT}).`
+        : "Structured pipeline events available for review.",
+    },
+    {
+      label: "Escalations In Queue",
+      value: escalationRows.length.toString(),
+      helper: "Open and resolved escalation objects produced by policy logic.",
+    },
+    {
+      label: "Policy Conflicts",
+      value: policyConflicts.length.toString(),
+      helper: "Audit events flagged as policy-level errors.",
+    },
+  ]
+
+  return {
+    summary,
+    feed,
+    feedMeta: auditResult.meta,
+  }
+}
+
+export async function getAuditFeed(): Promise<AuditFeedEvent[]> {
+  return (await getAuditPageData()).feed
 }
 
 export async function getAuditOverview(): Promise<{
-  summary: Array<{ label: string; value: string; helper: string }>
+  summary: AuditSummaryMetric[]
+  feedMeta: AuditFeedMeta
 }> {
-  const [requests, awards, escalationRows] = await Promise.all([
-    getAllRequests(),
-    getAllAwards(),
-    fetchEscalationQueueRows(),
-  ])
-  const policyConflicts = awards.filter((entry) => !entry.policy_compliant)
+  const data = await getAuditPageData()
+  return {
+    summary: data.summary,
+    feedMeta: data.feedMeta,
+  }
+}
+
+const INTAKE_REQUIRED_FIELDS: Array<keyof CaseDraftPayload> = [
+  "title",
+  "requestText",
+  "requestChannel",
+  "requestLanguage",
+  "businessUnit",
+  "country",
+  "site",
+  "requesterId",
+  "submittedForId",
+  "categoryId",
+  "unitOfMeasure",
+  "currency",
+  "requiredByDate",
+  "contractTypeRequested",
+]
+
+function getApiUrlCandidates(path: string): string[] {
+  const normalized = path.startsWith("/") ? path : `/${path}`
+  // Browser runtime must only use same-origin paths.
+  if (typeof window !== "undefined") {
+    return [normalized]
+  }
+  const internalBase = process.env.BACKEND_INTERNAL_URL
+  if (internalBase) {
+    return [normalized, `${internalBase}${normalized}`]
+  }
+  return [normalized]
+}
+
+async function fetchMutation<T>(path: string, init: RequestInit): Promise<T> {
+  const candidates = getApiUrlCandidates(path)
+  let lastError: unknown = null
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(init.headers ?? {}),
+        },
+      })
+      if (!response.ok) {
+        lastError = new Error(`Request failed (${response.status}) for ${path}`)
+        continue
+      }
+      return response.json() as Promise<T>
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  if (lastError instanceof Error && lastError.message.trim()) {
+    throw lastError
+  }
+  throw new Error(`Request failed for ${path}`)
+}
+
+function createRequestId() {
+  const stamp = Date.now().toString().slice(-8)
+  const random = Math.floor(Math.random() * 10_000)
+    .toString()
+    .padStart(4, "0")
+  return `REQ-${stamp}${random}`
+}
+
+function defaultRequiredByDate() {
+  const value = new Date()
+  value.setDate(value.getDate() + 14)
+  return value.toISOString().slice(0, 10)
+}
+
+function defaultDraftFromIntake(input: CaseIntakeInput): CaseDraftPayload {
+  const sourceText = input.sourceText.trim()
+  const firstLine =
+    sourceText.split("\n").find((line) => line.trim().length > 0)?.trim() ??
+    "New sourcing case"
 
   return {
-    summary: [
-      {
-        label: "Cases With Audit Trace",
-        value: requests.length.toString(),
-        helper: "Requests represented in the backend dataset",
-      },
-      {
-        label: "Award Decisions",
-        value: awards.length.toString(),
-        helper: "Historical supplier-evaluation rows available for audit",
-      },
-      {
-        label: "Escalation Events",
-        value: escalationRows.length.toString(),
-        helper: "Deterministic escalation objects generated by current policy logic",
-      },
-      {
-        label: "Policy Conflicts",
-        value: policyConflicts.length.toString(),
-        helper: "Audit entries with non-compliant outcomes",
-      },
-    ],
+    title: firstLine.slice(0, 120),
+    requestText: sourceText,
+    requestChannel: input.requestChannel ?? "portal",
+    requestLanguage: "en",
+    businessUnit: "General",
+    country: "CH",
+    site: "HQ",
+    requesterId: "UNKNOWN",
+    requesterRole: "Not specified",
+    submittedForId: "SELF",
+    categoryId: null,
+    quantity: null,
+    unitOfMeasure: "unit",
+    currency: "CHF",
+    budgetAmount: null,
+    requiredByDate: defaultRequiredByDate(),
+    deliveryCountries: [],
+    preferredSupplierMentioned: null,
+    incumbentSupplier: null,
+    contractTypeRequested: "one_time",
+    dataResidencyConstraint: false,
+    esgRequirement: false,
+    requesterInstruction: input.note?.trim() || null,
+    scenarioTags: ["standard"],
+    status: "new",
   }
+}
+
+function isPresentValue(value: unknown) {
+  if (value === null || value === undefined) return false
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+export function computeMissingRequiredFields(
+  draft: CaseDraftPayload,
+): Array<keyof CaseDraftPayload> {
+  return INTAKE_REQUIRED_FIELDS.filter((field) => !isPresentValue(draft[field]))
+}
+
+type CategoryApiRow = {
+  id: number
+  category_l1: string
+  category_l2: string
+}
+
+export async function getCategoryOptions(): Promise<CategoryOption[]> {
+  const requestUrls = getApiUrlCandidates("/api/categories/")
+  let response: Response | null = null
+  let lastError: unknown = null
+
+  for (const url of requestUrls) {
+    try {
+      response = await fetch(url, { cache: "no-store" })
+      if (response.ok) break
+      lastError = new Error(`Request failed (${response.status}) for /api/categories/`)
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  if (!response || !response.ok) {
+    if (lastError instanceof Error && lastError.message.trim()) {
+      throw lastError
+    }
+    throw new Error("Request failed for /api/categories/")
+  }
+
+  const rows = (await response.json()) as CategoryApiRow[]
+  return rows.map((row) => ({
+    id: row.id,
+    categoryL1: row.category_l1,
+    categoryL2: row.category_l2,
+  }))
+}
+
+type ExtractionResponse = {
+  draft: Record<string, unknown>
+  field_status: Record<string, { status: string; confidence: number; reason?: string }>
+  missing_required: string[]
+  warnings: Array<{ code: string; severity: Severity; message: string }>
+  extraction_strength: "strong" | "partial" | "low"
+}
+
+export async function extractCaseInput(
+  payload: CaseIntakeInput,
+): Promise<ExtractionResult> {
+  const fallbackDraft = defaultDraftFromIntake(payload)
+  try {
+    const response = await fetchMutation<ExtractionResponse>("/api/intake/extract", {
+      method: "POST",
+      body: JSON.stringify({
+        source_type: payload.sourceType,
+        source_text: payload.sourceText,
+        note: payload.note ?? null,
+        request_channel: payload.requestChannel ?? null,
+        file_names: payload.fileNames ?? [],
+      }),
+    })
+
+    const mergedDraft: CaseDraftPayload = {
+      ...fallbackDraft,
+      ...(response.draft as Partial<CaseDraftPayload>),
+      scenarioTags: Array.isArray(response.draft.scenarioTags)
+        ? (response.draft.scenarioTags as ScenarioTag[])
+        : fallbackDraft.scenarioTags,
+      deliveryCountries: Array.isArray(response.draft.deliveryCountries)
+        ? (response.draft.deliveryCountries as string[])
+        : fallbackDraft.deliveryCountries,
+    }
+
+    const fieldStatus: ExtractionResult["fieldStatus"] = {}
+    for (const [key, value] of Object.entries(response.field_status)) {
+      fieldStatus[key as keyof CaseDraftPayload] = {
+        status:
+          value.status === "confident" ||
+          value.status === "inferred" ||
+          value.status === "missing" ||
+          value.status === "needs_review"
+            ? value.status
+            : "needs_review",
+        confidence: value.confidence,
+        reason: value.reason,
+      }
+    }
+
+    return {
+      draft: mergedDraft,
+      fieldStatus,
+      missingRequired:
+        response.missing_required.length > 0
+          ? (response.missing_required as Array<keyof CaseDraftPayload>)
+          : computeMissingRequiredFields(mergedDraft),
+      warnings: response.warnings,
+      extractionStrength: response.extraction_strength,
+    }
+  } catch {
+    return {
+      draft: fallbackDraft,
+      fieldStatus: {
+        requestText: {
+          status: payload.sourceText.trim() ? "inferred" : "missing",
+          confidence: payload.sourceText.trim() ? 0.7 : 0,
+          reason: "Fallback extraction used because intake API is unavailable.",
+        },
+      },
+      missingRequired: computeMissingRequiredFields(fallbackDraft),
+      warnings: [
+        {
+          code: "INTAKE_FALLBACK",
+          severity: "medium",
+          message:
+            "Extraction service is unavailable. Continue with manual completion.",
+        },
+      ],
+      extractionStrength: "low",
+    }
+  }
+}
+
+type RequestMutationOut = { request_id: string }
+
+function toRequestMutationPayload(payload: CaseDraftPayload) {
+  return {
+    request_id: payload.requestId,
+    created_at: payload.createdAt,
+    request_channel: payload.requestChannel,
+    request_language: payload.requestLanguage,
+    business_unit: payload.businessUnit,
+    country: payload.country,
+    site: payload.site,
+    requester_id: payload.requesterId,
+    requester_role: payload.requesterRole || null,
+    submitted_for_id: payload.submittedForId,
+    category_id: payload.categoryId,
+    title: payload.title,
+    request_text: payload.requestText,
+    currency: payload.currency,
+    budget_amount: payload.budgetAmount,
+    quantity: payload.quantity,
+    unit_of_measure: payload.unitOfMeasure,
+    required_by_date: payload.requiredByDate,
+    preferred_supplier_mentioned: payload.preferredSupplierMentioned,
+    incumbent_supplier: payload.incumbentSupplier,
+    contract_type_requested: payload.contractTypeRequested,
+    data_residency_constraint: payload.dataResidencyConstraint,
+    esg_requirement: payload.esgRequirement,
+    status: payload.status,
+    delivery_countries: payload.deliveryCountries,
+    scenario_tags: payload.scenarioTags,
+  }
+}
+
+export async function createCase(
+  payload: CreateCasePayload,
+): Promise<{ requestId: string }> {
+  const draft: CaseDraftPayload = {
+    ...payload,
+    requestId: payload.requestId ?? createRequestId(),
+    createdAt: payload.createdAt ?? new Date().toISOString(),
+  }
+
+  const response = await fetchMutation<RequestMutationOut>("/api/requests/", {
+    method: "POST",
+    body: JSON.stringify(toRequestMutationPayload(draft)),
+  })
+  return { requestId: response.request_id }
+}
+
+export async function updateCaseDraft(
+  requestId: string,
+  payload: Partial<CaseDraftPayload>,
+): Promise<{ requestId: string }> {
+  const body = {
+    request_channel: payload.requestChannel,
+    request_language: payload.requestLanguage,
+    business_unit: payload.businessUnit,
+    country: payload.country,
+    site: payload.site,
+    requester_id: payload.requesterId,
+    requester_role: payload.requesterRole,
+    submitted_for_id: payload.submittedForId,
+    category_id: payload.categoryId,
+    title: payload.title,
+    request_text: payload.requestText,
+    currency: payload.currency,
+    budget_amount: payload.budgetAmount,
+    quantity: payload.quantity,
+    unit_of_measure: payload.unitOfMeasure,
+    required_by_date: payload.requiredByDate,
+    preferred_supplier_mentioned: payload.preferredSupplierMentioned,
+    incumbent_supplier: payload.incumbentSupplier,
+    contract_type_requested: payload.contractTypeRequested,
+    data_residency_constraint: payload.dataResidencyConstraint,
+    esg_requirement: payload.esgRequirement,
+    status: payload.status,
+    delivery_countries: payload.deliveryCountries,
+    scenario_tags: payload.scenarioTags,
+  }
+
+  await fetchMutation<RequestMutationOut>(`/api/requests/${requestId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  })
+  return { requestId }
 }

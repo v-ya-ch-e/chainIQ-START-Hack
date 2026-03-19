@@ -12,6 +12,7 @@ class CompliantSupplierOut(BaseModel):
     esg_score: int
     preferred_supplier: bool
     data_residency_supported: bool
+    capacity_per_month: int | None = None
 
 
 class PricingLookupOut(BaseModel):

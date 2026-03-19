@@ -20,6 +20,7 @@ from app.models.output import (
     PolicyEvaluationOutput,
 )
 from app.pipeline.logger import PipelineLogger
+from app.pipeline.rule_engine import RuleEngine
 from app.pipeline.steps.assemble import assemble_output
 from app.pipeline.steps.comply import check_compliance
 from app.pipeline.steps.escalate import compute_escalations
@@ -50,24 +51,44 @@ class PipelineRunner:
 
         run_id = str(uuid.uuid4())
         pl = PipelineLogger(self.org, run_id, request_id)
+        rule_engine = RuleEngine(llm_client=self.llm)
 
         try:
             # Set request to in_review
             await self.org.update_request_status(request_id, "in_review")
             await pl.start_run()
 
+            # Fetch all active dynamic rules once
+            all_rules = await self.org.get_active_rules()
+            rules_by_stage: dict[str, list] = {}
+            for r in all_rules:
+                stage = r.get("pipeline_stage", "")
+                rules_by_stage.setdefault(stage, []).append(r)
+
             # ── Step 1: Fetch ─────────────────────────────────
             fetch_result = await fetch_overview(request_id, self.org, pl)
             await pl.flush_audit()
 
             # ── Step 2: Validate ──────────────────────────────
-            validation_result = await validate_request(fetch_result, self.llm, pl, self.org)
+            validation_result = await validate_request(
+                fetch_result, self.llm, pl,
+                rule_engine=rule_engine,
+                dynamic_rules=rules_by_stage.get("validate", []),
+            )
             await pl.flush_audit()
 
             # ── Branch: early exit on invalid ─────────────────
             if not validation_result.completeness:
                 output = await self._format_invalid_response(
                     fetch_result, validation_result, run_id, pl,
+                )
+                await self.org.save_pipeline_result(
+                    run_id=run_id,
+                    request_id=request_id,
+                    processed_at=output.processed_at,
+                    output=output.model_dump(),
+                    status=output.status,
+                    recommendation_status=output.recommendation.status,
                 )
                 await self.org.update_request_status(request_id, "error")
                 await pl.finalize_run("completed")
@@ -82,19 +103,28 @@ class PipelineRunner:
             # ── Step 4: Comply ────────────────────────────────
             compliance_result = await check_compliance(
                 fetch_result, filter_result, self.org, pl,
+                rule_engine=rule_engine,
+                dynamic_rules=rules_by_stage.get("comply", []),
             )
             await pl.flush_audit()
 
             # ── Step 5: Rank ──────────────────────────────────
-            rank_result = await rank_suppliers(fetch_result, compliance_result, pl)
+            rank_result = await rank_suppliers(
+                fetch_result, compliance_result, pl,
+                validation_result=validation_result,
+            )
             await pl.flush_audit()
 
             # ── Steps 6 & 7: Policy + Escalations (parallel) ─
             policy_task = evaluate_policy(
                 fetch_result, rank_result, compliance_result, pl,
+                rule_engine=rule_engine,
+                dynamic_rules=rules_by_stage.get("policy", []),
             )
             escalation_task = compute_escalations(
-                fetch_result, validation_result, compliance_result, rank_result, pl, self.org,
+                fetch_result, validation_result, compliance_result, rank_result, pl,
+                rule_engine=rule_engine,
+                dynamic_rules=rules_by_stage.get("escalate", []),
             )
             policy_result, escalation_result = await asyncio.gather(
                 policy_task, escalation_task,
@@ -122,6 +152,30 @@ class PipelineRunner:
                 pipeline_logger=pl,
             )
             await pl.flush_audit()
+
+            # ── Persist evaluation run (hard_rule_checks, policy_checks, supplier_evaluations) ─
+            output_dict = output.model_dump()
+            try:
+                await self.org.persist_evaluation_run(
+                    request_id=request_id,
+                    run_id=run_id,
+                    output_snapshot=output_dict,
+                    triggered_by="agent",
+                    agent_version="1.0",
+                    trigger_reason="pipeline_complete",
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist evaluation run: %s", exc)
+
+            # ── Persist full pipeline result for frontend ─────
+            await self.org.save_pipeline_result(
+                run_id=run_id,
+                request_id=request_id,
+                processed_at=output.processed_at,
+                output=output_dict,
+                status=output.status,
+                recommendation_status=output.recommendation.status,
+            )
 
             # ── Update request status ─────────────────────────
             if recommendation_result.status == "cannot_proceed":
@@ -185,6 +239,8 @@ class PipelineRunner:
                         )
                         for i in validation_result.issues
                     ],
+                    llm_used=validation_result.llm_used,
+                    llm_fallback=validation_result.llm_fallback,
                 ),
                 policy_evaluation=PolicyEvaluationOutput(),
                 supplier_shortlist=[],
@@ -202,6 +258,8 @@ class PipelineRunner:
                     status="cannot_proceed",
                     reason="Request is missing critical required fields (category and/or currency). Cannot proceed with supplier evaluation.",
                     confidence_score=0,
+                    llm_used=False,
+                    llm_fallback=False,
                 ),
                 audit_trail=AuditTrailOutput(
                     data_sources_used=["requests.json"],

@@ -13,7 +13,7 @@ from app.models.pipeline_io import (
     ValidationResult,
 )
 from app.pipeline.logger import PipelineLogger
-from app.services.rule_evaluator import evaluate_rules_async
+from app.pipeline.rule_engine import RuleEngine
 from app.utils import (
     coerce_budget,
     coerce_quantity,
@@ -50,13 +50,46 @@ RULES:
 """
 
 
+def _build_request_context(fetch_result: FetchResult) -> dict:
+    """Build a flat context dict from the fetch result for rule evaluation."""
+    req = fetch_result.request
+    budget = coerce_budget(req.budget_amount)
+    quantity = coerce_quantity(req.quantity)
+    countries = normalize_delivery_countries(req.delivery_countries)
+    days_until = compute_days_until_required(req.required_by_date, req.created_at)
+
+    min_total = _min_total_price(fetch_result.pricing)
+    min_exp = _min_expedited_lead_time(fetch_result.pricing)
+
+    return {
+        "request_id": req.request_id,
+        "category_l1": req.category_l1,
+        "category_l2": req.category_l2,
+        "budget_amount": budget,
+        "quantity": quantity,
+        "currency": req.currency,
+        "required_by_date": req.required_by_date,
+        "delivery_countries": countries if countries else None,
+        "country": countries[0] if countries else req.country,
+        "days_until_required": days_until,
+        "data_residency_constraint": req.data_residency_constraint,
+        "preferred_supplier_mentioned": req.preferred_supplier_mentioned,
+        "request_text": req.request_text,
+        "request_language": req.request_language,
+        "min_total_price": min_total,
+        "min_expedited_lead_time": min_exp,
+    }
+
+
 async def validate_request(
     fetch_result: FetchResult,
     llm_client: "LLMClient | None",
     pipeline_logger: PipelineLogger,
-    org_client: "OrganisationalClient | None" = None,
+    *,
+    rule_engine: RuleEngine | None = None,
+    dynamic_rules: list[dict] | None = None,
 ) -> ValidationResult:
-    """Run rule-based + LLM validation on the request."""
+    """Run dynamic rules + LLM validation on the request."""
 
     req = fetch_result.request
     budget = coerce_budget(req.budget_amount)
@@ -105,124 +138,51 @@ async def validate_request(
                 rules, request_context, llm_client=llm_client,
             )
 
-            eval_log = triggered[0].get("_eval_log", []) if triggered else []
-            pipeline_logger.audit(
-                "validation", "info", STEP_NAME,
-                f"Evaluated {len(rules)} validation rules, {len(triggered)} triggered",
-                {"rules_evaluated": len(rules), "rules_triggered": len(triggered),
-                 "triggered_ids": [t.get("rule_id") for t in triggered],
-                 "evaluation_log": eval_log},
-            )
+        # ── Phase A: Dynamic rule evaluation ──────────────────
 
-            for t in triggered:
-                rule_id = t.get("rule_id", "")
-                issue_type = "missing_info"
-                if rule_id == "VR-009":
-                    issue_type = "budget_insufficient"
-                elif rule_id in ("VR-010", "VR-008"):
-                    issue_type = "lead_time_infeasible"
-                issues.append(ValidationIssue(
-                    severity=t.get("severity", "high"),
-                    type=issue_type,
-                    field=t.get("field_ref"),
-                    description=t.get("trigger", ""),
-                    action_required=t.get("action_required", ""),
-                ))
-                log_level = "error" if t.get("severity") == "critical" else "warn"
-                pipeline_logger.audit(
-                    "validation", log_level, STEP_NAME,
-                    f"Rule {rule_id} triggered: {t.get('trigger', '')[:200]}",
-                    {"rule_id": rule_id, "severity": t.get("severity"),
-                     "evaluation_mode": t.get("evaluation_mode", "expression"),
-                     "is_blocking": t.get("is_blocking"), "field": t.get("field_ref")},
-                )
-                if t.get("breaks_completeness"):
-                    completeness = False
+        if rule_engine and dynamic_rules:
+            context = _build_request_context(fetch_result)
+            non_llm_rules = [r for r in dynamic_rules if r.get("eval_type") != "custom_llm"]
+            rule_results = await rule_engine.evaluate_rules(non_llm_rules, context)
+
+            for rr in rule_results:
+                if rr.result == "failed":
+                    sev = rr.severity
+                    issue_type = "missing_info" if rr.eval_type == "required" else "validation_rule_failed"
+
+                    if rr.eval_type == "required":
+                        for field_name in rr.actual_values.get("missing", []):
+                            field_sev = sev
+                            issues.append(ValidationIssue(
+                                severity=field_sev,
+                                type="missing_info",
+                                field=field_name,
+                                description=f"{field_name} is missing.",
+                                action_required=f"Requester must provide {field_name}.",
+                            ))
+                            if field_sev == "critical":
+                                completeness = False
+                    else:
+                        issues.append(ValidationIssue(
+                            severity=sev,
+                            type=issue_type,
+                            description=rr.message,
+                            action_required=rr.message,
+                        ))
         else:
-            # Fallback: original hardcoded checks when rules unavailable
-            if not req.category_l1:
-                issues.append(ValidationIssue(
-                    severity="critical", type="missing_info", field="category_l1",
-                    description="category_l1 is missing.",
-                    action_required="Requester must specify L1 category.",
-                ))
-                completeness = False
-            if not req.category_l2:
-                issues.append(ValidationIssue(
-                    severity="critical", type="missing_info", field="category_l2",
-                    description="category_l2 is missing.",
-                    action_required="Requester must specify L2 category.",
-                ))
-                completeness = False
-            if not req.currency:
-                issues.append(ValidationIssue(
-                    severity="critical", type="missing_info", field="currency",
-                    description="currency is missing.",
-                    action_required="Requester must specify currency.",
-                ))
-                completeness = False
-            if budget is None:
-                issues.append(ValidationIssue(
-                    severity="high", type="missing_info", field="budget_amount",
-                    description="budget_amount is null. Pipeline will continue with degraded capability.",
-                    action_required="Requester should provide a budget for accurate pricing comparison.",
-                ))
-            if quantity is None:
-                issues.append(ValidationIssue(
-                    severity="high", type="missing_info", field="quantity",
-                    description="quantity is null. Pricing comparison will be limited to quality-only ranking.",
-                    action_required="Requester should provide a quantity for pricing lookup.",
-                ))
-            if not req.required_by_date:
-                issues.append(ValidationIssue(
-                    severity="medium", type="missing_info", field="required_by_date",
-                    description="required_by_date is not specified.",
-                    action_required="Requester should specify a delivery date for lead time feasibility checks.",
-                ))
-            if not countries:
-                issues.append(ValidationIssue(
-                    severity="high", type="missing_info", field="delivery_countries",
-                    description="No delivery countries specified.",
-                    action_required="Requester must specify at least one delivery country.",
-                ))
-            if days_until is not None and days_until < 0:
-                issues.append(ValidationIssue(
-                    severity="critical", type="lead_time_infeasible", field="required_by_date",
-                    description=f"Required by date {req.required_by_date} is in the past ({days_until} days ago).",
-                    action_required="Requester must provide a future delivery date.",
-                ))
-            if budget is not None and quantity is not None and min_total is not None and budget < min_total:
-                currency = req.currency or "EUR"
-                issues.append(ValidationIssue(
-                    severity="critical", type="budget_insufficient",
-                    description=(
-                        f"Budget of {currency} {budget:,.2f} cannot cover {quantity} units "
-                        f"at any compliant supplier's standard pricing. Minimum total: "
-                        f"{currency} {min_total:,.2f}."
-                    ),
-                    action_required=(
-                        f"Requester must either increase budget to at least "
-                        f"{currency} {min_total:,.2f} or reduce quantity."
-                    ),
-                ))
-            if days_until is not None and days_until >= 0 and min_expedited is not None and days_until < min_expedited:
-                max_expedited = _max_expedited_lead_time(fetch_result.pricing)
-                issues.append(ValidationIssue(
-                    severity="high", type="lead_time_infeasible",
-                    description=(
-                        f"Required delivery date {req.required_by_date} is {days_until} days "
-                        f"from request creation. All suppliers' expedited lead times "
-                        f"({min_expedited}-{max_expedited or min_expedited} days) exceed this window."
-                    ),
-                    action_required=(
-                        "Requester must confirm whether the delivery date is a hard constraint. "
-                        "If so, an escalation is required."
-                    ),
-                ))
+            # Fallback: deterministic checks (backward compatibility)
+            issues, completeness = _deterministic_checks(fetch_result, budget, quantity, days_until)
 
         # ── Phase B: LLM contradiction detection ─────────────
-        # When using rules: VR-LLM is evaluated in Phase A. Otherwise use legacy LLM call.
-        if not rules and llm_client and req.request_text:
+
+        llm_used = False
+        llm_fallback = False
+        requester_instruction: str | None = None
+
+        llm_rules = [r for r in (dynamic_rules or []) if r.get("eval_type") == "custom_llm"]
+        use_direct_llm = not llm_rules  # Use direct LLM call if no custom_llm rules
+
+        if use_direct_llm and llm_client and req.request_text:
             llm_used = True
             user_prompt = _build_validation_prompt(req, budget, quantity)
             llm_result, fallback = await llm_client.structured_call(
@@ -249,8 +209,56 @@ async def validate_request(
                         action_required="Review and resolve the contradiction before proceeding.",
                     ))
 
+        elif llm_rules and rule_engine and req.request_text:
+            llm_used = True
+            context = _build_request_context(fetch_result)
+            llm_results = await rule_engine.evaluate_rules(llm_rules, context)
+            for rr in llm_results:
+                if rr.result == "failed":
+                    issues.append(ValidationIssue(
+                        severity=rr.severity,
+                        type="contradictory",
+                        description=rr.message,
+                        action_required="Review and resolve the contradiction before proceeding.",
+                    ))
+                elif rr.result == "error" or rr.result == "skipped":
+                    llm_fallback = True
+
+        # ── Policy conflict: requester single-supplier vs AT-002 ─────
+        # When requester says "no exception" / "single supplier" but tier requires 2+ quotes
+        instruction = requester_instruction or ""
+        if not instruction and req.request_text:
+            text_lower = req.request_text.lower()
+            if "no exception" in text_lower or "single supplier" in text_lower or "single source" in text_lower:
+                instruction = "no exception — single supplier only"
+                requester_instruction = instruction
+        if fetch_result.approval_tier and fetch_result.approval_tier.get_quotes_required() >= 2:
+            if instruction and (
+                "no exception" in instruction.lower()
+                or "single supplier" in instruction.lower()
+                or "single source" in instruction.lower()
+            ):
+                issues.append(ValidationIssue(
+                    severity="high",
+                    type="policy_conflict",
+                    description=(
+                        f"Requester instruction '{instruction}' conflicts with "
+                        f"{fetch_result.approval_tier.threshold_id}: a contract value above "
+                        f"{req.currency or 'EUR'} {fetch_result.approval_tier.get_min_amount():,.0f} "
+                        f"requires at least {fetch_result.approval_tier.get_quotes_required()} supplier quotes. "
+                        "All compliant pricing options for this quantity exceed that threshold. "
+                        "The requester cannot waive this requirement unilaterally."
+                    ),
+                    action_required=(
+                        f"Procurement policy {fetch_result.approval_tier.threshold_id} must be applied. "
+                        f"{fetch_result.approval_tier.get_quotes_required()} quotes are required and a deviation "
+                        "requires Procurement Manager approval."
+                    ),
+                ))
+
         # ── Build interpretation ──────────────────────────────
 
+        countries = normalize_delivery_countries(req.delivery_countries)
         interpretation = RequestInterpretation(
             category_l1=req.category_l1,
             category_l2=req.category_l2,
@@ -268,11 +276,12 @@ async def validate_request(
             requester_instruction=requester_instruction,
         )
 
-        # Assign issue IDs
+        # Order: budget_insufficient, policy_conflict, lead_time_infeasible, then others
+        _ORDER = {"budget_insufficient": 0, "policy_conflict": 1, "lead_time_infeasible": 2}
+        issues.sort(key=lambda i: (_ORDER.get(i.type, 99), i.type))
         for idx, issue in enumerate(issues, 1):
             issue.issue_id = f"V-{idx:03d}"
 
-        # Log each issue
         for issue in issues:
             log_level = "error" if issue.severity == "critical" else (
                 "warn" if issue.severity == "high" else "info"
@@ -310,8 +319,101 @@ async def validate_request(
         return result
 
 
-def _build_validation_prompt(req: "RequestData", budget: float | None, quantity: int | None) -> str:
-    """Build the user prompt for LLM validation."""
+def _deterministic_checks(
+    fetch_result: FetchResult,
+    budget: float | None,
+    quantity: int | None,
+    days_until: int | None,
+) -> tuple[list[ValidationIssue], bool]:
+    """Fallback deterministic validation (used when no dynamic rules available)."""
+    req = fetch_result.request
+    issues: list[ValidationIssue] = []
+    completeness = True
+
+    if not req.category_l1:
+        issues.append(ValidationIssue(
+            severity="critical", type="missing_info", field="category_l1",
+            description="category_l1 is missing.",
+            action_required="Requester must specify L1 category.",
+        ))
+        completeness = False
+
+    if not req.category_l2:
+        issues.append(ValidationIssue(
+            severity="critical", type="missing_info", field="category_l2",
+            description="category_l2 is missing.",
+            action_required="Requester must specify L2 category.",
+        ))
+        completeness = False
+
+    if not req.currency:
+        issues.append(ValidationIssue(
+            severity="critical", type="missing_info", field="currency",
+            description="currency is missing.",
+            action_required="Requester must specify currency.",
+        ))
+        completeness = False
+
+    if budget is None:
+        issues.append(ValidationIssue(
+            severity="high", type="missing_info", field="budget_amount",
+            description="budget_amount is null. Pipeline will continue with degraded capability.",
+            action_required="Requester should provide a budget for accurate pricing comparison.",
+        ))
+
+    if quantity is None:
+        issues.append(ValidationIssue(
+            severity="high", type="missing_info", field="quantity",
+            description="quantity is null. Pricing comparison will be limited to quality-only ranking.",
+            action_required="Requester should provide a quantity for pricing lookup.",
+        ))
+
+    if not req.required_by_date:
+        issues.append(ValidationIssue(
+            severity="medium", type="missing_info", field="required_by_date",
+            description="required_by_date is not specified.",
+            action_required="Requester should specify a delivery date for lead time feasibility checks.",
+        ))
+
+    countries = normalize_delivery_countries(req.delivery_countries)
+    if not countries:
+        issues.append(ValidationIssue(
+            severity="high", type="missing_info", field="delivery_countries",
+            description="No delivery countries specified.",
+            action_required="Requester must specify at least one delivery country.",
+        ))
+
+    if days_until is not None and days_until < 0:
+        issues.append(ValidationIssue(
+            severity="critical", type="lead_time_infeasible", field="required_by_date",
+            description=f"Required by date {req.required_by_date} is in the past ({days_until} days ago).",
+            action_required="Requester must provide a future delivery date.",
+        ))
+
+    if budget is not None and quantity is not None and fetch_result.pricing:
+        min_total = _min_total_price(fetch_result.pricing)
+        if min_total is not None and budget < min_total:
+            currency = req.currency or "EUR"
+            issues.append(ValidationIssue(
+                severity="critical", type="budget_insufficient",
+                description=f"Budget of {currency} {budget:,.2f} cannot cover {quantity} units at any supplier's pricing. Minimum total: {currency} {min_total:,.2f}.",
+                action_required=f"Requester must either increase budget to at least {currency} {min_total:,.2f} or reduce quantity.",
+            ))
+
+    if days_until is not None and days_until >= 0 and fetch_result.pricing:
+        min_expedited = _min_expedited_lead_time(fetch_result.pricing)
+        if min_expedited is not None and days_until < min_expedited:
+            max_expedited = _max_expedited_lead_time(fetch_result.pricing)
+            issues.append(ValidationIssue(
+                severity="high", type="lead_time_infeasible",
+                description=f"Required delivery date {req.required_by_date} is {days_until} days from request creation. All suppliers' expedited lead times ({min_expedited}-{max_expedited or min_expedited} days) exceed this window.",
+                action_required="Requester must confirm whether the delivery date is a hard constraint.",
+            ))
+
+    return issues, completeness
+
+
+def _build_validation_prompt(req, budget: float | None, quantity: int | None) -> str:
     fields = [
         f"request_id: {req.request_id}",
         f"category_l1: {req.category_l1}",
@@ -333,7 +435,6 @@ def _build_validation_prompt(req: "RequestData", budget: float | None, quantity:
 
 
 def _min_total_price(pricing: list) -> float | None:
-    """Find the minimum total price across all pricing tiers."""
     totals = []
     for p in pricing:
         val = p.total_price if hasattr(p, "total_price") else p.get("total_price")
@@ -346,7 +447,6 @@ def _min_total_price(pricing: list) -> float | None:
 
 
 def _min_expedited_lead_time(pricing: list) -> int | None:
-    """Find the minimum expedited lead time across all pricing tiers."""
     times = []
     for p in pricing:
         val = p.expedited_lead_time_days if hasattr(p, "expedited_lead_time_days") else p.get("expedited_lead_time_days")
@@ -356,7 +456,6 @@ def _min_expedited_lead_time(pricing: list) -> int | None:
 
 
 def _max_expedited_lead_time(pricing: list) -> int | None:
-    """Find the maximum expedited lead time across all pricing tiers."""
     times = []
     for p in pricing:
         val = p.expedited_lead_time_days if hasattr(p, "expedited_lead_time_days") else p.get("expedited_lead_time_days")

@@ -4,13 +4,10 @@ httpx
 pydantic-settings
 python-dotenv
 anthropic
-<<<<<<< Updated upstream
 simpleeval
-=======
 reportlab
 
 # Test dependencies
 pytest
 pytest-asyncio
 pytest-cov
->>>>>>> Stashed changes

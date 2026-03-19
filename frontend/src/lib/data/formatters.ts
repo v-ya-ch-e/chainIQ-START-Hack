@@ -16,21 +16,29 @@ export function formatCurrency(
 }
 
 export function formatDate(date: string) {
+  if (!date || typeof date !== "string") return "—"
+  const d = new Date(date)
+  if (Number.isNaN(d.getTime())) return "—"
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "short",
     year: "numeric",
-  }).format(new Date(date))
+    timeZone: "UTC",
+  }).format(d)
 }
 
 export function formatDateTime(date: string) {
+  if (!date || typeof date !== "string") return "—"
+  const d = new Date(date)
+  if (Number.isNaN(d.getTime())) return "—"
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
     month: "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(date))
+    timeZone: "UTC",
+  }).format(d)
 }
 
 export function formatNumber(value: number) {

@@ -1,4 +1,9 @@
-import { BellRing, Database, Inbox, LayoutDashboard, ShieldCheck } from "lucide-react"
+import {
+  BellRing,
+  Inbox,
+  LayoutDashboard,
+  ShieldCheck,
+} from "lucide-react"
 
 export interface NavItem {
   href: string
@@ -12,5 +17,5 @@ export const navItems: NavItem[] = [
   { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/escalations", label: "Escalations", icon: BellRing },
   { href: "/audit", label: "Audit", icon: ShieldCheck },
-  { href: "/data", label: "Data", icon: Database, disabled: true },
+  // Data screen intentionally hidden from primary navigation for UX clarity.
 ]

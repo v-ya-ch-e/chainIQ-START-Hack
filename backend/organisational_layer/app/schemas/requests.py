@@ -74,6 +74,15 @@ class RequestCreate(BaseModel):
 
 
 class RequestUpdate(BaseModel):
+    request_channel: str | None = None
+    request_language: str | None = None
+    business_unit: str | None = None
+    country: str | None = None
+    site: str | None = None
+    requester_id: str | None = None
+    requester_role: str | None = None
+    submitted_for_id: str | None = None
+    category_id: int | None = None
     title: str | None = None
     request_text: str | None = None
     currency: str | None = None
@@ -87,6 +96,8 @@ class RequestUpdate(BaseModel):
     data_residency_constraint: bool | None = None
     esg_requirement: bool | None = None
     status: str | None = None
+    delivery_countries: list[str] | None = None
+    scenario_tags: list[str] | None = None
 
 
 class RequestOut(RequestBase):
