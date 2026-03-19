@@ -274,7 +274,7 @@ type DashboardSnapshot = {
 }
 
 const DASHBOARD_CACHE_TTL_MS = 15_000
-const AUDIT_FEED_LIMIT = 500
+const AUDIT_PAGE_SIZE = 500
 
 const STATUS_MAP: Record<string, CaseStatus> = {
   new: "received",
@@ -773,7 +773,7 @@ async function buildDashboardMetricsFromData({
         ? `${topSupplier.supplier_name}`
         : "—",
       helper: topWinRate?.win_rate
-        ? `Win rate ${(Number(topWinRate.win_rate) * 100).toFixed(1)}%`
+        ? `Win rate ${Number(topWinRate.win_rate).toFixed(1)}%`
         : "—",
       tone: "info",
     },
@@ -990,6 +990,7 @@ function mapAuditEvent(
     stepName: entry.step_name,
     source: entry.source,
     details: entry.details,
+    runId: entry.run_id,
   }
 }
 
@@ -1017,41 +1018,53 @@ function buildAuditFeedMeta({
   }
 }
 
-async function fetchAuditListWithFallback(
-  limit = AUDIT_FEED_LIMIT,
-): Promise<AuditFetchResult> {
+async function fetchAllAuditPages(): Promise<AuditListOut> {
+  const items: AuditListOut["items"] = []
+  let skip = 0
+  let total = 0
+
+  do {
+    const page = (await chainIqApi.orgLogs.audit.list({
+      skip,
+      limit: AUDIT_PAGE_SIZE,
+    })) as AuditListOut
+    items.push(...page.items)
+    total = Number.isFinite(page.total) ? page.total : items.length
+    skip += AUDIT_PAGE_SIZE
+  } while (skip < total)
+
+  return { items, total }
+}
+
+async function fetchAuditListWithFallback(): Promise<AuditFetchResult> {
   try {
-    const audit = (await chainIqApi.orgLogs.audit.list({ limit })) as AuditListOut
-    const totalKnown = Number.isFinite(audit.total) ? audit.total : audit.items.length
+    const audit = await fetchAllAuditPages()
     return {
       audit,
       meta: buildAuditFeedMeta({
         mode: "fresh",
         source: "orgLogs",
-        totalKnown,
+        totalKnown: audit.total,
         fetchedCount: audit.items.length,
       }),
     }
   } catch (primaryError) {
     try {
-      const fallbackAudit = (await chainIqApi.orgLogs.audit.list()) as AuditListOut
+      const fallbackAudit = (await chainIqApi.orgLogs.audit.list({
+        limit: AUDIT_PAGE_SIZE,
+      })) as AuditListOut
       const totalKnown = Number.isFinite(fallbackAudit.total)
         ? fallbackAudit.total
         : fallbackAudit.items.length
-      const slicedItems = fallbackAudit.items.slice(0, limit)
       return {
-        audit: {
-          ...fallbackAudit,
-          items: slicedItems,
-          total: totalKnown,
-        },
+        audit: fallbackAudit,
         meta: buildAuditFeedMeta({
           mode: "degraded",
           source: "orgLogsFallback",
           totalKnown,
-          fetchedCount: slicedItems.length,
+          fetchedCount: fallbackAudit.items.length,
           warning:
-            "Primary audit feed query failed. Fallback snapshot loaded with reduced reliability.",
+            "Primary audit feed pagination failed. Showing first page only.",
         }),
       }
     } catch {
@@ -1633,8 +1646,8 @@ export async function getAuditPageData(): Promise<AuditPageData> {
       label: "Audit Entries",
       value: auditResult.meta.totalKnown.toString(),
       helper: auditResult.meta.isTruncated
-        ? `Showing ${auditResult.meta.fetchedCount} of ${auditResult.meta.totalKnown} entries (current fetch limit ${AUDIT_FEED_LIMIT}).`
-        : "Structured pipeline events available for review.",
+        ? `Showing ${auditResult.meta.fetchedCount} of ${auditResult.meta.totalKnown} entries.`
+        : `${auditResult.meta.totalKnown} structured pipeline events available for review.`,
     },
     {
       label: "Escalations In Queue",

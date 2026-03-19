@@ -191,9 +191,6 @@ function AuditTimeline({
                     </Link>
                   )}
                 </div>
-                <p className="text-sm text-muted-foreground leading-relaxed">
-                  {event.description}
-                </p>
                 {event.category && (
                   <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground opacity-70">
                     {event.category}
@@ -201,7 +198,7 @@ function AuditTimeline({
                   </p>
                 )}
               </div>
-              <time className="mt-1 whitespace-nowrap text-xs font-medium tabular-nums text-muted-foreground sm:mt-0">
+              <time className="mt-1 whitespace-nowrap text-xs font-medium tabular-nums text-muted-foreground sm:mt-0" suppressHydrationWarning>
                 {formatDateTime(event.timestamp)}
               </time>
             </div>
@@ -216,18 +213,24 @@ const AuditWorkspaceToolbar = memo(function AuditWorkspaceToolbar({
   query,
   kindFilter,
   levelFilter,
+  runFilter,
+  runOptions,
   onQueryChange,
   onKindChange,
   onLevelChange,
+  onRunChange,
   onReset,
   canReset,
 }: {
   query: string
   kindFilter: string
   levelFilter: string
+  runFilter?: string
+  runOptions?: FilterOption[]
   onQueryChange: (value: string) => void
   onKindChange: (value: string | null) => void
   onLevelChange: (value: string | null) => void
+  onRunChange?: (value: string | null) => void
   onReset: () => void
   canReset: boolean
 }) {
@@ -241,6 +244,9 @@ const AuditWorkspaceToolbar = memo(function AuditWorkspaceToolbar({
     levelFilter,
     "All levels",
   )
+  const runTriggerLabel = runOptions
+    ? labelForFilterValue(runOptions, runFilter ?? "all", "All runs")
+    : undefined
 
   return (
     <TopbarFilters>
@@ -299,6 +305,29 @@ const AuditWorkspaceToolbar = memo(function AuditWorkspaceToolbar({
         </SelectContent>
       </Select>
 
+      {runOptions && runOptions.length > 0 && onRunChange && (
+        <Select value={runFilter ?? "all"} onValueChange={onRunChange}>
+          <SelectTrigger
+            size="sm"
+            className={cn(
+              "h-8 min-w-[12rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[14rem] sm:grow-0",
+              topbarFilterControlClassName,
+            )}
+          >
+            <span className="truncate text-left" data-slot="select-value">
+              {runTriggerLabel}
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {runOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+
       <Button
         variant="outline"
         size="sm"
@@ -317,7 +346,30 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
   const [query, setQuery] = useState("")
   const [kindFilter, setKindFilter] = useState("all")
   const [levelFilter, setLevelFilter] = useState("all")
+  const [runFilter, setRunFilter] = useState("all")
   const setHeaderActions = useSetWorkspaceHeaderActions()
+
+  const availableRuns = useMemo(() => {
+    const runMap = new Map<string, { runId: string; latestTimestamp: string; caseIds: Set<string> }>()
+    for (const event of feed) {
+      if (!event.runId) continue
+      const existing = runMap.get(event.runId)
+      if (existing) {
+        existing.caseIds.add(event.caseId)
+        if (event.timestamp > existing.latestTimestamp) {
+          existing.latestTimestamp = event.timestamp
+        }
+      } else {
+        runMap.set(event.runId, {
+          runId: event.runId,
+          latestTimestamp: event.timestamp,
+          caseIds: new Set([event.caseId]),
+        })
+      }
+    }
+    return Array.from(runMap.values())
+      .sort((a, b) => b.latestTimestamp.localeCompare(a.latestTimestamp))
+  }, [feed])
 
   const filteredFeed = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -332,10 +384,11 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
 
       const matchesKind = kindFilter === "all" || event.kind === kindFilter
       const matchesLevel = levelFilter === "all" || event.level === levelFilter
+      const matchesRun = runFilter === "all" || event.runId === runFilter
 
-      return matchesSearch && matchesKind && matchesLevel
+      return matchesSearch && matchesKind && matchesLevel && matchesRun
     })
-  }, [feed, kindFilter, levelFilter, query])
+  }, [feed, kindFilter, levelFilter, runFilter, query])
 
   const actionableEvents = useMemo(
     () =>
@@ -367,22 +420,28 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
     }
 
     return Array.from(groups.values())
-      .map((group) => ({
-        ...group,
-        events: group.events.sort(
+      .map((group) => {
+        const sorted = group.events.sort(
           (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
-        ),
-      }))
+        )
+        if (runFilter !== "all") return { ...group, events: sorted }
+        const latestRunId = sorted.find((e) => e.runId)?.runId
+        const deduped = latestRunId
+          ? sorted.filter((e) => !e.runId || e.runId === latestRunId)
+          : sorted
+        return { ...group, events: deduped }
+      })
       .sort((a, b) => {
         const aLatest = a.events[0]?.timestamp ?? ""
         const bLatest = b.events[0]?.timestamp ?? ""
         return new Date(bLatest).getTime() - new Date(aLatest).getTime()
       })
-  }, [filteredFeed])
+  }, [filteredFeed, runFilter])
 
   const activeFiltersCount =
     Number(kindFilter !== "all") +
     Number(levelFilter !== "all") +
+    Number(runFilter !== "all") +
     Number(query.trim().length > 0)
   const hasActiveFilters = activeFiltersCount > 0
 
@@ -390,6 +449,7 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
     setQuery("")
     setKindFilter("all")
     setLevelFilter("all")
+    setRunFilter("all")
   }, [])
 
   const handleKindFilterChange = useCallback((value: string | null) => {
@@ -400,6 +460,21 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
     setLevelFilter(value ?? "all")
   }, [])
 
+  const handleRunFilterChange = useCallback((value: string | null) => {
+    setRunFilter(value ?? "all")
+  }, [])
+
+  const runOptions: FilterOption[] = useMemo(() => {
+    if (availableRuns.length === 0) return []
+    return [
+      { value: "all", label: "All runs (latest per case)" },
+      ...availableRuns.map((run, index) => ({
+        value: run.runId,
+        label: `Run ${index + 1} · ${Array.from(run.caseIds).join(", ")}`,
+      })),
+    ]
+  }, [availableRuns])
+
   useLayoutEffect(
     () => {
       setHeaderActions(
@@ -407,9 +482,12 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
           query={query}
           kindFilter={kindFilter}
           levelFilter={levelFilter}
+          runFilter={runFilter}
+          runOptions={runOptions.length > 0 ? runOptions : undefined}
           onQueryChange={setQuery}
           onKindChange={handleKindFilterChange}
           onLevelChange={handleLevelFilterChange}
+          onRunChange={handleRunFilterChange}
           onReset={resetFilters}
           canReset={hasActiveFilters}
         />,
@@ -421,9 +499,12 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
       query,
       kindFilter,
       levelFilter,
+      runFilter,
+      runOptions,
       hasActiveFilters,
       handleKindFilterChange,
       handleLevelFilterChange,
+      handleRunFilterChange,
       resetFilters,
     ],
   )
@@ -445,7 +526,7 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
               <AlertTriangle className="size-4" />
               Audit data quality notice
             </p>
-            <p className="text-xs text-amber-800">
+            <p className="text-xs text-amber-800" suppressHydrationWarning>
               {feedMeta.mode === "degraded"
                 ? feedMeta.warning ?? "Audit feed is currently degraded."
                 : "Audit feed is truncated to the current fetch limit."}{" "}
@@ -565,7 +646,7 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
                       <AccordionItem
                         key={caseId}
                         value={caseId}
-                        className="mb-4 overflow-hidden rounded-lg border bg-card px-4 shadow-sm"
+                        className="mb-4 rounded-lg border bg-card px-4 shadow-sm"
                       >
                         <AccordionTrigger className="hover:no-underline py-4">
                           <div className="flex flex-col items-start gap-1 text-left">
@@ -575,12 +656,14 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
                             </span>
                           </div>
                         </AccordionTrigger>
-                        <AccordionContent className="pt-6 border-t">
-                          <AuditTimeline
-                            events={events}
-                            showCaseId={false}
-                            emptyMessage="No entries in this request group."
-                          />
+                        <AccordionContent className="pt-6 border-t overflow-visible">
+                          <div className="pl-5">
+                            <AuditTimeline
+                              events={events}
+                              showCaseId={false}
+                              emptyMessage="No entries in this request group."
+                            />
+                          </div>
                         </AccordionContent>
                       </AccordionItem>
                     ))}
