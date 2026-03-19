@@ -90,11 +90,17 @@ async def list_runs(
     org: OrganisationalClient = Depends(get_org_client),
 ):
     """List all pipeline runs with filters."""
+    # #region agent log
+    logger.warning("[DEBUG-105a7f] list_runs called: request_id=%s status=%s skip=%s limit=%s", request_id, status, skip, limit)
+    # #endregion
     try:
         return await org.get_runs(
             request_id=request_id, status=status, skip=skip, limit=limit,
         )
     except Exception as exc:
+        # #region agent log
+        logger.warning("[DEBUG-105a7f] org.get_runs FAILED: %s", exc)
+        # #endregion
         raise HTTPException(status_code=502, detail=f"Org Layer unreachable: {exc}")
 
 

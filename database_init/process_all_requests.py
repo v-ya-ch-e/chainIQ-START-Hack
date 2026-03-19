@@ -43,7 +43,7 @@ async def fetch_request_ids(
         if status_filter and status_filter != "all":
             params["status"] = status_filter
 
-        resp = await client.get(f"{org_url}/api/requests", params=params)
+        resp = await client.get(f"{org_url}/api/requests/", params=params)
         resp.raise_for_status()
         data = resp.json()
 
@@ -118,7 +118,7 @@ async def run_processing(
     dry_run: bool = False,
 ) -> dict:
     """Process all matching requests. Returns summary dict for testability."""
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0), follow_redirects=True) as client:
         print("=== Process All Requests ===\n")
         print(f"Org Layer:     {org_url}")
         print(f"Logical Layer: {logical_url}")
@@ -140,7 +140,7 @@ async def run_processing(
                 print(f"  {rid}")
             return {"dry_run": True, "total": len(request_ids), "request_ids": request_ids}
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout + 10)) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout + 10), follow_redirects=True) as client:
         semaphore = asyncio.Semaphore(concurrency)
         results: list[dict] = []
         succeeded = 0

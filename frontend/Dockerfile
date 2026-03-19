@@ -17,7 +17,9 @@ CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]
 
 FROM deps AS builder
 ARG BACKEND_INTERNAL_URL=http://organisational-layer:8000
+ARG LOGICAL_BACKEND_INTERNAL_URL=http://logical-layer:8080
 ENV BACKEND_INTERNAL_URL=${BACKEND_INTERNAL_URL}
+ENV LOGICAL_BACKEND_INTERNAL_URL=${LOGICAL_BACKEND_INTERNAL_URL}
 COPY . .
 RUN npm run build
 
