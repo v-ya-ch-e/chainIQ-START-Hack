@@ -19,7 +19,7 @@ Full-stack prototype for an audit-ready sourcing agent.
 cp .env.example .env
 ```
 
-You can keep defaults for local development.
+`BACKEND_INTERNAL_URL` is required. Keep `http://backend:8000` when running in Docker Compose.
 
 ## Development mode (hot reload)
 
@@ -107,6 +107,7 @@ cp .env.aws.example .env.aws
 ```
 
 Update `.env.aws` with your RDS credentials (`DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`).
+Also keep `BACKEND_INTERNAL_URL=http://backend:8000` for internal frontend-to-backend routing.
 
 ### 3) Start services
 

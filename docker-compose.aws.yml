@@ -19,7 +19,7 @@ services:
       target: runner
     environment:
       NODE_ENV: production
-      BACKEND_INTERNAL_URL: http://backend:8000
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:?BACKEND_INTERNAL_URL is required}
       NEXT_PUBLIC_API_BASE_URL: /api
     expose:
       - "3000"

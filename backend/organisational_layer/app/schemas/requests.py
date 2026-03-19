@@ -93,6 +93,10 @@ class RequestOut(RequestBase):
     model_config = {"from_attributes": True}
 
 
+class RequestListItemOut(RequestBase):
+    scenario_tags: list[str] = []
+
+
 class RequestDetailOut(RequestBase):
     delivery_countries: list[RequestDeliveryCountryOut] = []
     scenario_tags: list[RequestScenarioTagOut] = []
@@ -103,7 +107,7 @@ class RequestDetailOut(RequestBase):
 
 
 class RequestListOut(BaseModel):
-    items: list[RequestOut]
+    items: list[RequestListItemOut]
     total: int
     skip: int
     limit: int

@@ -7,6 +7,7 @@ from app.models.requests import Request, RequestDeliveryCountry, RequestScenario
 from app.schemas.requests import (
     RequestCreate,
     RequestDetailOut,
+    RequestListItemOut,
     RequestListOut,
     RequestOut,
     RequestUpdate,
@@ -39,8 +40,21 @@ def list_requests(
         q = q.join(RequestScenarioTag).filter(RequestScenarioTag.tag == tag)
 
     total = q.count()
-    items = q.order_by(Request.request_id).offset(skip).limit(limit).all()
-    return RequestListOut(items=items, total=total, skip=skip, limit=limit)
+    items = (
+        q.options(joinedload(Request.scenario_tags))
+        .order_by(Request.request_id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    items_out = [
+        RequestListItemOut(
+            **RequestOut.model_validate(item).model_dump(),
+            scenario_tags=[entry.tag for entry in item.scenario_tags],
+        )
+        for item in items
+    ]
+    return RequestListOut(items=items_out, total=total, skip=skip, limit=limit)
 
 
 @router.get("/{request_id}", response_model=RequestDetailOut)
