@@ -1,9 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.database import get_db
-from app.models.logs import PipelineLogEntry, PipelineRun
+from app.models.logs import AuditLog, PipelineLogEntry, PipelineRun
 from app.schemas.logs import (
+    AuditLogBatchCreate,
+    AuditLogCreate,
+    AuditLogListOut,
+    AuditLogOut,
+    AuditLogSummaryOut,
+    CategoryCount,
+    LevelCount,
     PipelineLogEntryCreate,
     PipelineLogEntryOut,
     PipelineLogEntryUpdate,
@@ -123,3 +131,174 @@ def update_entry(entry_id: int, body: PipelineLogEntryUpdate, db: Session = Depe
     db.commit()
     db.refresh(entry)
     return entry
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs
+# ---------------------------------------------------------------------------
+
+@router.post("/audit", response_model=AuditLogOut, status_code=201)
+def create_audit_log(body: AuditLogCreate, db: Session = Depends(get_db)):
+    entry = AuditLog(
+        request_id=body.request_id,
+        run_id=body.run_id,
+        timestamp=body.timestamp,
+        level=body.level,
+        category=body.category,
+        step_name=body.step_name,
+        message=body.message,
+        details=body.details,
+        source=body.source,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.post("/audit/batch", response_model=list[AuditLogOut], status_code=201)
+def create_audit_logs_batch(body: AuditLogBatchCreate, db: Session = Depends(get_db)):
+    rows = [
+        AuditLog(
+            request_id=e.request_id,
+            run_id=e.run_id,
+            timestamp=e.timestamp,
+            level=e.level,
+            category=e.category,
+            step_name=e.step_name,
+            message=e.message,
+            details=e.details,
+            source=e.source,
+        )
+        for e in body.entries
+    ]
+    db.add_all(rows)
+    db.commit()
+    for row in rows:
+        db.refresh(row)
+    return rows
+
+
+@router.get("/audit/by-request/{request_id}", response_model=AuditLogListOut)
+def get_audit_logs_by_request(
+    request_id: str,
+    level: str | None = Query(None),
+    category: str | None = Query(None),
+    run_id: str | None = Query(None),
+    step_name: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    q = db.query(AuditLog).filter(AuditLog.request_id == request_id)
+    if level:
+        q = q.filter(AuditLog.level == level)
+    if category:
+        q = q.filter(AuditLog.category == category)
+    if run_id:
+        q = q.filter(AuditLog.run_id == run_id)
+    if step_name:
+        q = q.filter(AuditLog.step_name == step_name)
+    total = q.count()
+    items = q.order_by(AuditLog.timestamp.asc()).offset(skip).limit(limit).all()
+    return AuditLogListOut(items=items, total=total)
+
+
+@router.get("/audit/summary/{request_id}", response_model=AuditLogSummaryOut)
+def get_audit_log_summary(request_id: str, db: Session = Depends(get_db)):
+    base = db.query(AuditLog).filter(AuditLog.request_id == request_id)
+
+    total = base.count()
+    if total == 0:
+        return AuditLogSummaryOut(
+            request_id=request_id,
+            total_entries=0,
+            by_level=[],
+            by_category=[],
+            distinct_policies=[],
+            distinct_suppliers=[],
+            escalation_count=0,
+        )
+
+    by_level = [
+        LevelCount(level=row[0], count=row[1])
+        for row in (
+            base.with_entities(AuditLog.level, func.count())
+            .group_by(AuditLog.level)
+            .all()
+        )
+    ]
+
+    by_category = [
+        CategoryCount(category=row[0], count=row[1])
+        for row in (
+            base.with_entities(AuditLog.category, func.count())
+            .group_by(AuditLog.category)
+            .all()
+        )
+    ]
+
+    escalation_count = base.filter(AuditLog.category == "escalation").count()
+
+    time_range = base.with_entities(
+        func.min(AuditLog.timestamp), func.max(AuditLog.timestamp)
+    ).one()
+
+    policy_rows = (
+        base.filter(AuditLog.category == "policy")
+        .with_entities(AuditLog.details)
+        .all()
+    )
+    policies: set[str] = set()
+    for (det,) in policy_rows:
+        if isinstance(det, dict) and "policy_id" in det:
+            policies.add(det["policy_id"])
+
+    supplier_rows = (
+        base.filter(AuditLog.category.in_(["supplier_filter", "compliance", "ranking", "pricing"]))
+        .with_entities(AuditLog.details)
+        .all()
+    )
+    suppliers: set[str] = set()
+    for (det,) in supplier_rows:
+        if isinstance(det, dict) and "supplier_id" in det:
+            suppliers.add(det["supplier_id"])
+
+    return AuditLogSummaryOut(
+        request_id=request_id,
+        total_entries=total,
+        by_level=by_level,
+        by_category=by_category,
+        distinct_policies=sorted(policies),
+        distinct_suppliers=sorted(suppliers),
+        escalation_count=escalation_count,
+        first_event=time_range[0],
+        last_event=time_range[1],
+    )
+
+
+@router.get("/audit", response_model=AuditLogListOut)
+def list_audit_logs(
+    request_id: str | None = Query(None),
+    level: str | None = Query(None),
+    category: str | None = Query(None),
+    run_id: str | None = Query(None),
+    step_name: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    q = db.query(AuditLog)
+    if request_id:
+        q = q.filter(AuditLog.request_id == request_id)
+    if level:
+        q = q.filter(AuditLog.level == level)
+    if category:
+        q = q.filter(AuditLog.category == category)
+    if run_id:
+        q = q.filter(AuditLog.run_id == run_id)
+    if step_name:
+        q = q.filter(AuditLog.step_name == step_name)
+    total = q.count()
+    items = q.order_by(AuditLog.timestamp.desc()).offset(skip).limit(limit).all()
+    return AuditLogListOut(items=items, total=total)

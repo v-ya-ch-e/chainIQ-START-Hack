@@ -28,6 +28,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 # ---------------------------------------------------------------------------
 
 DROP_TABLES = [
+    "audit_logs",
     "pipeline_log_entries",
     "pipeline_runs",
     "escalation_rule_currencies",
@@ -374,6 +375,27 @@ CREATE_TABLES = [
         FOREIGN KEY (run_id) REFERENCES pipeline_runs(run_id),
         INDEX idx_entry_run (run_id),
         INDEX idx_entry_step (step_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """,
+    # -- Audit logs --
+    """
+    CREATE TABLE audit_logs (
+        id            INT AUTO_INCREMENT PRIMARY KEY,
+        request_id    VARCHAR(20)  NOT NULL,
+        run_id        VARCHAR(36),
+        timestamp     DATETIME(3)  NOT NULL,
+        level         VARCHAR(10)  NOT NULL DEFAULT 'info',
+        category      VARCHAR(40)  NOT NULL DEFAULT 'general',
+        step_name     VARCHAR(60),
+        message       TEXT         NOT NULL,
+        details       JSON,
+        source        VARCHAR(30)  NOT NULL DEFAULT 'logical_layer',
+        FOREIGN KEY (request_id) REFERENCES requests(request_id),
+        INDEX idx_audit_request (request_id),
+        INDEX idx_audit_run (run_id),
+        INDEX idx_audit_timestamp (timestamp),
+        INDEX idx_audit_category (category),
+        INDEX idx_audit_level (level)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     """,
 ]
@@ -934,7 +956,7 @@ def run_migration():
         "category_rules",
         "geography_rules", "geography_rule_countries", "geography_rule_applies_to_categories",
         "escalation_rules", "escalation_rule_currencies",
-        "pipeline_runs", "pipeline_log_entries",
+        "pipeline_runs", "pipeline_log_entries", "audit_logs",
     ]
     total = 0
     for table in all_tables:

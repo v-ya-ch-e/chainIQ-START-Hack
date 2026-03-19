@@ -26,7 +26,7 @@ from app.models.policies import (
     EscalationRule,
     EscalationRuleCurrency,
 )
-from app.models.logs import PipelineRun, PipelineLogEntry
+from app.models.logs import PipelineRun, PipelineLogEntry, AuditLog
 
 __all__ = [
     "Category",
@@ -53,4 +53,5 @@ __all__ = [
     "EscalationRuleCurrency",
     "PipelineRun",
     "PipelineLogEntry",
+    "AuditLog",
 ]

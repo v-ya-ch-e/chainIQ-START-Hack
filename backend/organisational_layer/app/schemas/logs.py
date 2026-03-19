@@ -85,3 +85,65 @@ class PipelineLogEntryUpdate(BaseModel):
     output_summary: Any | None = None
     error_message: str | None = None
     metadata_: Any | None = None
+
+
+# ---------------------------------------------------------------------------
+# Audit Logs
+# ---------------------------------------------------------------------------
+
+class AuditLogCreate(BaseModel):
+    request_id: str
+    run_id: str | None = None
+    timestamp: datetime
+    level: str = "info"
+    category: str = "general"
+    step_name: str | None = None
+    message: str
+    details: Any | None = None
+    source: str = "logical_layer"
+
+
+class AuditLogBatchCreate(BaseModel):
+    entries: list[AuditLogCreate]
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    request_id: str
+    run_id: str | None = None
+    timestamp: datetime
+    level: str
+    category: str
+    step_name: str | None = None
+    message: str
+    details: Any | None = None
+    source: str
+
+    model_config = {"from_attributes": True}
+
+
+class AuditLogListOut(BaseModel):
+    items: list[AuditLogOut]
+    total: int
+
+
+class CategoryCount(BaseModel):
+    category: str
+    count: int
+
+
+class LevelCount(BaseModel):
+    level: str
+    count: int
+
+
+class AuditLogSummaryOut(BaseModel):
+    request_id: str
+    total_entries: int
+    by_level: list[LevelCount]
+    by_category: list[CategoryCount]
+    distinct_policies: list[str]
+    distinct_suppliers: list[str]
+    escalation_count: int
+    first_event: datetime | None = None
+    last_event: datetime | None = None

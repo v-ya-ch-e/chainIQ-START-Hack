@@ -1,5 +1,5 @@
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME, JSON
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -42,3 +42,18 @@ class PipelineLogEntry(Base):
     metadata_ = Column("metadata", JSON, nullable=True)
 
     run = relationship("PipelineRun", back_populates="entries")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    request_id = Column(String(20), ForeignKey("requests.request_id"), nullable=False, index=True)
+    run_id = Column(String(36), nullable=True, index=True)
+    timestamp = Column(MYSQL_DATETIME(fsp=3), nullable=False)
+    level = Column(String(10), nullable=False, default="info")
+    category = Column(String(40), nullable=False, default="general", index=True)
+    step_name = Column(String(60), nullable=True)
+    message = Column(Text, nullable=False)
+    details = Column(JSON, nullable=True)
+    source = Column(String(30), nullable=False, default="logical_layer")
