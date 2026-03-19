@@ -57,6 +57,7 @@ const EMPTY_EXTRACTION: ExtractionResult = {
   missingRequired: [],
   warnings: [],
   extractionStrength: "low",
+  fallbackUsed: false,
 }
 
 interface CaseIntakeWizardProps {
@@ -78,6 +79,7 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
   const [savingDraft, setSavingDraft] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [extractNotice, setExtractNotice] = useState<string | null>(null)
 
   useEffect(() => {
     let mounted = true
@@ -171,9 +173,17 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
 
   async function handleExtract() {
     setError(null)
+    setExtractNotice(null)
     setProcessing(true)
     setStep("processing")
     try {
+      await new Promise<void>((resolve) => {
+        if (typeof window === "undefined") {
+          resolve()
+          return
+        }
+        window.requestAnimationFrame(() => resolve())
+      })
       const extraction = await extractCaseInput({
         sourceType: mode,
         sourceText,
@@ -183,6 +193,14 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
       })
       const mappedExtraction = applyCategoryHintMapping(extraction, categories)
       setResult(mappedExtraction)
+      if (
+        mappedExtraction.fallbackUsed ||
+        mappedExtraction.warnings.some((warning) => warning.code === "INTAKE_FALLBACK")
+      ) {
+        setExtractNotice(
+          "Extraction fallback mode is active. Review all inferred fields before creating the case.",
+        )
+      }
       const shouldSkipCompletion =
         mappedExtraction.extractionStrength === "strong" &&
         computeMissingRequiredFields(mappedExtraction.draft).length === 0
@@ -308,6 +326,7 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
           </CardHeader>
         </Card>
       ) : null}
+      {extractNotice ? <Alert variant="warning">{extractNotice}</Alert> : null}
 
       {step === "processing" ? (
         <Card className="mx-auto max-w-5xl">

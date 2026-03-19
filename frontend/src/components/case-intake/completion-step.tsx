@@ -93,9 +93,9 @@ export function CompletionStep({
 
   return (
     <div className="space-y-4">
-      {warnings.map((warning) => (
+      {warnings.map((warning, index) => (
         <Alert
-          key={warning.code}
+          key={`${warning.code}-${index}`}
           variant={warning.severity === "critical" || warning.severity === "high" ? "destructive" : "warning"}
         >
           {warning.message}

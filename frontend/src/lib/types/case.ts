@@ -143,6 +143,8 @@ export interface EvaluationRunDetail {
   startedAt: string
   finishedAt: string | null
   supplierBreakdowns: SupplierRuleBreakdown[]
+  supplierShortlist?: SupplierRow[]
+  excludedSuppliersFromRun?: ExcludedSupplier[]
 }
 
 export interface ExcludedSupplier {
@@ -410,6 +412,7 @@ export interface ExtractionResult {
   missingRequired: Array<keyof CaseDraftPayload>
   warnings: ExtractionWarning[]
   extractionStrength: "strong" | "partial" | "low"
+  fallbackUsed: boolean
 }
 
 export type CreateCasePayload = CaseDraftPayload

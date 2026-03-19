@@ -21,6 +21,7 @@ import type {
   RuleCheckResult,
   ScenarioTag,
   Severity,
+  SupplierRow,
 } from "@/lib/types/case"
 
 type RequestRow = {
@@ -235,6 +236,8 @@ type EvaluationDetailApi = {
   status: string
   started_at: string
   finished_at: string | null
+  supplier_shortlist?: Array<Record<string, unknown>>
+  suppliers_excluded?: Array<{ supplier_id: string; supplier_name: string; reason: string }>
   supplier_breakdowns: SupplierBreakdownApi[]
 }
 
@@ -510,6 +513,101 @@ async function fetchEvaluationRunsByRequest(
   return []
 }
 
+async function fetchEvaluationRunById(runId: string): Promise<EvaluationDetailApi | null> {
+  const urls = getApiUrlCandidates(
+    `/api/rule-versions/evaluations/${encodeURIComponent(runId)}`,
+  )
+  let sawNotFound = false
+  let lastError: unknown = null
+
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, { cache: "no-store" })
+      if (response.status === 404) {
+        sawNotFound = true
+        continue
+      }
+      if (!response.ok) {
+        lastError = new Error(
+          `Request failed (${response.status}) for /api/rule-versions/evaluations/${runId}`,
+        )
+        continue
+      }
+      return (await response.json()) as EvaluationDetailApi
+    } catch (error) {
+      lastError = error
+    }
+  }
+
+  if (sawNotFound) return null
+  if (lastError instanceof Error) throw lastError
+  return null
+}
+
+function extractPrice(entry: Record<string, unknown>, prefix: string): number {
+  for (const key of Object.keys(entry)) {
+    if (key.startsWith(prefix) && typeof entry[key] === "number") {
+      return entry[key] as number
+    }
+  }
+  return 0
+}
+
+function mapSupplierShortlistEntry(
+  entry: Record<string, unknown>,
+  index: number,
+): SupplierRow {
+  const totalPrice =
+    extractPrice(entry, "total_price_") || extractPrice(entry, "total_price") || 0
+  const unitPrice =
+    extractPrice(entry, "unit_price_") || extractPrice(entry, "unit_price") || 0
+  const expeditedTotal =
+    extractPrice(entry, "expedited_total_") ||
+    extractPrice(entry, "expedited_total") ||
+    0
+  const expeditedUnitPrice =
+    extractPrice(entry, "expedited_unit_price_") ||
+    extractPrice(entry, "expedited_unit_price") ||
+    0
+
+  return {
+    rank: (entry.rank as number) ?? index + 1,
+    supplierId: (entry.supplier_id as string) ?? "",
+    supplierName: (entry.supplier_name as string) ?? "",
+    countryHq:
+      typeof entry.country_hq === "string" ? (entry.country_hq as string) : undefined,
+    currency:
+      typeof entry.currency === "string" ? (entry.currency as string) : undefined,
+    preferred: (entry.preferred as boolean) ?? false,
+    incumbent: (entry.incumbent as boolean) ?? false,
+    pricingTierApplied: (entry.pricing_tier_applied as string) ?? "",
+    region: typeof entry.region === "string" ? (entry.region as string) : undefined,
+    minQuantity:
+      typeof entry.min_quantity === "number" ? (entry.min_quantity as number) : undefined,
+    maxQuantity:
+      typeof entry.max_quantity === "number" ? (entry.max_quantity as number) : undefined,
+    moq: typeof entry.moq === "number" ? (entry.moq as number) : undefined,
+    unitPrice,
+    totalPrice,
+    standardLeadTimeDays: (entry.standard_lead_time_days as number) ?? 0,
+    expeditedLeadTimeDays: (entry.expedited_lead_time_days as number) ?? 0,
+    expeditedUnitPrice,
+    expeditedTotal,
+    qualityScore: (entry.quality_score as number) ?? 0,
+    riskScore: (entry.risk_score as number) ?? 0,
+    esgScore: (entry.esg_score as number) ?? 0,
+    policyCompliant: (entry.policy_compliant as boolean) ?? true,
+    coversDeliveryCountry: (entry.covers_delivery_country as boolean) ?? true,
+    dataResidencySupported:
+      typeof entry.data_residency_supported === "boolean"
+        ? (entry.data_residency_supported as boolean)
+        : undefined,
+    recommendationNote:
+      (entry.recommendation_note as string) ??
+      "Eligible supplier after policy and region checks.",
+  }
+}
+
 function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
   const normalizeCheckResult = (value: string | null | undefined): RuleCheckResult => {
     if (
@@ -522,6 +620,16 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
     }
     return "skipped"
   }
+
+  const supplierShortlist = (raw.supplier_shortlist ?? []).map((entry, i) =>
+    mapSupplierShortlistEntry(entry as Record<string, unknown>, i),
+  )
+  const excludedSuppliersFromRun = (raw.suppliers_excluded ?? []).map((entry) => ({
+    supplierId: entry.supplier_id,
+    supplierName: entry.supplier_name,
+    reason: entry.reason,
+    hardExclusion: (entry.reason ?? "").toLowerCase().includes("restricted"),
+  }))
 
   return {
     runId: raw.run_id,
@@ -558,6 +666,9 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
         evidence: check.evidence ?? null,
       })),
     })),
+    supplierShortlist: supplierShortlist.length > 0 ? supplierShortlist : undefined,
+    excludedSuppliersFromRun:
+      excludedSuppliersFromRun.length > 0 ? excludedSuppliersFromRun : undefined,
   }
 }
 
@@ -982,6 +1093,18 @@ export async function getDashboardMetrics(): Promise<DashboardMetric[]> {
 export async function getCaseList(): Promise<CaseListItem[]> {
   const rawData = await fetchDashboardRawData()
   return buildCaseListFromData(rawData)
+}
+
+export async function getCaseDetailByRunId(
+  runId: string,
+): Promise<{ caseDetail: CaseDetail; runId: string } | null> {
+  const evaluation = await fetchEvaluationRunById(runId)
+  if (!evaluation) return null
+
+  const caseDetail = await getCaseDetail(evaluation.request_id)
+  if (!caseDetail) return null
+
+  return { caseDetail, runId: evaluation.run_id }
 }
 
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {
@@ -1643,6 +1766,7 @@ export async function extractCaseInput(
           : computeMissingRequiredFields(mergedDraft),
       warnings: response.warnings,
       extractionStrength: response.extraction_strength,
+      fallbackUsed: false,
     }
   } catch {
     return {
@@ -1664,6 +1788,7 @@ export async function extractCaseInput(
         },
       ],
       extractionStrength: "low",
+      fallbackUsed: true,
     }
   }
 }

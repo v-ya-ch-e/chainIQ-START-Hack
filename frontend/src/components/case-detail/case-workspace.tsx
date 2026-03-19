@@ -1,13 +1,14 @@
 "use client"
 
-import { Activity, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { Activity, ArrowLeft, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import Link from "next/link"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { JsonViewer } from "@/components/shared/json-viewer"
 import { StatusBadge } from "@/components/shared/status-badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import {
@@ -54,6 +55,8 @@ interface CaseWorkspaceProps {
   data: CaseDetail
   initialTab?: CaseTab
   createdFromIntake?: boolean
+  initialRunId?: string
+  showReturnToLatest?: boolean
 }
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
@@ -139,12 +142,16 @@ export function CaseWorkspace({
   data,
   initialTab = "overview",
   createdFromIntake = false,
+  initialRunId,
+  showReturnToLatest = false,
 }: CaseWorkspaceProps) {
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const [runId, setRunId] = useState("")
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(
+    initialRunId ?? data.evaluationRuns[0]?.runId ?? null,
+  )
   const [suppliersExpanded, setSuppliersExpanded] = useState(false)
   const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<{
     supplier: SupplierRow
@@ -171,15 +178,6 @@ export function CaseWorkspace({
     useRequestStatusPoller()
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
-  const evaluatedSuppliers =
-    data.supplierShortlist.length + data.excludedSuppliers.length
-  const hasShortlist = data.supplierShortlist.length > 0
-  const lowestPrice = hasShortlist
-    ? Math.min(...data.supplierShortlist.map((entry) => entry.totalPrice))
-    : null
-  const fastestExpeditedLeadTime = hasShortlist
-    ? Math.min(...data.supplierShortlist.map((entry) => entry.expeditedLeadTimeDays))
-    : null
   const activeEscalation =
     data.escalations.find((entry) => entry.status !== "resolved") ??
     data.escalations[0] ??
@@ -188,12 +186,32 @@ export function CaseWorkspace({
     data.evaluationRuns.find((run) => run.runId === selectedRunId) ??
     data.evaluationRuns[0] ??
     null
+  const selectedRunOrdinal = selectedRun
+    ? data.evaluationRuns.findIndex((run) => run.runId === selectedRun.runId) + 1
+    : null
+  const effectiveShortlist =
+    selectedRun?.supplierShortlist && selectedRun.supplierShortlist.length > 0
+      ? selectedRun.supplierShortlist
+      : data.supplierShortlist
+  const effectiveExcluded =
+    selectedRun?.excludedSuppliersFromRun &&
+    selectedRun.excludedSuppliersFromRun.length > 0
+      ? selectedRun.excludedSuppliersFromRun
+      : data.excludedSuppliers
+  const evaluatedSuppliers = effectiveShortlist.length + effectiveExcluded.length
+  const hasShortlist = effectiveShortlist.length > 0
+  const lowestPrice = hasShortlist
+    ? Math.min(...effectiveShortlist.map((entry) => entry.totalPrice))
+    : null
+  const fastestExpeditedLeadTime = hasShortlist
+    ? Math.min(...effectiveShortlist.map((entry) => entry.expeditedLeadTimeDays))
+    : null
   const overviewRef = useRef<HTMLDivElement>(null)
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
 
-  const shortlistWithBreakdown = data.supplierShortlist.map((s) => ({
+  const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
     supplier: s,
     breakdown: getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
     meetsAll: meetsAllCriteria(
@@ -437,12 +455,29 @@ export function CaseWorkspace({
           </div>
           <SectionHeading
             eyebrow={data.id}
-            title={data.title}
-            description={`${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`}
+            title={
+              showReturnToLatest && selectedRunOrdinal
+                ? `${data.title} - Evaluation ${selectedRunOrdinal}`
+                : data.title
+            }
+            description={
+              showReturnToLatest && selectedRun
+                ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · run ${formatDateTime(selectedRun.startedAt)}`
+                : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
+            }
           />
         </div>
 
         <div className="flex flex-wrap gap-2">
+          {showReturnToLatest ? (
+            <Link
+              href={`/cases/${data.id}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+            >
+              <ArrowLeft className="size-3.5" />
+              Return to latest evaluation
+            </Link>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -938,7 +973,7 @@ export function CaseWorkspace({
               />
               <MiniMetric
                 label="Compliant suppliers"
-                value={data.supplierShortlist.length}
+                value={effectiveShortlist.length}
                 helper="Suppliers still eligible after policy filters"
               />
               <MiniMetric
@@ -981,7 +1016,7 @@ export function CaseWorkspace({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {data.supplierShortlist.map((supplier) => (
+                        {visibleSuppliers.map(({ supplier }) => (
                           <TableRow
                             key={supplier.supplierId}
                             className={
@@ -1149,35 +1184,41 @@ export function CaseWorkspace({
                     <CardTitle>Excluded suppliers</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    {data.excludedSuppliers.map((supplier) => (
-                      <div
-                        key={supplier.supplierId}
-                        className="rounded-lg border bg-background/80 p-3.5"
-                      >
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <StatusBadge
-                            label={supplier.supplierId}
-                            tone="neutral"
-                          />
-                          <StatusBadge
-                            label={
-                              supplier.hardExclusion
-                                ? "hard exclusion"
-                                : "not shortlisted"
-                            }
-                            tone={
-                              supplier.hardExclusion ? "destructive" : "warning"
-                            }
-                          />
+                    {effectiveExcluded.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">
+                        No supplier was excluded.
+                      </p>
+                    ) : (
+                      effectiveExcluded.map((supplier) => (
+                        <div
+                          key={supplier.supplierId}
+                          className="rounded-lg border bg-background/80 p-3.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <StatusBadge
+                              label={supplier.supplierId}
+                              tone="neutral"
+                            />
+                            <StatusBadge
+                              label={
+                                supplier.hardExclusion
+                                  ? "hard exclusion"
+                                  : "not shortlisted"
+                              }
+                              tone={
+                                supplier.hardExclusion ? "destructive" : "warning"
+                              }
+                            />
+                          </div>
+                          <p className="mt-2 text-sm font-medium">
+                            {supplier.supplierName}
+                          </p>
+                          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                            {supplier.reason}
+                          </p>
                         </div>
-                        <p className="mt-2 text-sm font-medium">
-                          {supplier.supplierName}
-                        </p>
-                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                          {supplier.reason}
-                        </p>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </CardContent>
                 </Card>
 

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { RuntimeChunkGuard } from "@/components/shared/runtime-chunk-guard";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -33,6 +34,7 @@ export default function RootLayout({
         suppressHydrationWarning
         className="h-full bg-background text-foreground"
       >
+        <RuntimeChunkGuard />
         <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>
