@@ -369,7 +369,7 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
               </Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto text-xs text-muted-foreground [scrollbar-width:thin]">
             <span>
               Showing {filteredFeed.length} of {feedMeta.totalKnown} entries
             </span>

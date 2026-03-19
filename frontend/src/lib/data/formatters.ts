@@ -124,3 +124,29 @@ export function titleCase(value: string): string {
     .replaceAll("_", " ")
     .replace(/\b\w/g, (c) => c.toUpperCase())
 }
+
+let regionDisplayNames: Intl.DisplayNames | null = null
+
+function getRegionDisplayNames() {
+  if (!regionDisplayNames) {
+    regionDisplayNames = new Intl.DisplayNames(["en"], { type: "region" })
+  }
+  return regionDisplayNames
+}
+
+/** ISO 3166-1 alpha-2 (or common aliases) → English country/region name for UI labels. */
+export function formatCountryDisplayName(code: string): string {
+  const raw = code.trim()
+  if (!raw) return "—"
+  const upper = raw.toUpperCase()
+  const normalized = upper === "UK" ? "GB" : upper
+  if (normalized.length === 2) {
+    try {
+      const name = getRegionDisplayNames().of(normalized)
+      if (name) return name
+    } catch {
+      // fall through
+    }
+  }
+  return raw
+}

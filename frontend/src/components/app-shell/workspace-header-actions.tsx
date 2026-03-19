@@ -52,8 +52,12 @@ export function WorkspaceHeaderActionsSlot() {
   const node = useContext(WorkspaceHeaderActionsNodeContext)
   if (!node) return null
   return (
-    <div className="ml-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
-      {node}
+    <div className="flex min-h-0 min-w-0 flex-1 basis-0 items-center">
+      <div className="min-h-0 min-w-0 w-full max-w-full overflow-x-auto overscroll-x-contain [scrollbar-width:thin]">
+        <div className="ml-auto flex w-max min-w-0 flex-nowrap items-center gap-3">
+          {node}
+        </div>
+      </div>
     </div>
   )
 }

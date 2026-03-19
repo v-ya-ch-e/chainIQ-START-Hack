@@ -41,7 +41,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import {
   Table,
@@ -54,6 +53,7 @@ import {
 import {
   displayCaseStatus,
   displayRecommendationStatus,
+  formatCountryDisplayName,
   formatCurrency,
   formatDate,
   formatDateTime,
@@ -162,9 +162,15 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
   onAttentionChange: (checked: boolean) => void
   onNewRequest: () => void
 }) {
+  const statusTriggerLabel =
+    statusOptions.find((o) => o.value === statusValue)?.label ?? "All statuses"
+  const escalationTriggerLabel =
+    escalationOptions.find((o) => o.value === escalationFilter)?.label ??
+    "All escalations"
+
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
-      <div className="relative min-w-[min(100%,12rem)] max-w-[min(100%,20rem)] flex-1">
+    <div className="flex w-max min-w-0 flex-nowrap items-center gap-3">
+      <div className="relative h-8 w-[11rem] shrink-0 sm:w-[13rem]">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={query}
@@ -176,9 +182,11 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
       <Select value={statusValue} onValueChange={onStatusChange}>
         <SelectTrigger
           size="sm"
-          className="w-[min(100%,9.5rem)] transition-[color,box-shadow,opacity] duration-150"
+          className="h-8 w-[10.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
         >
-          <SelectValue placeholder="All statuses" />
+          <span className="truncate text-left" data-slot="select-value">
+            {statusTriggerLabel}
+          </span>
         </SelectTrigger>
         <SelectContent>
           {statusOptions.map((option) => (
@@ -194,9 +202,11 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
       >
         <SelectTrigger
           size="sm"
-          className="w-[min(100%,10rem)] transition-[color,box-shadow,opacity] duration-150"
+          className="h-8 w-[11rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
         >
-          <SelectValue placeholder="All escalations" />
+          <span className="truncate text-left" data-slot="select-value">
+            {escalationTriggerLabel}
+          </span>
         </SelectTrigger>
         <SelectContent>
           {escalationOptions.map((option) => (
@@ -213,7 +223,7 @@ const InboxWorkspaceToolbar = memo(function InboxWorkspaceToolbar({
         />
         Needs attention only
       </label>
-      <Button size="sm" onClick={onNewRequest}>
+      <Button size="sm" className="h-8 shrink-0" onClick={onNewRequest}>
         <Plus className="mr-1.5 size-4" />
         New Request
       </Button>
@@ -520,7 +530,9 @@ export function InboxPage({
                         {entry.businessUnit}
                       </TableCell>
                       <TableCell className="text-sm">
-                        {entry.countryLabel}
+                        {entry.countryLabel
+                          ? formatCountryDisplayName(entry.countryLabel)
+                          : emptyCell()}
                       </TableCell>
                       <TableCell className="text-sm font-medium tabular-nums">
                         {formatCurrency(entry.budgetAmount, entry.currency)}

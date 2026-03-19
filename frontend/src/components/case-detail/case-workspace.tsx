@@ -201,11 +201,14 @@ function CaseWorkspaceHeaderActions({
   onEscalate: () => void
 }) {
   return (
-    <>
+    <div className="flex w-max min-w-0 flex-nowrap items-center justify-end gap-3">
       {showReturnToLatest ? (
         <Link
           href={`/cases/${caseId}`}
-          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+          className={cn(
+            buttonVariants({ variant: "outline", size: "sm" }),
+            "h-8 shrink-0 gap-1.5 whitespace-nowrap",
+          )}
         >
           <ArrowLeft className="size-3.5" />
           Return to latest evaluation
@@ -214,6 +217,7 @@ function CaseWorkspaceHeaderActions({
       <Button
         variant="outline"
         size="sm"
+        className="h-8 shrink-0"
         onClick={onRerun}
         disabled={loadingAction !== null}
       >
@@ -227,6 +231,7 @@ function CaseWorkspaceHeaderActions({
       <Button
         variant="outline"
         size="sm"
+        className="h-8 shrink-0"
         onClick={onStatus}
         disabled={loadingAction !== null}
       >
@@ -240,6 +245,7 @@ function CaseWorkspaceHeaderActions({
       <Button
         variant="outline"
         size="sm"
+        className="h-8 shrink-0"
         onClick={onResult}
         disabled={loadingAction !== null}
       >
@@ -253,6 +259,7 @@ function CaseWorkspaceHeaderActions({
       <Button
         variant="outline"
         size="sm"
+        className="h-8 shrink-0"
         onClick={onExport}
         disabled={loadingAction !== null}
       >
@@ -266,6 +273,7 @@ function CaseWorkspaceHeaderActions({
       <Button
         variant="outline"
         size="sm"
+        className="h-8 shrink-0"
         onClick={onAuditDownload}
         disabled={loadingAction !== null}
       >
@@ -276,7 +284,12 @@ function CaseWorkspaceHeaderActions({
         )}
         {loadingAction === "auditDownload" ? "Downloading..." : "Audit"}
       </Button>
-      <Button size="sm" onClick={onEscalate} disabled={loadingAction !== null}>
+      <Button
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onEscalate}
+        disabled={loadingAction !== null}
+      >
         {loadingAction === "escalate" ? (
           <Loader2 className="size-3.5 animate-spin" />
         ) : (
@@ -284,7 +297,7 @@ function CaseWorkspaceHeaderActions({
         )}
         {loadingAction === "escalate" ? "Escalating..." : "Escalate"}
       </Button>
-    </>
+    </div>
   )
 }
 

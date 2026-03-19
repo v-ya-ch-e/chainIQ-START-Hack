@@ -14,7 +14,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import {
   Sheet,
@@ -32,13 +31,30 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { displayRecommendationStatus, formatDateTime } from "@/lib/data/formatters"
+import {
+  displayRecommendationStatus,
+  formatCountryDisplayName,
+  formatDateTime,
+  titleCase,
+} from "@/lib/data/formatters"
 import type { QueueEscalationItem } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
 
 interface EscalationsPageProps {
   items: QueueEscalationItem[]
+}
+
+const escalationStatusTriggerLabels: Record<string, string> = {
+  all: "All statuses",
+  open: "Open",
+  resolved: "Resolved",
+}
+
+const escalationBlockingTriggerLabels: Record<string, string> = {
+  all: "All types",
+  blocking: "Blocking only",
+  advisory: "Advisory only",
 }
 
 export function EscalationsPage({ items }: EscalationsPageProps) {
@@ -81,6 +97,11 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
       return matchesQuery && matchesStatus && matchesBlocking
     })
   }, [blockingFilter, items, query, statusFilter])
+
+  const statusTriggerLabel =
+    escalationStatusTriggerLabels[statusFilter] ?? titleCase(statusFilter)
+  const blockingTriggerLabel =
+    escalationBlockingTriggerLabels[blockingFilter] ?? titleCase(blockingFilter)
 
   const selectedItem =
     filteredItems.find((item) => item.escalationId === selectedEscalationId) ??
@@ -155,13 +176,15 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                 className="h-9 pl-9"
               />
             </div>
-            <div className="flex flex-wrap gap-3">
+            <div className="flex min-h-0 min-w-0 flex-nowrap items-center gap-3 overflow-x-auto [scrollbar-width:thin]">
               <Select
                 value={statusFilter}
                 onValueChange={(value) => setStatusFilter(value ?? "all")}
               >
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue />
+                <SelectTrigger className="h-8 w-[160px] shrink-0">
+                  <span className="truncate text-left" data-slot="select-value">
+                    {statusTriggerLabel}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All statuses</SelectItem>
@@ -173,8 +196,10 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                 value={blockingFilter}
                 onValueChange={(value) => setBlockingFilter(value ?? "all")}
               >
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue />
+                <SelectTrigger className="h-8 w-[160px] shrink-0">
+                  <span className="truncate text-left" data-slot="select-value">
+                    {blockingTriggerLabel}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All types</SelectItem>
@@ -236,7 +261,10 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <StatusBadge label={item.ruleId} tone="info" />
+                        <StatusBadge
+                          label={item.ruleLabel?.trim() || item.ruleId}
+                          tone="info"
+                        />
                       </TableCell>
                       <TableCell className="text-sm">
                         {item.escalateTo}
@@ -323,7 +351,10 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                     label="Business unit"
                     value={selectedItem.businessUnit}
                   />
-                  <DetailRow label="Country" value={selectedItem.country} />
+                  <DetailRow
+                    label="Country"
+                    value={formatCountryDisplayName(selectedItem.country)}
+                  />
                   <DetailRow
                     label="Created"
                     value={formatDateTime(selectedItem.createdAt)}

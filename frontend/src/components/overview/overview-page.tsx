@@ -11,7 +11,12 @@ import {
 import { AlertTriangle, ArrowRight, BarChart3 } from "lucide-react"
 
 import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
-import { formatCurrency, formatDateTime } from "@/lib/data/formatters"
+import {
+  formatCountryDisplayName,
+  formatCurrency,
+  formatDateTime,
+  titleCase,
+} from "@/lib/data/formatters"
 import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
@@ -23,7 +28,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import type {
   CaseListItem,
@@ -82,14 +86,31 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
   onReset: () => void
   canReset: boolean
 }) {
+  const statusTriggerLabel =
+    statusFilter === "all"
+      ? "All statuses"
+      : statusLabelMap[statusFilter as CaseStatus] ?? titleCase(statusFilter)
+  const categoryTriggerLabel =
+    categoryFilter === "all"
+      ? "All categories"
+      : categoryFilter.trim()
+        ? categoryFilter
+        : "Uncategorized"
+  const countryTriggerLabel =
+    countryFilter === "all"
+      ? "All countries"
+      : formatCountryDisplayName(countryFilter)
+
   return (
-    <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2">
+    <div className="flex w-max min-w-0 flex-nowrap items-center justify-end gap-3">
       <Select value={statusFilter} onValueChange={onStatusChange}>
         <SelectTrigger
           size="sm"
-          className="w-[min(100%,10rem)] transition-[color,box-shadow,opacity] duration-150"
+          className="h-8 w-[10.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
         >
-          <SelectValue placeholder="Status" />
+          <span className="truncate text-left" data-slot="select-value">
+            {statusTriggerLabel}
+          </span>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All statuses</SelectItem>
@@ -103,15 +124,20 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       <Select value={categoryFilter} onValueChange={onCategoryChange}>
         <SelectTrigger
           size="sm"
-          className="w-[min(100%,11rem)] transition-[color,box-shadow,opacity] duration-150"
+          className="h-8 w-[11.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
         >
-          <SelectValue placeholder="Category" />
+          <span className="truncate text-left" data-slot="select-value">
+            {categoryTriggerLabel}
+          </span>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All categories</SelectItem>
           {filterOptions.categories.map((category) => (
-            <SelectItem key={category} value={category}>
-              {category}
+            <SelectItem
+              key={category.trim() ? category : "__uncategorized"}
+              value={category}
+            >
+              {category.trim() ? category : "Uncategorized"}
             </SelectItem>
           ))}
         </SelectContent>
@@ -119,20 +145,22 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       <Select value={countryFilter} onValueChange={onCountryChange}>
         <SelectTrigger
           size="sm"
-          className="w-[min(100%,10rem)] transition-[color,box-shadow,opacity] duration-150"
+          className="h-8 w-[10.5rem] shrink-0 transition-[color,box-shadow,opacity] duration-150"
         >
-          <SelectValue placeholder="Country" />
+          <span className="truncate text-left" data-slot="select-value">
+            {countryTriggerLabel}
+          </span>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All countries</SelectItem>
           {filterOptions.countries.map((country) => (
             <SelectItem key={country} value={country}>
-              {country}
+              {formatCountryDisplayName(country)}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
-      <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground transition-colors hover:text-foreground">
+      <label className="flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground transition-colors hover:text-foreground">
         <Checkbox
           checked={attentionOnly}
           onCheckedChange={(checked) => onAttentionChange(checked === true)}
@@ -142,6 +170,7 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       <Button
         variant="outline"
         size="sm"
+        className="h-8 shrink-0"
         onClick={onReset}
         disabled={!canReset}
       >
@@ -446,7 +475,8 @@ export function OverviewPage({
                       )}
                       suppressHydrationWarning
                     >
-                      {entry.businessUnit} · {entry.countryLabel} · updated{" "}
+                      {entry.businessUnit} ·{" "}
+                      {formatCountryDisplayName(entry.countryLabel)} · updated{" "}
                       {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>
