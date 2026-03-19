@@ -1,8 +1,9 @@
 "use client"
 
-import { Activity, ArrowLeft, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { AlertTriangle, ArrowLeft, ChevronRight, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { toast } from "sonner"
 import Link from "next/link"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
 import { SectionHeading } from "@/components/shared/section-heading"
@@ -29,20 +30,27 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  displayApprovalTier,
+  displayCaseStatus,
+  displayRecommendationStatus,
   formatCurrency,
   formatDate,
   formatDateTime,
   scoreTone,
   severityTone,
+  titleCase,
 } from "@/lib/data/formatters"
 import type {
+  AuditTimelineEvent,
   CaseDetail,
   EvaluationRunDetail,
   RuleCheckResult,
   SupplierRuleBreakdown,
   SupplierRuleCheck,
   SupplierRow,
+  ValidationIssue,
 } from "@/lib/types/case"
+import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
 import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
@@ -61,8 +69,12 @@ interface CaseWorkspaceProps {
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
 
-function livePhaseLabel(phase: "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out") {
+function livePhaseLabel(
+  phase: "idle" | "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out",
+) {
   switch (phase) {
+    case "idle":
+      return "Not started"
     case "queued":
       return "Queued"
     case "running":
@@ -78,7 +90,9 @@ function livePhaseLabel(phase: "queued" | "running" | "completed" | "failed" | "
   }
 }
 
-function livePhaseTone(phase: "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out") {
+function livePhaseTone(
+  phase: "idle" | "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out",
+) {
   switch (phase) {
     case "completed":
       return "success" as const
@@ -89,9 +103,36 @@ function livePhaseTone(phase: "queued" | "running" | "completed" | "failed" | "u
       return "info" as const
     case "queued":
       return "warning" as const
+    case "idle":
+      return "neutral" as const
     default:
       return "neutral" as const
   }
+}
+
+function filenameFromContentDisposition(header: string | null, fallback: string): string {
+  if (!header) return fallback
+  const utfMatch = header.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utfMatch?.[1]) {
+    const decoded = decodeURIComponent(utfMatch[1]).trim()
+    if (decoded) return decoded
+  }
+  const quotedMatch = header.match(/filename="([^"]+)"/i)
+  if (quotedMatch?.[1]) return quotedMatch[1].trim()
+  const rawMatch = header.match(/filename=([^;]+)/i)
+  if (rawMatch?.[1]) return rawMatch[1].trim()
+  return fallback
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement("a")
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 function toRuleCheckResult(value: string | null | undefined): RuleCheckResult {
@@ -138,6 +179,130 @@ function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
   return !failedHard && !failedPolicy
 }
 
+function CaseWorkspaceHeaderActions({
+  caseId,
+  showReturnToLatest,
+  loadingAction,
+  onRerun,
+  onStatus,
+  onResult,
+  onExport,
+  onAuditDownload,
+  onEscalate,
+}: {
+  caseId: string
+  showReturnToLatest: boolean
+  loadingAction: string | null
+  onRerun: () => void
+  onStatus: () => void
+  onResult: () => void
+  onExport: () => void
+  onAuditDownload: () => void
+  onEscalate: () => void
+}) {
+  return (
+    <div className="max-w-full overflow-x-auto overscroll-x-contain py-0.5 [scrollbar-width:thin]">
+      <div className="ml-auto flex w-max min-w-0 flex-nowrap items-center gap-3">
+      {showReturnToLatest ? (
+        <Link
+          href={`/cases/${caseId}`}
+          className={cn(
+            buttonVariants({ variant: "outline", size: "sm" }),
+            "h-8 shrink-0 gap-1.5 whitespace-nowrap",
+          )}
+        >
+          <ArrowLeft className="size-3.5" />
+          Return to latest evaluation
+        </Link>
+      ) : null}
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onRerun}
+        disabled={loadingAction !== null}
+      >
+        {loadingAction === "rerun" ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Play className="size-3.5" />
+        )}
+        {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onStatus}
+        disabled={loadingAction !== null}
+      >
+        {loadingAction === "status" ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <RefreshCw className="size-3.5" />
+        )}
+        {loadingAction === "status" ? "Checking..." : "Check updates"}
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onResult}
+        disabled={loadingAction !== null}
+      >
+        {loadingAction === "result" ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <ShieldCheck className="size-3.5" />
+        )}
+        Result
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onExport}
+        disabled={loadingAction !== null}
+      >
+        {loadingAction === "export" ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <Download className="size-3.5" />
+        )}
+        {loadingAction === "export" ? "Exporting..." : "Export"}
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onAuditDownload}
+        disabled={loadingAction !== null}
+      >
+        {loadingAction === "auditDownload" ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <ShieldCheck className="size-3.5" />
+        )}
+        {loadingAction === "auditDownload" ? "Downloading..." : "Audit"}
+      </Button>
+      <Button
+        size="sm"
+        className="h-8 shrink-0"
+        onClick={onEscalate}
+        disabled={loadingAction !== null}
+      >
+        {loadingAction === "escalate" ? (
+          <Loader2 className="size-3.5 animate-spin" />
+        ) : (
+          <TimerReset className="size-3.5" />
+        )}
+        {loadingAction === "escalate" ? "Escalating..." : "Escalate"}
+      </Button>
+      </div>
+    </div>
+  )
+}
+
 export function CaseWorkspace({
   data,
   initialTab = "overview",
@@ -157,6 +322,7 @@ export function CaseWorkspace({
     supplier: SupplierRow
     breakdown: SupplierRuleBreakdown | null
   } | null>(null)
+  const [selectedIssue, setSelectedIssue] = useState<ValidationIssue | null>(null)
   const [statusResult, setStatusResult] = useState<unknown>(null)
   const [pipelineResult, setPipelineResult] = useState<unknown>(null)
   const [runsResult, setRunsResult] = useState<unknown>(null)
@@ -166,10 +332,6 @@ export function CaseWorkspace({
   const [stepResult, setStepResult] = useState<unknown>(null)
   const {
     loadingAction,
-    error,
-    fallback,
-    message,
-    setMessage,
     runAction,
     actionLifecycleByLabel,
     lastActionLifecycle,
@@ -210,6 +372,7 @@ export function CaseWorkspace({
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
+  const createdFlowHandledRef = useRef(false)
 
   const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
     supplier: s,
@@ -255,9 +418,74 @@ export function CaseWorkspace({
 
   useEffect(() => {
     if (createdFromIntake) {
-      setMessage(`Case ${data.id} created successfully.`)
+      toast.success("Case created successfully", { description: data.id })
     }
-  }, [createdFromIntake, data.id, setMessage])
+  }, [createdFromIntake, data.id])
+
+  useEffect(() => {
+    if (!createdFromIntake || createdFlowHandledRef.current) return
+    createdFlowHandledRef.current = true
+
+    const nextUrl = `/cases/${data.id}?tab=${activeTab}`
+    const clearCreatedFlag = () => {
+      router.replace(nextUrl, { scroll: false })
+    }
+
+    if (data.evaluationRuns.length > 0) {
+      clearCreatedFlag()
+      return
+    }
+
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+
+    void runAction({
+      label: "autoTrigger",
+      request: () =>
+        chainIqApi.pipeline.processBatch({
+          request_ids: [data.id],
+          concurrency: 1,
+        }),
+      successMessage: "Pipeline trigger started",
+      successDescription: data.id,
+    })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "queued",
+          intervalMs: 2000,
+          timeoutMs: 45_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+        toast.warning("Case created but auto-trigger failed", {
+          description: "Use Re-run to start processing manually.",
+        })
+      })
+      .finally(() => {
+        clearCreatedFlag()
+      })
+  }, [
+    activeTab,
+    createdFromIntake,
+    data.evaluationRuns.length,
+    data.id,
+    patchRequestState,
+    router,
+    runAction,
+    startPolling,
+  ])
 
   function handleRerun() {
     const startedAt = new Date().toISOString()
@@ -274,7 +502,8 @@ export function CaseWorkspace({
         chainIqApi.pipeline.process({
           request_id: data.id,
         }),
-      successMessage: `Pipeline re-run started for ${data.id}.`,
+      successMessage: "Pipeline re-run started",
+      successDescription: data.id,
     })
       .then(async () => {
         await startPolling(data.id, {
@@ -311,7 +540,8 @@ export function CaseWorkspace({
           statusPayload: result,
         })
       },
-      successMessage: `Fetched latest pipeline status for ${data.id}.`,
+      successMessage: "Status updated",
+      successDescription: data.id,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -322,7 +552,8 @@ export function CaseWorkspace({
       label: "result",
       request: () => chainIqApi.pipeline.result(data.id),
       onSuccess: setPipelineResult,
-      successMessage: `Fetched latest pipeline result for ${data.id}.`,
+      successMessage: "Pipeline result loaded",
+      successDescription: data.id,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -333,7 +564,7 @@ export function CaseWorkspace({
       label: "runs",
       request: () => chainIqApi.pipeline.runs({ limit: 25, skip: 0 }),
       onSuccess: setRunsResult,
-      successMessage: "Fetched recent pipeline runs.",
+      successMessage: "Pipeline runs loaded",
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -345,7 +576,8 @@ export function CaseWorkspace({
       label: "run",
       request: () => chainIqApi.pipeline.run(runId.trim()),
       onSuccess: setRunDetailResult,
-      successMessage: `Fetched run details for ${runId.trim()}.`,
+      successMessage: "Run details loaded",
+      successDescription: runId.trim(),
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -356,7 +588,8 @@ export function CaseWorkspace({
       label: "audit",
       request: () => chainIqApi.pipeline.audit(data.id, { limit: 100, skip: 0 }),
       onSuccess: setAuditResult,
-      successMessage: `Fetched audit trail for ${data.id}.`,
+      successMessage: "Audit trail loaded",
+      successDescription: data.id,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -367,7 +600,8 @@ export function CaseWorkspace({
       label: "summary",
       request: () => chainIqApi.pipeline.auditSummary(data.id),
       onSuccess: setSummaryResult,
-      successMessage: `Fetched audit summary for ${data.id}.`,
+      successMessage: "Audit summary loaded",
+      successDescription: data.id,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -386,7 +620,8 @@ export function CaseWorkspace({
       label: `step:${step}`,
       request: () => chainIqApi.pipeline.steps[step]({ request_id: data.id }),
       onSuccess: setStepResult,
-      successMessage: `Executed ${step} step for ${data.id}.`,
+      successMessage: `Step "${step}" executed`,
+      successDescription: data.id,
     })
       .then(async () => {
         await startPolling(data.id, {
@@ -406,21 +641,84 @@ export function CaseWorkspace({
   }
 
   function handleExport() {
-    const payload = JSON.stringify(data, null, 2)
-    const blob = new Blob([payload], { type: "application/json" })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement("a")
-    link.href = url
-    link.download = `${data.id}-audit-export.json`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
-    setMessage(`Exported ${data.id} payload as JSON.`)
+    void runAction({
+      label: "export",
+      request: async () => ({
+        request_id: data.id,
+        exported_at: new Date().toISOString(),
+        case_data: data,
+        pipeline: {
+          status: statusResult,
+          result: pipelineResult,
+          runs: runsResult,
+          run_detail: runDetailResult,
+          audit_trail: auditResult,
+          audit_summary: summaryResult,
+          step_result: stepResult,
+          live_state: requestLiveState[data.id] ?? null,
+        },
+      }),
+      onSuccess: (exportPayload) => {
+        const payload = JSON.stringify(exportPayload, null, 2)
+        const blob = new Blob([payload], { type: "application/json" })
+        downloadBlob(blob, `${data.id}-export.json`)
+      },
+      successMessage: "JSON export downloaded",
+      successDescription: data.id,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditDownload() {
+    void runAction({
+      label: "auditDownload",
+      request: () => chainIqApi.pipeline.report(data.id),
+      onSuccess: ({ blob, contentDisposition }) => {
+        const filename = filenameFromContentDisposition(
+          contentDisposition,
+          `${data.id}-audit-report.pdf`,
+        )
+        downloadBlob(blob, filename)
+      },
+      successMessage: "Audit report downloaded",
+      successDescription: data.id,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
   }
 
   function handleEscalate() {
-    router.push(`/escalations?caseId=${data.id}`)
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "running",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+    void runAction({
+      label: "escalate",
+      request: () => chainIqApi.pipeline.steps.escalate({ request_id: data.id }),
+      onSuccess: setStepResult,
+      successMessage: "Escalation triggered",
+      successDescription: data.id,
+    })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "running",
+          intervalMs: 2000,
+          timeoutMs: 30_000,
+        })
+        router.push(`/escalations?caseId=${data.id}`)
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
   }
 
   const requestLive = requestLiveState[data.id]
@@ -428,132 +726,70 @@ export function CaseWorkspace({
     ? actionLifecycleByLabel[loadingAction] ?? null
     : null
 
+  const setHeaderActions = useSetWorkspaceHeaderActions()
+
+  useLayoutEffect(
+    () => {
+      setHeaderActions(
+        <CaseWorkspaceHeaderActions
+          caseId={data.id}
+          showReturnToLatest={showReturnToLatest}
+          loadingAction={loadingAction}
+          onRerun={handleRerun}
+          onStatus={handleStatus}
+          onResult={handleResult}
+          onExport={handleExport}
+          onAuditDownload={handleAuditDownload}
+          onEscalate={handleEscalate}
+        />,
+      )
+      return () => setHeaderActions(null)
+    },
+    // Toolbar uses current handler closures; listed deps cover case refresh and busy state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [setHeaderActions, data, showReturnToLatest, loadingAction],
+  )
+
   return (
     <div className="space-y-6">
       {/* Page header */}
-      <div className="animate-fade-in-up flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-        <div className="space-y-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <StatusBadge
-              label={data.rawRequest.status.replaceAll("_", " ")}
-              tone="neutral"
-            />
-            <StatusBadge
-              label={data.recommendation.status.replaceAll("_", " ")}
-              tone={
-                data.recommendation.status === "proceed"
+      <div className="animate-fade-in-up space-y-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusBadge
+            label={displayCaseStatus(data.rawRequest.status)}
+            tone="neutral"
+          />
+          <StatusBadge
+            label={displayRecommendationStatus(data.recommendation.status)}
+            tone={
+              data.recommendation.status === "not_evaluated"
+                ? "neutral"
+                : data.recommendation.status === "proceed"
                   ? "success"
                   : data.recommendation.status === "proceed_with_conditions"
                     ? "warning"
                     : "destructive"
-              }
-            />
-            <StatusBadge
-              label={`${data.rawRequest.categoryL1} / ${data.rawRequest.categoryL2}`}
-              tone="info"
-            />
-          </div>
-          <SectionHeading
-            eyebrow={data.id}
-            title={
-              showReturnToLatest && selectedRunOrdinal
-                ? `${data.title} - Evaluation ${selectedRunOrdinal}`
-                : data.title
-            }
-            description={
-              showReturnToLatest && selectedRun
-                ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · run ${formatDateTime(selectedRun.startedAt)}`
-                : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
             }
           />
+          <StatusBadge
+            label={`${data.rawRequest.categoryL1} / ${data.rawRequest.categoryL2}`}
+            tone="info"
+          />
         </div>
-
-        <div className="flex flex-wrap gap-2">
-          {showReturnToLatest ? (
-            <Link
-              href={`/cases/${data.id}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
-            >
-              <ArrowLeft className="size-3.5" />
-              Return to latest evaluation
-            </Link>
-          ) : null}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRerun}
-            disabled={loadingAction !== null}
-          >
-            {loadingAction === "rerun" ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Play className="size-3.5" />
-            )}
-            {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleStatus}
-            disabled={loadingAction !== null}
-          >
-            {loadingAction === "status" ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Activity className="size-3.5" />
-            )}
-            Status
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleResult}
-            disabled={loadingAction !== null}
-          >
-            {loadingAction === "result" ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <ShieldCheck className="size-3.5" />
-            )}
-            Result
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleExport}>
-            <Download className="size-3.5" />
-            Export
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setActiveTab("audit")}
-          >
-            <ShieldCheck className="size-3.5" />
-            Audit
-          </Button>
-          <Button size="sm" onClick={handleEscalate}>
-            <TimerReset className="size-3.5" />
-            Escalate
-          </Button>
-        </div>
+        <SectionHeading
+          eyebrow={data.id}
+          title={
+            showReturnToLatest && selectedRunOrdinal
+              ? `${data.title} - Evaluation ${selectedRunOrdinal}`
+              : data.title
+          }
+          description={
+            showReturnToLatest && selectedRun
+              ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · run ${formatDateTime(selectedRun.startedAt)}`
+              : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
+          }
+        />
       </div>
-
-      {error ? (
-        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
-          <CardContent className="py-3 text-sm">{error}</CardContent>
-        </Card>
-      ) : null}
-
-      {message ? (
-        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
-          <CardContent className="py-3 text-sm">{message}</CardContent>
-        </Card>
-      ) : null}
-      {fallback ? (
-        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
-          <CardContent className="py-3 text-sm">
-            Runs endpoint degraded. Other pipeline actions remain usable. {fallback}
-          </CardContent>
-        </Card>
-      ) : null}
 
       <Card className="border-blue-200 bg-blue-50/60">
         <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
@@ -613,13 +849,15 @@ export function CaseWorkspace({
               <StatusBadge
                 label={data.outcomeLabel}
                 tone={
-                  data.recommendation.status === "proceed"
-                    ? "success"
-                    : "destructive"
+                  data.recommendation.status === "not_evaluated"
+                    ? "neutral"
+                    : data.recommendation.status === "proceed"
+                      ? "success"
+                      : "destructive"
                 }
               />
               <StatusBadge
-                label={data.recommendation.approvalTier}
+                label={displayApprovalTier(data.recommendation.approvalTier)}
                 tone="info"
               />
               <StatusBadge
@@ -723,7 +961,7 @@ export function CaseWorkspace({
             />
             <FieldCell
               label="Scenario Tags"
-              value={data.rawRequest.scenarioTags.join(", ") || "standard"}
+              value={data.rawRequest.scenarioTags.join(", ") || "—"}
             />
             <FieldCell
               label="Budget"
@@ -884,23 +1122,26 @@ export function CaseWorkspace({
               </CardHeader>
               <CardContent className="space-y-4">
                 {data.validationIssues.map((issue) => (
-                  <div
-                    key={issue.issueId}
-                    className="rounded-lg border bg-background/80 p-3.5"
+                  <button
+                    key={issue.issueKey}
+                    type="button"
+                    onClick={() => setSelectedIssue(issue)}
+                    className="w-full rounded-lg border bg-background/80 p-3.5 text-left transition-colors hover:border-primary/40 hover:bg-accent/40"
                   >
                     <div className="flex flex-wrap items-center gap-1.5">
                       <StatusBadge label={issue.issueId} tone="neutral" />
                       <StatusBadge
-                        label={issue.severity}
+                        label={titleCase(issue.severity)}
                         tone={severityTone(issue.severity)}
                       />
                       <StatusBadge
-                        label={issue.type.replaceAll("_", " ")}
+                        label={titleCase(issue.type)}
                         tone="info"
                       />
                       {issue.blocking ? (
-                        <StatusBadge label="blocking" tone="destructive" />
+                        <StatusBadge label="Blocking" tone="destructive" />
                       ) : null}
+                      <ChevronRight className="ml-auto size-4 text-muted-foreground" />
                     </div>
                     <p className="mt-2 text-sm leading-relaxed">
                       {issue.description}
@@ -908,10 +1149,37 @@ export function CaseWorkspace({
                     <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
                       {issue.actionRequired}
                     </p>
-                  </div>
+                  </button>
                 ))}
               </CardContent>
             </Card>
+
+            <Sheet
+              open={!!selectedIssue}
+              onOpenChange={(open) => !open && setSelectedIssue(null)}
+            >
+              <SheetContent
+                side="right"
+                className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl overflow-y-auto px-6"
+              >
+                <SheetHeader>
+                  <SheetTitle className="flex items-center gap-2">
+                    <AlertTriangle className="size-4" />
+                    {selectedIssue?.issueId ?? "Issue"}
+                  </SheetTitle>
+                  <SheetDescription>
+                    Validation issue details, audit log context, and related pipeline events.
+                  </SheetDescription>
+                </SheetHeader>
+                {selectedIssue ? (
+                  <IssueDetailSheetContent
+                    issue={selectedIssue}
+                    requestId={data.id}
+                    timeline={data.auditTrail.timeline}
+                  />
+                ) : null}
+              </SheetContent>
+            </Sheet>
 
             <Card className="bg-card/70">
               <CardHeader>
@@ -926,7 +1194,7 @@ export function CaseWorkspace({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <StatusBadge label={policy.ruleId} tone="info" />
                       <StatusBadge
-                        label={policy.status}
+                        label={titleCase(policy.status)}
                         tone={
                           policy.status === "satisfied"
                             ? "success"
@@ -1019,9 +1287,10 @@ export function CaseWorkspace({
                         {visibleSuppliers.map(({ supplier }) => (
                           <TableRow
                             key={supplier.supplierId}
-                            className={
-                              supplier.rank === 1 ? "bg-emerald-50/40" : ""
-                            }
+                            className={cn(
+                              supplier.rank === 1 ? "bg-emerald-50/40" : "",
+                              "[&>td]:align-top",
+                            )}
                           >
                             <TableCell className="px-3">
                               <div className="space-y-1">
@@ -1033,7 +1302,7 @@ export function CaseWorkspace({
                                 ) : null}
                               </div>
                             </TableCell>
-                            <TableCell className="align-top">
+                            <TableCell className="max-w-sm whitespace-normal break-words align-top">
                               <div className="space-y-1">
                                 <p className="font-medium">
                                   {supplier.supplierName}
@@ -1045,12 +1314,12 @@ export function CaseWorkspace({
                                   {supplier.countryHq ?? "N/A"} ·{" "}
                                   {supplier.currency ?? data.recommendation.currency}
                                 </p>
-                                <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
+                                <p className="text-xs leading-relaxed text-muted-foreground">
                                   {supplier.recommendationNote}
                                 </p>
                               </div>
                             </TableCell>
-                            <TableCell className="text-sm">
+                            <TableCell className="whitespace-normal text-sm">
                               <p>{supplier.pricingTierApplied}</p>
                               <p className="text-xs text-muted-foreground">
                                 {supplier.region ?? "N/A"} · qty{" "}
@@ -1060,7 +1329,7 @@ export function CaseWorkspace({
                                 MOQ {supplier.moq ?? "N/A"}
                               </p>
                             </TableCell>
-                            <TableCell className="font-medium tabular-nums">
+                            <TableCell className="whitespace-normal font-medium tabular-nums">
                               <div>
                                 {formatCurrency(
                                   supplier.totalPrice,
@@ -1089,7 +1358,7 @@ export function CaseWorkspace({
                                 )}
                               </div>
                             </TableCell>
-                            <TableCell className="tabular-nums">
+                            <TableCell className="whitespace-normal tabular-nums">
                               <div>{supplier.standardLeadTimeDays}d std</div>
                               <div className="text-xs text-muted-foreground">
                                 {supplier.expeditedLeadTimeDays}d exp
@@ -1108,7 +1377,7 @@ export function CaseWorkspace({
                             <TableCell className={scoreTone(supplier.esgScore)}>
                               {supplier.esgScore}
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="whitespace-normal">
                               <div className="flex max-w-[180px] flex-wrap gap-1">
                                 {supplier.preferred ? (
                                   <StatusBadge label="Preferred" tone="info" />
@@ -1350,7 +1619,7 @@ export function CaseWorkspace({
                       <StatusBadge label={activeEscalation.escalationId} tone="neutral" />
                       <StatusBadge label={activeEscalation.rule} tone="info" />
                       <StatusBadge
-                        label={activeEscalation.status}
+                        label={titleCase(activeEscalation.status)}
                         tone={
                           activeEscalation.status === "resolved"
                             ? "success"
@@ -1358,7 +1627,7 @@ export function CaseWorkspace({
                         }
                       />
                       <StatusBadge
-                        label={activeEscalation.blocking ? "blocking" : "advisory"}
+                        label={activeEscalation.blocking ? "Blocking" : "Advisory"}
                         tone={activeEscalation.blocking ? "destructive" : "warning"}
                       />
                     </div>
@@ -1422,7 +1691,7 @@ export function CaseWorkspace({
                           </TableCell>
                           <TableCell className="align-top">
                             <StatusBadge
-                              label={entry.status}
+                              label={titleCase(entry.status)}
                               tone={
                                 entry.status === "resolved"
                                   ? "success"
@@ -1432,7 +1701,7 @@ export function CaseWorkspace({
                           </TableCell>
                           <TableCell className="align-top">
                             <StatusBadge
-                              label={entry.blocking ? "blocking" : "advisory"}
+                              label={entry.blocking ? "Blocking" : "Advisory"}
                               tone={entry.blocking ? "destructive" : "warning"}
                             />
                           </TableCell>
@@ -1470,10 +1739,10 @@ export function CaseWorkspace({
                       {formatDateTime(event.timestamp)}
                     </p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={event.kind} tone="info" />
+                      <StatusBadge label={titleCase(event.kind)} tone="info" />
                       {event.level ? (
                         <StatusBadge
-                          label={event.level}
+                          label={titleCase(event.level)}
                           tone={
                             event.level === "error"
                               ? "destructive"
@@ -1545,7 +1814,7 @@ export function CaseWorkspace({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {data.auditTrail.reasoningTrace.map((step, index) => (
-                    <div key={step} className="rounded-lg border bg-background/80 p-3.5">
+                    <div key={`${index}-${step}`} className="rounded-lg border bg-background/80 p-3.5">
                       <div className="flex items-center gap-1.5">
                         <StatusBadge
                           label={`Step ${index + 1}`}
@@ -1594,7 +1863,7 @@ export function CaseWorkspace({
                   {loadingAction === "runs" ? (
                     <Loader2 className="size-3.5 animate-spin" />
                   ) : (
-                    <Activity className="size-3.5" />
+                    <RefreshCw className="size-3.5" />
                   )}
                   List runs
                 </Button>
@@ -1856,7 +2125,7 @@ function SupplierDetailSheetContent({
                     </TableCell>
                     <TableCell className="py-3">
                       <StatusBadge
-                        label={check.result}
+                        label={titleCase(check.result)}
                         tone={toneForCheckResult(check.result)}
                       />
                     </TableCell>
@@ -1898,7 +2167,7 @@ function SupplierDetailSheetContent({
                     </TableCell>
                     <TableCell className="py-3">
                       <StatusBadge
-                        label={check.result}
+                        label={titleCase(check.result)}
                         tone={toneForCheckResult(check.result)}
                       />
                     </TableCell>
@@ -1925,7 +2194,7 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-1.5">
         <StatusBadge label={`Run ${run.runId}`} tone="neutral" />
-        <StatusBadge label={run.status} tone="info" />
+        <StatusBadge label={titleCase(run.status)} tone="info" />
         <StatusBadge label={`Suppliers ${suppliers.length}`} tone="neutral" />
       </div>
 
@@ -1999,7 +2268,7 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
                               {check.versionId.slice(0, 8)}
                             </TableCell>
                             <TableCell className="py-3">
-                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
+                              <StatusBadge label={titleCase(check.result)} tone={toneForCheckResult(check.result)} />
                             </TableCell>
                             <TableCell className="py-3 text-xs text-muted-foreground">
                               {formatDateTime(check.checkedAt)}
@@ -2033,7 +2302,7 @@ function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
                               {check.versionId.slice(0, 8)}
                             </TableCell>
                             <TableCell className="py-3">
-                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
+                              <StatusBadge label={titleCase(check.result)} tone={toneForCheckResult(check.result)} />
                             </TableCell>
                             <TableCell className="py-3 text-xs text-muted-foreground">
                               {formatDateTime(check.checkedAt)}
@@ -2127,5 +2396,199 @@ function MiniMetric({
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+function IssueDetailSheetContent({
+  issue,
+  requestId,
+  timeline,
+}: {
+  issue: ValidationIssue
+  requestId: string
+  timeline: AuditTimelineEvent[]
+}) {
+  const [relatedLogs, setRelatedLogs] = useState<AuditTimelineEvent[] | null>(null)
+  const [loadingLogs, setLoadingLogs] = useState(false)
+  const [logError, setLogError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchRelated() {
+      setLoadingLogs(true)
+      setLogError(null)
+      try {
+        const params: { limit?: number; skip?: number; run_id?: string; step_name?: string } = { limit: 100, skip: 0 }
+        if (issue.runId) params.run_id = issue.runId
+        if (issue.stepName) params.step_name = issue.stepName
+
+        const result = await chainIqApi.orgLogs.audit.byRequest(requestId, params)
+        if (cancelled) return
+        const mapped = result.items.map((entry) => ({
+          id: `${entry.request_id}-${entry.id}`,
+          timestamp: entry.timestamp,
+          title: entry.message,
+          description: entry.step_name
+            ? `${entry.category} · ${entry.step_name}`
+            : entry.category,
+          kind: "audit" as const,
+          level: entry.level,
+          category: entry.category,
+          stepName: entry.step_name,
+          source: entry.source,
+          details: entry.details as Record<string, unknown> | null,
+        }))
+        setRelatedLogs(mapped)
+      } catch (error) {
+        if (cancelled) return
+        setLogError(error instanceof Error ? error.message : "Failed to load related logs")
+        const fromTimeline = timeline.filter(
+          (event) =>
+            event.category === issue.type ||
+            event.stepName === issue.stepName,
+        )
+        setRelatedLogs(fromTimeline.length > 0 ? fromTimeline : null)
+      } finally {
+        if (!cancelled) setLoadingLogs(false)
+      }
+    }
+
+    void fetchRelated()
+    return () => { cancelled = true }
+  }, [issue.runId, issue.stepName, issue.type, requestId, timeline])
+
+  const detailEntries = issue.details
+    ? Object.entries(issue.details).filter(
+        ([key]) => !["action_required"].includes(key),
+      )
+    : []
+
+  return (
+    <div className="space-y-6 pt-4">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusBadge label={issue.issueId} tone="neutral" />
+          <StatusBadge label={titleCase(issue.severity)} tone={severityTone(issue.severity)} />
+          <StatusBadge label={titleCase(issue.type)} tone="info" />
+          {issue.blocking ? (
+            <StatusBadge label="Blocking" tone="destructive" />
+          ) : null}
+        </div>
+
+        <div className="space-y-1.5">
+          <p className="text-sm font-medium leading-relaxed">{issue.description}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            {issue.actionRequired}
+          </p>
+        </div>
+      </div>
+
+      <Separator />
+
+      <div className="space-y-3">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Audit record
+        </p>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <FieldCell label="Audit Row ID" value={String(issue.auditRowId)} variant="muted" />
+          <FieldCell label="Run ID" value={issue.runId ?? "—"} variant="muted" />
+          <FieldCell label="Timestamp" value={formatDateTime(issue.timestamp)} variant="muted" />
+          <FieldCell label="Step" value={issue.stepName ?? "—"} variant="muted" />
+          <FieldCell label="Level" value={issue.level} variant="muted" />
+          <FieldCell label="Source" value={issue.source} variant="muted" />
+        </div>
+      </div>
+
+      {detailEntries.length > 0 ? (
+        <>
+          <Separator />
+          <div className="space-y-3">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Issue details
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {detailEntries.map(([key, value]) => (
+                <FieldCell
+                  key={key}
+                  label={titleCase(key)}
+                  value={
+                    typeof value === "object" && value !== null
+                      ? JSON.stringify(value, null, 2)
+                      : String(value ?? "—")
+                  }
+                  variant="muted"
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      <Separator />
+
+      <div className="space-y-3">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Related audit logs{issue.stepName ? ` · ${issue.stepName}` : ""}
+        </p>
+
+        {loadingLogs ? (
+          <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Loading related logs...
+          </div>
+        ) : logError && !relatedLogs ? (
+          <p className="text-sm text-muted-foreground">{logError}</p>
+        ) : relatedLogs && relatedLogs.length > 0 ? (
+          <div className="space-y-2">
+            {relatedLogs.map((event) => (
+              <div
+                key={event.id}
+                className="rounded-lg border bg-muted/20 p-3"
+              >
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {event.level ? (
+                    <StatusBadge
+                      label={titleCase(event.level)}
+                      tone={
+                        event.level === "error"
+                          ? "destructive"
+                          : event.level === "warning"
+                            ? "warning"
+                            : "neutral"
+                      }
+                    />
+                  ) : null}
+                  {event.category ? (
+                    <StatusBadge
+                      label={titleCase(event.category)}
+                      tone="info"
+                    />
+                  ) : null}
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {formatDateTime(event.timestamp)}
+                  </span>
+                </div>
+                <p className="mt-1.5 text-sm leading-relaxed">{event.title}</p>
+                {event.details && Object.keys(event.details).length > 0 ? (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+                      Raw details
+                    </summary>
+                    <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/30 p-2 text-xs leading-relaxed">
+                      {JSON.stringify(event.details, null, 2)}
+                    </pre>
+                  </details>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            No related audit logs found for this step.
+          </p>
+        )}
+      </div>
+    </div>
   )
 }

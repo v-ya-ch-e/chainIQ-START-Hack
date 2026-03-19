@@ -50,7 +50,7 @@ const EMPTY_EXTRACTION: ExtractionResult = {
     dataResidencyConstraint: false,
     esgRequirement: false,
     requesterInstruction: null,
-    scenarioTags: ["standard"],
+    scenarioTags: [],
     status: "new",
   },
   fieldStatus: {},
@@ -71,7 +71,7 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
   const [sourceText, setSourceText] = useState("")
   const [note, setNote] = useState("")
   const [requestChannel, setRequestChannel] = useState<RequestChannel>("portal")
-  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([])
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [categories, setCategories] = useState<CategoryOption[]>([])
   const [result, setResult] = useState<ExtractionResult>(EMPTY_EXTRACTION)
   const [loadingCategories, setLoadingCategories] = useState(true)
@@ -174,6 +174,10 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
   async function handleExtract() {
     setError(null)
     setExtractNotice(null)
+    if (mode === "upload" && selectedFiles.length === 0) {
+      setError("Please select a file before analyzing upload input.")
+      return
+    }
     setProcessing(true)
     setStep("processing")
     try {
@@ -189,13 +193,17 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
         sourceText,
         note,
         requestChannel,
-        fileNames: selectedFileNames,
+        files: selectedFiles,
       })
       const mappedExtraction = applyCategoryHintMapping(extraction, categories)
       setResult(mappedExtraction)
       if (
         mappedExtraction.fallbackUsed ||
-        mappedExtraction.warnings.some((warning) => warning.code === "INTAKE_FALLBACK")
+        mappedExtraction.warnings.some(
+          (warning) =>
+            warning.code === "INTAKE_FALLBACK" ||
+            warning.code === "UPLOAD_PARSE_FALLBACK",
+        )
       ) {
         setExtractNotice(
           "Extraction fallback mode is active. Review all inferred fields before creating the case.",
@@ -211,7 +219,7 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
           ? extractError.message
           : "Extraction failed. Please complete fields manually."
       setError(message)
-      setStep("complete")
+      setStep("input")
     } finally {
       setProcessing(false)
     }
@@ -351,14 +359,14 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
           sourceText={sourceText}
           note={note}
           requestChannel={requestChannel}
-          selectedFileNames={selectedFileNames}
+          selectedFiles={selectedFiles}
           processing={processing}
           error={error}
           onModeChange={setMode}
           onSourceTextChange={setSourceText}
           onNoteChange={setNote}
           onRequestChannelChange={setRequestChannel}
-          onSelectedFilesChange={setSelectedFileNames}
+          onSelectedFilesChange={setSelectedFiles}
           onExtract={handleExtract}
         />
       ) : null}

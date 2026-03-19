@@ -1,4 +1,4 @@
-import { type Severity } from "@/lib/types/case"
+import { type CaseStatus, type RecommendationStatus, type Severity } from "@/lib/types/case"
 
 export function formatCurrency(
   value: number | null | undefined,
@@ -80,4 +80,73 @@ export function scoreTone(score: number, inverse = false) {
     return "text-amber-700"
   }
   return "text-rose-700"
+}
+
+const caseStatusLabels: Record<CaseStatus, string> = {
+  received: "Received",
+  parsed: "Parsed",
+  pending_review: "Pending Review",
+  evaluated: "Evaluated",
+  recommended: "Recommended",
+  escalated: "Escalated",
+  resolved: "Resolved",
+}
+
+export function displayCaseStatus(status: CaseStatus): string {
+  return caseStatusLabels[status] ?? titleCase(status)
+}
+
+const recommendationStatusLabels: Record<RecommendationStatus, string> = {
+  proceed: "Proceed",
+  proceed_with_conditions: "Proceed with Conditions",
+  cannot_proceed: "Cannot Proceed",
+  not_evaluated: "Not Evaluated",
+}
+
+export function displayRecommendationStatus(status: RecommendationStatus): string {
+  return recommendationStatusLabels[status] ?? titleCase(status)
+}
+
+const approvalTierLabels: Record<string, string> = {
+  "AT-001": "Tier 1",
+  "AT-002": "Tier 2",
+  "AT-003": "Tier 3",
+  "AT-004": "Tier 4",
+}
+
+export function displayApprovalTier(tier: string): string {
+  const label = approvalTierLabels[tier]
+  return label ? `${label} (${tier})` : tier
+}
+
+export function titleCase(value: string): string {
+  return value
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+let regionDisplayNames: Intl.DisplayNames | null = null
+
+function getRegionDisplayNames() {
+  if (!regionDisplayNames) {
+    regionDisplayNames = new Intl.DisplayNames(["en"], { type: "region" })
+  }
+  return regionDisplayNames
+}
+
+/** ISO 3166-1 alpha-2 (or common aliases) → English country/region name for UI labels. */
+export function formatCountryDisplayName(code: string): string {
+  const raw = code.trim()
+  if (!raw) return "—"
+  const upper = raw.toUpperCase()
+  const normalized = upper === "UK" ? "GB" : upper
+  if (normalized.length === 2) {
+    try {
+      const name = getRegionDisplayNames().of(normalized)
+      if (name) return name
+    } catch {
+      // fall through
+    }
+  }
+  return raw
 }

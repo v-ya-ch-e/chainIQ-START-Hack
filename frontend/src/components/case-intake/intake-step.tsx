@@ -21,14 +21,14 @@ interface IntakeStepProps {
   sourceText: string
   note: string
   requestChannel: RequestChannel
-  selectedFileNames: string[]
+  selectedFiles: File[]
   processing: boolean
   error: string | null
   onModeChange: (value: IntakeSourceType) => void
   onSourceTextChange: (value: string) => void
   onNoteChange: (value: string) => void
   onRequestChannelChange: (value: RequestChannel) => void
-  onSelectedFilesChange: (value: string[]) => void
+  onSelectedFilesChange: (value: File[]) => void
   onExtract: () => void
 }
 
@@ -37,7 +37,7 @@ export function IntakeStep({
   sourceText,
   note,
   requestChannel,
-  selectedFileNames,
+  selectedFiles,
   processing,
   error,
   onModeChange,
@@ -58,7 +58,7 @@ export function IntakeStep({
       onSelectedFilesChange([])
       return
     }
-    onSelectedFilesChange(Array.from(files).map((file) => file.name))
+    onSelectedFilesChange(Array.from(files))
   }
 
   const extractionButtonLabel =
@@ -106,19 +106,19 @@ export function IntakeStep({
                   <Upload className="mb-2 size-4 text-muted-foreground" />
                   <p className="text-sm font-medium">Upload request document</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Drag and drop supported (PDF, DOCX, TXT, CSV)
+                    Drag and drop supported (PDF, PNG, JPG, JPEG, WEBP)
                   </p>
                 </label>
                 <Input
                   id="request-upload"
                   type="file"
-                  accept=".pdf,.docx,.txt,.csv"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp"
                   onChange={(event) => handleFileInputChange(event.target.files)}
                   className="sr-only"
                 />
-                {selectedFileNames.length > 0 ? (
+                {selectedFiles.length > 0 ? (
                   <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                    {selectedFileNames.join(", ")}
+                    {selectedFiles.map((file) => file.name).join(", ")}
                   </div>
                 ) : null}
                 <Textarea

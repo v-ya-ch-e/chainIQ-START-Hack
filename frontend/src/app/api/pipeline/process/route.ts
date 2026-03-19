@@ -2,12 +2,27 @@ import { NextRequest, NextResponse } from "next/server";
 
 const PIPELINE_TIMEOUT_MS = 120_000; // 2 minutes for LLM-heavy pipeline
 
+function deriveLogicalUrlFromOrg(orgUrl: string): string {
+  try {
+    const parsed = new URL(orgUrl);
+    if (parsed.port === "8000") {
+      parsed.port = "8080";
+      return parsed.toString().replace(/\/$/, "");
+    }
+    return `${parsed.protocol}//${parsed.hostname}:8080`;
+  } catch {
+    return orgUrl.replace(":8000", ":8080").replace(/\/$/, "");
+  }
+}
+
 export async function POST(request: NextRequest) {
+  const orgLayerUrl = process.env.BACKEND_INTERNAL_URL;
   const logicalLayerUrl =
-    process.env.LOGICAL_BACKEND_INTERNAL_URL ?? process.env.LOGICAL_LAYER_URL;
+    process.env.LOGICAL_BACKEND_INTERNAL_URL ||
+    (orgLayerUrl ? deriveLogicalUrlFromOrg(orgLayerUrl) : undefined);
   if (!logicalLayerUrl) {
     return NextResponse.json(
-      { detail: "LOGICAL_BACKEND_INTERNAL_URL not configured" },
+      { detail: "Logical backend URL is not configured" },
       { status: 500 }
     );
   }

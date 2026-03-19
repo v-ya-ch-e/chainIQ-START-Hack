@@ -2,6 +2,7 @@ import {
   ApiError,
   buildQuery,
   fetchAllPages,
+  requestBlob,
   requestJson,
   requestNoContent,
 } from "@/lib/api/http"
@@ -70,6 +71,7 @@ import type {
   SupplierServiceRegionOut,
   SupplierUpdate,
   SupplierWinRateOut,
+  PipelineResultOut,
 } from "@/lib/api/types"
 
 function jsonBody(body: unknown): RequestInit {
@@ -511,6 +513,12 @@ export const chainIqApi = {
         `/api/pipeline/audit/${requestId}/summary`,
       )
     },
+    report(requestId: string) {
+      return requestBlob(
+        "logical",
+        `/api/pipeline/report/${requestId}`,
+      )
+    },
     steps: {
       fetch(body: StepRequest) {
         return requestJson<Record<string, unknown>>(
@@ -554,6 +562,15 @@ export const chainIqApi = {
           jsonBody(body),
         )
       },
+    },
+  },
+
+  pipelineResults: {
+    latest(requestId: string) {
+      return requestJson<PipelineResultOut>(
+        "org",
+        `/api/pipeline-results/latest/${requestId}`,
+      )
     },
   },
 

@@ -724,3 +724,26 @@ export type ApplicableRulesParams = {
   category_l2: string
   delivery_country: string
 }
+
+export interface PipelineResultSummary {
+  supplier_count: number
+  excluded_count: number
+  escalation_count: number
+  blocking_escalation_count: number
+  top_supplier_id: string | null
+  top_supplier_name: string | null
+  total_issues: number
+  confidence_score: number
+}
+
+export interface PipelineResultOut {
+  id: number
+  run_id: string
+  request_id: string
+  status: string
+  recommendation_status: string | null
+  processed_at: string
+  output: Record<string, unknown>
+  summary: PipelineResultSummary | null
+  created_at: string
+}

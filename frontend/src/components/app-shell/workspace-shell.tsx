@@ -10,6 +10,11 @@ import { AppNavigation } from "@/components/app-shell/nav-links"
 import { NavUser } from "@/components/app-shell/nav-user"
 import { PageTransition } from "@/components/shared/page-transition"
 import {
+  WorkspaceHeaderActionsProvider,
+  WorkspaceHeaderActionsSlot,
+} from "@/components/app-shell/workspace-header-actions"
+import { ThemeToggle } from "@/components/theme/theme-toggle"
+import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -33,6 +38,7 @@ export function WorkspaceShell({
   const crumbs = buildBreadcrumbs(pathname)
 
   return (
+    <WorkspaceHeaderActionsProvider>
     <SidebarProvider
       defaultOpen={defaultSidebarOpen}
       style={
@@ -41,6 +47,7 @@ export function WorkspaceShell({
           "--header-height": "calc(var(--spacing) * 12)",
           "--layout-inner-padding": "clamp(0.75rem, 1.2vw, 1rem)",
           "--layout-inner-radius": "calc(var(--radius) * 1.4)",
+          // Shell curve: outer radius = inner content radius + page gutter (matches globals.css)
           "--layout-outer-radius":
             "calc(var(--layout-inner-radius) + var(--layout-inner-padding))",
           height: "100svh",
@@ -73,7 +80,10 @@ export function WorkspaceShell({
           <AppNavigation />
         </SidebarContent>
 
-        <SidebarFooter>
+        <SidebarFooter className="gap-2">
+          <div className="flex justify-end px-0 group-data-[collapsible=icon]:justify-center">
+            <ThemeToggle />
+          </div>
           <NavUser
             user={{
               name: "Max Analyst",
@@ -85,10 +95,13 @@ export function WorkspaceShell({
 
       </Sidebar>
 
-      <SidebarInset className="min-h-0 overflow-hidden bg-white">
-        <header className="flex h-(--header-height) shrink-0 items-center gap-3 border-b bg-white px-4">
-          <SidebarTrigger className="-ml-1" />
-          <nav aria-label="Breadcrumb" className="min-w-0">
+      <SidebarInset className="min-h-0 overflow-hidden bg-background">
+        <header className="flex min-h-(--header-height) min-w-0 shrink-0 flex-nowrap items-center gap-4 rounded-t-[var(--layout-outer-radius)] border-b bg-background px-[var(--layout-inner-padding)] py-2.5">
+          <SidebarTrigger className="shrink-0" />
+          <nav
+            aria-label="Breadcrumb"
+            className="min-w-0 max-w-[min(100%,12rem)] shrink-0 overflow-hidden sm:max-w-[min(100%,16rem)] lg:max-w-[min(100%,20rem)] xl:max-w-[min(100%,24rem)]"
+          >
             <ol className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:text-sm">
               {crumbs.map((crumb, index) => {
                 const isLast = index === crumbs.length - 1
@@ -118,6 +131,7 @@ export function WorkspaceShell({
               })}
             </ol>
           </nav>
+          <WorkspaceHeaderActionsSlot />
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-[var(--layout-inner-padding)]">
@@ -129,6 +143,7 @@ export function WorkspaceShell({
         </div>
       </SidebarInset>
     </SidebarProvider>
+    </WorkspaceHeaderActionsProvider>
   )
 }
 

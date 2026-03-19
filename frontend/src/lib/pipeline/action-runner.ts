@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useState } from "react"
+import { toast } from "sonner"
 
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message.trim()) return error.message
@@ -21,6 +22,7 @@ export interface PipelineActionOptions<T> {
   request: () => Promise<T>
   onSuccess?: (result: T) => void
   successMessage?: string
+  successDescription?: string
 }
 
 export type PipelineActionPhase = "running" | "success" | "error"
@@ -35,29 +37,17 @@ export interface PipelineActionLifecycle {
 
 export function usePipelineActionRunner() {
   const [loadingAction, setLoadingAction] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [fallback, setFallback] = useState<string | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
   const [actionLifecycleByLabel, setActionLifecycleByLabel] = useState<
     Record<string, PipelineActionLifecycle>
   >({})
   const [lastActionLifecycle, setLastActionLifecycle] =
     useState<PipelineActionLifecycle | null>(null)
 
-  const clearNotices = useCallback(() => {
-    setError(null)
-    setFallback(null)
-    setMessage(null)
-  }, [])
-
   const runAction = useCallback(async <T>(options: PipelineActionOptions<T>) => {
-    const { label, request, onSuccess, successMessage } = options
+    const { label, request, onSuccess, successMessage, successDescription } = options
     const startedAt = new Date().toISOString()
 
     setLoadingAction(label)
-    setError(null)
-    setFallback(null)
-    setMessage(null)
     setActionLifecycleByLabel((current) => ({
       ...current,
       [label]: {
@@ -71,7 +61,9 @@ export function usePipelineActionRunner() {
       const result = await request()
       onSuccess?.(result)
       if (successMessage) {
-        setMessage(successMessage)
+        toast.success(successMessage, {
+          description: successDescription,
+        })
       }
       const completedLifecycle: PipelineActionLifecycle = {
         label,
@@ -88,9 +80,13 @@ export function usePipelineActionRunner() {
     } catch (actionError) {
       const failureMessage = errorMessage(actionError)
       if (isRunsEndpointInstability(actionError)) {
-        setFallback(failureMessage)
+        toast.warning("Pipeline endpoint degraded", {
+          description: failureMessage,
+        })
       } else {
-        setError(failureMessage)
+        toast.error("Action failed", {
+          description: failureMessage,
+        })
       }
       const failedLifecycle: PipelineActionLifecycle = {
         label,
@@ -112,16 +108,8 @@ export function usePipelineActionRunner() {
 
   return {
     loadingAction,
-    error,
-    fallback,
-    message,
-    setError,
-    setFallback,
-    setMessage,
     actionLifecycleByLabel,
     lastActionLifecycle,
-    clearNotices,
     runAction,
   }
 }
-

@@ -1,10 +1,26 @@
 "use client"
 
 import Link from "next/link"
-import { useMemo, useState } from "react"
-import { AlertTriangle, ArrowRight, BarChart3, Filter } from "lucide-react"
+import {
+  memo,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react"
+import { AlertTriangle, ArrowRight, BarChart3 } from "lucide-react"
 
-import { formatCurrency, formatDateTime } from "@/lib/data/formatters"
+import {
+  TopbarFilters,
+  topbarFilterControlClassName,
+} from "@/components/app-shell/topbar-filters"
+import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
+import {
+  displayCaseStatus,
+  formatCountryDisplayName,
+  formatCurrency,
+  formatDateTime,
+} from "@/lib/data/formatters"
 import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
@@ -16,7 +32,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import type {
   CaseListItem,
@@ -25,6 +40,11 @@ import type {
   DashboardInsights,
   DashboardMetric,
 } from "@/lib/types/case"
+import {
+  buildFilterOptions,
+  labelForFilterValue,
+  type FilterOption,
+} from "@/lib/filter-options"
 import { cn } from "@/lib/utils"
 
 interface OverviewPageProps {
@@ -34,21 +54,146 @@ interface OverviewPageProps {
   insights: DashboardInsights
 }
 
-const statusLabelMap: Record<CaseStatus, string> = {
-  received: "Received",
-  parsed: "Parsed",
-  pending_review: "Pending review",
-  evaluated: "Evaluated",
-  recommended: "Recommended",
-  escalated: "Escalated",
-  resolved: "Resolved",
-}
-
 function getStatusTone(status: CaseStatus) {
   if (status === "resolved" || status === "recommended") return "success"
   if (status === "pending_review" || status === "escalated") return "warning"
   return "neutral"
 }
+
+const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
+  statusFilter,
+  categoryFilter,
+  countryFilter,
+  attentionOnly,
+  statusOptions,
+  categoryOptions,
+  countryOptions,
+  onStatusChange,
+  onCategoryChange,
+  onCountryChange,
+  onAttentionChange,
+  onReset,
+  canReset,
+}: {
+  statusFilter: string
+  categoryFilter: string
+  countryFilter: string
+  attentionOnly: boolean
+  statusOptions: FilterOption[]
+  categoryOptions: FilterOption[]
+  countryOptions: FilterOption[]
+  onStatusChange: (value: string | null) => void
+  onCategoryChange: (value: string | null) => void
+  onCountryChange: (value: string | null) => void
+  onAttentionChange: (checked: boolean) => void
+  onReset: () => void
+  canReset: boolean
+}) {
+  const statusTriggerLabel = labelForFilterValue(
+    statusOptions,
+    statusFilter,
+    "All statuses",
+  )
+  const categoryTriggerLabel = labelForFilterValue(
+    categoryOptions,
+    categoryFilter,
+    "All categories",
+  )
+  const countryTriggerLabel = labelForFilterValue(
+    countryOptions,
+    countryFilter,
+    "All countries",
+  )
+
+  return (
+    <TopbarFilters>
+      <Select value={statusFilter} onValueChange={onStatusChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {statusTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {statusOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={categoryFilter} onValueChange={onCategoryChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[11rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[13rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {categoryTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {categoryOptions.map((category) => (
+            <SelectItem
+              key={category.value || "__uncategorized"}
+              value={category.value}
+            >
+              {category.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Select value={countryFilter} onValueChange={onCountryChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {countryTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {countryOptions.map((country) => (
+            <SelectItem key={country.value} value={country.value}>
+              {country.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <label
+        className={cn(
+          "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border border-transparent bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground",
+          topbarFilterControlClassName,
+        )}
+      >
+        <Checkbox
+          checked={attentionOnly}
+          onCheckedChange={(checked) => onAttentionChange(checked === true)}
+        />
+        Needs attention
+      </label>
+      <Button
+        variant="outline"
+        size="sm"
+        className={cn("h-8 shrink-0", topbarFilterControlClassName)}
+        onClick={onReset}
+        disabled={!canReset}
+      >
+        Reset
+      </Button>
+    </TopbarFilters>
+  )
+})
 
 export function OverviewPage({
   metrics,
@@ -60,6 +205,36 @@ export function OverviewPage({
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
   const [countryFilter, setCountryFilter] = useState<string>("all")
   const [attentionOnly, setAttentionOnly] = useState(false)
+
+  const statusOptions = useMemo(
+    () => [
+      { value: "all", label: "All statuses" },
+      ...buildFilterOptions(insights.filterOptions.statuses, (status) =>
+        displayCaseStatus(status),
+      ),
+    ],
+    [insights.filterOptions.statuses],
+  )
+
+  const categoryOptions = useMemo(
+    () => [
+      { value: "all", label: "All categories" },
+      ...buildFilterOptions(insights.filterOptions.categories, (category) =>
+        category.trim() ? category : "Uncategorized",
+      ),
+    ],
+    [insights.filterOptions.categories],
+  )
+
+  const countryOptions = useMemo(
+    () => [
+      { value: "all", label: "All countries" },
+      ...buildFilterOptions(insights.filterOptions.countries, (country) =>
+        formatCountryDisplayName(country),
+      ),
+    ],
+    [insights.filterOptions.countries],
+  )
 
   const filteredCases = useMemo(() => {
     return cases.filter((entry) => {
@@ -98,19 +273,31 @@ export function OverviewPage({
     return insights.filterOptions.statuses
       .map((status) => ({
         status,
-        label: statusLabelMap[status],
+        label: displayCaseStatus(status),
         count: counts.get(status) ?? 0,
       }))
       .filter((entry) => entry.count > 0)
       .sort((a, b) => b.count - a.count)
   }, [filteredCases, insights.filterOptions.statuses])
 
-  const resetFilters = () => {
+  const resetFilters = useCallback(() => {
     setStatusFilter("all")
     setCategoryFilter("all")
     setCountryFilter("all")
     setAttentionOnly(false)
-  }
+  }, [])
+
+  const handleStatusFilterChange = useCallback((value: string | null) => {
+    setStatusFilter(value ?? "all")
+  }, [])
+
+  const handleCategoryFilterChange = useCallback((value: string | null) => {
+    setCategoryFilter(value ?? "all")
+  }, [])
+
+  const handleCountryFilterChange = useCallback((value: string | null) => {
+    setCountryFilter(value ?? "all")
+  }, [])
 
   const activeFiltersCount =
     Number(statusFilter !== "all") +
@@ -118,13 +305,53 @@ export function OverviewPage({
     Number(countryFilter !== "all") +
     Number(attentionOnly)
 
+  const setHeaderActions = useSetWorkspaceHeaderActions()
+
+  useLayoutEffect(
+    () => {
+      setHeaderActions(
+        <OverviewWorkspaceToolbar
+          statusFilter={statusFilter}
+          categoryFilter={categoryFilter}
+          countryFilter={countryFilter}
+          attentionOnly={attentionOnly}
+          statusOptions={statusOptions}
+          categoryOptions={categoryOptions}
+          countryOptions={countryOptions}
+          onStatusChange={handleStatusFilterChange}
+          onCategoryChange={handleCategoryFilterChange}
+          onCountryChange={handleCountryFilterChange}
+          onAttentionChange={setAttentionOnly}
+          onReset={resetFilters}
+          canReset={activeFiltersCount > 0}
+        />,
+      )
+      return () => setHeaderActions(null)
+    },
+    [
+      setHeaderActions,
+      statusFilter,
+      categoryFilter,
+      countryFilter,
+      attentionOnly,
+      activeFiltersCount,
+      statusOptions,
+      categoryOptions,
+      countryOptions,
+      handleStatusFilterChange,
+      handleCategoryFilterChange,
+      handleCountryFilterChange,
+      resetFilters,
+    ],
+  )
+
   return (
     <div className="space-y-8">
       <div className="animate-fade-in-up flex flex-col gap-2 @xl/main:flex-row @xl/main:items-end @xl/main:justify-between">
         <SectionHeading
           eyebrow="Overview"
           title="Sourcing overview"
-          description="Quick operational snapshot with filters and focused queues for action."
+          description="Quick operational snapshot and focused queues for action."
         />
         <div className="text-xs text-muted-foreground">
           <p suppressHydrationWarning>
@@ -168,90 +395,6 @@ export function OverviewPage({
           />
         ))}
       </section>
-
-      <Card
-        className="animate-fade-in-up"
-        style={{ animationDelay: "120ms" }}
-      >
-        <CardHeader className="border-b pb-4">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Filter className="size-4 text-muted-foreground" />
-            Filters
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-4">
-          <div className="flex flex-col gap-3 @2xl/main:flex-row @2xl/main:items-center">
-            <div className="grid flex-1 gap-3 @2xl/main:grid-cols-3">
-              <Select
-                value={statusFilter}
-                onValueChange={(value) => setStatusFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  {insights.filterOptions.statuses.map((status) => (
-                    <SelectItem key={status} value={status}>
-                      {statusLabelMap[status]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={categoryFilter}
-                onValueChange={(value) => setCategoryFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Category" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All categories</SelectItem>
-                  {insights.filterOptions.categories.map((category) => (
-                    <SelectItem key={category} value={category}>
-                      {category}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={countryFilter}
-                onValueChange={(value) => setCountryFilter(value ?? "all")}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Country" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All countries</SelectItem>
-                  {insights.filterOptions.countries.map((country) => (
-                    <SelectItem key={country} value={country}>
-                      {country}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm">
-                <Checkbox
-                  checked={attentionOnly}
-                  onCheckedChange={(checked) => setAttentionOnly(checked === true)}
-                />
-                Needs attention
-              </label>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={resetFilters}
-                disabled={activeFiltersCount === 0}
-              >
-                Reset
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
       <section
         className="animate-fade-in-up grid gap-6 @3xl/main:grid-cols-2"
@@ -381,7 +524,8 @@ export function OverviewPage({
                       )}
                       suppressHydrationWarning
                     >
-                      {entry.businessUnit} · {entry.countryLabel} · updated{" "}
+                      {entry.businessUnit} ·{" "}
+                      {formatCountryDisplayName(entry.countryLabel)} · updated{" "}
                       {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>
@@ -436,7 +580,7 @@ export function OverviewPage({
                       suppressHydrationWarning
                     >
                       {(entry.scenarioTags ?? []).slice(0, 3).join(", ") ||
-                        "standard"}{" "}
+                        "—"}{" "}
                       · updated {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>

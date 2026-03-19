@@ -164,7 +164,7 @@ export async function POST(request: Request) {
     dataResidencyConstraint: /data[- ]residency|local data/i.test(sourceText),
     esgRequirement: /\b(esg|sustainab)/i.test(sourceText),
     requesterInstruction: body.note ?? null,
-    scenarioTags: ["standard"],
+    scenarioTags: [],
     status: "new",
   }
 

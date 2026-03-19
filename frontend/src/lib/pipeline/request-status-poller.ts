@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { chainIqApi } from "@/lib/api/client"
 
 export type PipelineLivePhase =
+  | "idle"
   | "queued"
   | "running"
   | "completed"
@@ -45,6 +46,8 @@ function statusCandidate(payload: unknown): string | null {
     record.state,
     record.pipeline_status,
     record.run_status,
+    asRecord(record.latest_run)?.status,
+    asRecord(record.latest_run)?.state,
     asRecord(record.run)?.status,
     asRecord(record.run)?.state,
   ]
@@ -59,6 +62,14 @@ function statusCandidate(payload: unknown): string | null {
 export function classifyPipelineStatus(payload: unknown): PipelineLivePhase {
   const candidate = statusCandidate(payload)
   if (!candidate) return "unknown"
+
+  if (
+    candidate.includes("not_started") ||
+    candidate.includes("not started") ||
+    candidate === "idle"
+  ) {
+    return "idle"
+  }
 
   if (
     candidate.includes("complete") ||
