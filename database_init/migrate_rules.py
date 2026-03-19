@@ -74,7 +74,6 @@ def run_migrations():
           output_snapshot JSON         NULL,
           parent_run_id   CHAR(36)     NULL,
           trigger_reason  VARCHAR(100) NULL,
-          favorite       BOOLEAN      NOT NULL DEFAULT FALSE,
           PRIMARY KEY (run_id),
           CONSTRAINT fk_er_request FOREIGN KEY (request_id)
             REFERENCES requests(request_id)
@@ -327,15 +326,6 @@ def run_migrations():
     """)
 
     conn.commit()
-
-    # V9: Add favorite column to evaluation_runs (idempotent)
-    cursor.execute("""
-        SELECT COUNT(*) FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'evaluation_runs' AND COLUMN_NAME = 'favorite'
-    """)
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("ALTER TABLE evaluation_runs ADD COLUMN favorite BOOLEAN NOT NULL DEFAULT FALSE")
-        conn.commit()
 
     # Seed rule_versions only if none exist
     cursor.execute("SELECT COUNT(*) FROM rule_versions")

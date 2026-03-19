@@ -25,7 +25,6 @@ from app.models.evaluations import (
 from app.schemas.rule_versions import (
     EscalationLogOut,
     EvaluationDetailOut,
-    EvaluationFavoritePatch,
     EvaluationRunCreate,
     EvaluationRunLogOut,
     FullEvaluationTriggerCreate,
@@ -362,27 +361,10 @@ def get_evaluation_detail(
         status=run.status,
         started_at=run.started_at,
         finished_at=run.finished_at,
-        favorite=getattr(run, "favorite", False),
         supplier_breakdowns=supplier_breakdowns,
         supplier_shortlist=supplier_shortlist,
         suppliers_excluded=suppliers_excluded,
     )
-
-
-@router.patch("/evaluations/{run_id}/favorite", response_model=EvaluationDetailOut)
-def patch_evaluation_favorite(
-    run_id: str,
-    body: EvaluationFavoritePatch,
-    db: Session = Depends(get_db),
-):
-    """Toggle or set favorite status for an evaluation run."""
-    run = db.query(EvaluationRun).filter(EvaluationRun.run_id == run_id).first()
-    if not run:
-        raise HTTPException(status_code=404, detail="Evaluation run not found")
-    run.favorite = body.favorite
-    db.commit()
-    db.refresh(run)
-    return get_evaluation_detail(run_id, db)
 
 
 @router.post("/evaluations/reeval/{request_id}", response_model=dict)
