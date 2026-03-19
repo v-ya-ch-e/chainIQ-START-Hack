@@ -103,7 +103,7 @@ def rank_suppliers(request_data: dict, suppliers: list) -> dict:
             "category_l1": category_l1,
             "category_l2": category_l2,
             "region": region,
-            "quantity": int(quantity),
+            "quantity": int(float(quantity)),
         })
 
         if not pricing:
