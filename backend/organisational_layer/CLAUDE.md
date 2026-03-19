@@ -46,7 +46,9 @@ docker compose up --build
 | `app/routers/awards.py` | Read endpoints for historical awards |
 | `app/routers/policies.py` | Read endpoints for approval thresholds, preferred/restricted supplier policies |
 | `app/routers/rules.py` | Read endpoints for category, geography, and escalation rules |
+| `app/routers/escalations.py` | Deterministic escalation queue endpoints (read-only) |
 | `app/routers/analytics.py` | Domain-specific analytics: compliant suppliers, pricing lookup, approval tiers, restriction/preferred checks, applicable rules, request overview, spend aggregations, supplier win rates |
+| `app/services/escalations.py` | Escalation evaluation engine (ER rules + AT conflict detection) |
 | `Dockerfile` | Python 3.14-slim container, installs deps, runs uvicorn |
 | `requirements.txt` | fastapi, uvicorn, sqlalchemy, pymysql, pydantic-settings, python-dotenv, cryptography |
 | `.env.example` | Template for DB connection env vars |
@@ -60,6 +62,7 @@ docker compose up --build
 - `GET /api/awards/`, `GET /api/awards/{id}`, `GET /api/awards/by-request/{id}`
 - `GET /api/policies/approval-thresholds`, `GET /api/policies/preferred-suppliers`, `GET /api/policies/restricted-suppliers`
 - `GET /api/rules/category`, `GET /api/rules/geography`, `GET /api/rules/escalation`
+- `GET /api/escalations/queue`, `GET /api/escalations/by-request/{id}`
 
 ### Analytics
 - `GET /api/analytics/compliant-suppliers` — non-restricted suppliers for category+country

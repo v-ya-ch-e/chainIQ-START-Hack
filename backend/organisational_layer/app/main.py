@@ -1,7 +1,16 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import analytics, awards, categories, policies, requests, rules, suppliers
+from app.routers import (
+    analytics,
+    awards,
+    categories,
+    escalations,
+    policies,
+    requests,
+    rules,
+    suppliers,
+)
 
 app = FastAPI(
     title="ChainIQ Organisational Layer API",
@@ -21,6 +30,7 @@ app.include_router(categories.router)
 app.include_router(suppliers.router)
 app.include_router(requests.router)
 app.include_router(awards.router)
+app.include_router(escalations.router)
 app.include_router(policies.router)
 app.include_router(rules.router)
 app.include_router(analytics.router)

@@ -28,12 +28,13 @@ import { cn } from "@/lib/utils"
 
 interface CaseWorkspaceProps {
   data: CaseDetail
+  initialTab?: CaseTab
 }
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
 
-export function CaseWorkspace({ data }: CaseWorkspaceProps) {
-  const [activeTab, setActiveTab] = useState<CaseTab>("overview")
+export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspaceProps) {
+  const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
@@ -723,9 +724,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                         tone={
                           activeEscalation.status === "resolved"
                             ? "success"
-                            : activeEscalation.status === "acknowledged"
-                              ? "warning"
-                              : "destructive"
+                            : "destructive"
                         }
                       />
                       <StatusBadge
@@ -736,6 +735,11 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                     <h3 className="text-base font-semibold">
                       Escalate to {activeEscalation.escalateTo}
                     </h3>
+                    {activeEscalation.ruleLabel ? (
+                      <p className="text-sm leading-relaxed text-muted-foreground">
+                        {activeEscalation.ruleLabel}
+                      </p>
+                    ) : null}
                     <p className="text-sm leading-relaxed text-muted-foreground">
                       {activeEscalation.trigger}
                     </p>
@@ -776,7 +780,12 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                             </p>
                           </TableCell>
                           <TableCell className="align-top text-sm">
-                            {entry.rule}
+                            <p className="font-medium">{entry.rule}</p>
+                            {entry.ruleLabel ? (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {entry.ruleLabel}
+                              </p>
+                            ) : null}
                           </TableCell>
                           <TableCell className="align-top text-sm">
                             {entry.escalateTo}
@@ -787,9 +796,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                               tone={
                                 entry.status === "resolved"
                                   ? "success"
-                                  : entry.status === "acknowledged"
-                                    ? "warning"
-                                    : "destructive"
+                                  : "destructive"
                               }
                             />
                           </TableCell>

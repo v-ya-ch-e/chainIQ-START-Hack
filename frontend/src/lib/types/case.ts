@@ -112,10 +112,11 @@ export interface ExcludedSupplier {
 export interface EscalationItem {
   escalationId: string
   rule: string
+  ruleLabel?: string
   trigger: string
   escalateTo: string
   blocking: boolean
-  status: "open" | "acknowledged" | "resolved"
+  status: "open" | "resolved"
   nextAction: string
 }
 
@@ -205,10 +206,11 @@ export interface QueueEscalationItem {
   category: string
   businessUnit: string
   country: string
-  rule: string
+  ruleId: string
+  ruleLabel: string
   escalateTo: string
   blocking: boolean
-  status: "open" | "acknowledged" | "resolved"
+  status: "open" | "resolved"
   createdAt: string
   lastUpdated: string
   trigger: string
