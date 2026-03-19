@@ -8,6 +8,7 @@ from app.routers import (
     escalations,
     logs,
     parse,
+    intake,
     policies,
     requests,
     rule_versions,
@@ -40,6 +41,7 @@ app.include_router(rule_versions.router)
 app.include_router(analytics.router)
 app.include_router(logs.router)
 app.include_router(parse.router)
+app.include_router(intake.router)
 
 
 @app.get("/health", tags=["Health"])

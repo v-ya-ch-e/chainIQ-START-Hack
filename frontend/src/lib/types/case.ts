@@ -22,6 +22,7 @@ export type ScenarioTag =
   | "multilingual"
   | "capacity"
   | "multi_country"
+  | string
 
 export type Severity = "critical" | "high" | "medium" | "low"
 
@@ -29,12 +30,14 @@ export type RequestChannel = "portal" | "teams" | "email"
 
 export interface RawRequest {
   requestId: string
+  categoryId?: number
   createdAt: string
   requestChannel: RequestChannel
   requestLanguage: string
   businessUnit: string
   country: string
   site: string
+  requesterId?: string
   requesterRole: string
   submittedForId: string
   status: CaseStatus
@@ -85,9 +88,15 @@ export interface SupplierRow {
   rank: number
   supplierId: string
   supplierName: string
+  countryHq?: string
+  currency?: string
   preferred: boolean
   incumbent: boolean
   pricingTierApplied: string
+  region?: string
+  minQuantity?: number
+  maxQuantity?: number
+  moq?: number
   unitPrice: number
   totalPrice: number
   standardLeadTimeDays: number
@@ -99,6 +108,7 @@ export interface SupplierRow {
   esgScore: number
   policyCompliant: boolean
   coversDeliveryCountry: boolean
+  dataResidencySupported?: boolean
   recommendationNote: string
 }
 
@@ -163,6 +173,11 @@ export interface RecommendationSummary {
   minimumBudgetRequired?: number | null
   currency: string
   approvalTier: string
+  minAmount?: number | null
+  maxAmount?: number | null
+  managers?: string[]
+  deviationApprovers?: string[]
+  policyNote?: string | null
   quotesRequired: number
   complianceStatus: string
 }
@@ -173,11 +188,38 @@ export interface AuditTimelineEvent {
   title: string
   description: string
   kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit"
+  level?: string
+  category?: string
+  stepName?: string | null
+  source?: string
+  details?: Record<string, unknown> | null
 }
 
 export interface AuditFeedEvent extends AuditTimelineEvent {
   caseId: string
   caseTitle: string
+}
+
+export interface AuditSummaryMetric {
+  label: string
+  value: string
+  helper: string
+}
+
+export interface AuditFeedMeta {
+  mode: "fresh" | "degraded"
+  source: "orgLogs" | "orgLogsFallback" | "none"
+  isTruncated: boolean
+  totalKnown: number
+  fetchedCount: number
+  asOf: string
+  warning?: string
+}
+
+export interface AuditPageData {
+  summary: AuditSummaryMetric[]
+  feed: AuditFeedEvent[]
+  feedMeta: AuditFeedMeta
 }
 
 export interface AuditTrail {
@@ -254,6 +296,7 @@ export interface QueueEscalationItem {
 export interface DashboardMetric {
   label: string
   value: number
+  valueLabel?: string
   tone?: "default" | "success" | "warning" | "destructive" | "info"
   helper: string
 }
@@ -264,8 +307,109 @@ export interface DashboardDataState {
   reason?: string
 }
 
+export interface DashboardFilterOptions {
+  statuses: CaseStatus[]
+  categories: string[]
+  countries: string[]
+}
+
+export interface DashboardStatusInsight {
+  status: CaseStatus
+  label: string
+  count: number
+}
+
+export interface DashboardSpendByCategoryInsight {
+  category: string
+  totalSpend: number
+  awardCount: number
+}
+
+export interface DashboardInsights {
+  statusBreakdown: DashboardStatusInsight[]
+  spendByCategory: DashboardSpendByCategoryInsight[]
+  filterOptions: DashboardFilterOptions
+}
+
 export interface DashboardPageData {
   metrics: DashboardMetric[]
   cases: CaseListItem[]
   dataState: DashboardDataState
+  insights: DashboardInsights
 }
+
+export type IntakeSourceType = "paste" | "upload" | "manual"
+
+export type IntakeFlowStep = "input" | "processing" | "complete" | "review" | "created"
+
+export type IntakeFieldStatus =
+  | "confident"
+  | "inferred"
+  | "missing"
+  | "needs_review"
+
+export interface IntakeFieldMeta {
+  status: IntakeFieldStatus
+  confidence: number
+  reason?: string
+}
+
+export interface CaseIntakeInput {
+  sourceType: IntakeSourceType
+  sourceText: string
+  note?: string
+  requestChannel?: RequestChannel
+  fileNames?: string[]
+}
+
+export interface CategoryOption {
+  id: number
+  categoryL1: string
+  categoryL2: string
+}
+
+export interface CaseDraftPayload {
+  requestId?: string
+  createdAt?: string
+  title: string
+  requestText: string
+  requestChannel: RequestChannel
+  requestLanguage: string
+  businessUnit: string
+  country: string
+  site: string
+  requesterId: string
+  requesterRole: string
+  submittedForId: string
+  categoryId: number | null
+  quantity: number | null
+  unitOfMeasure: string
+  currency: string
+  budgetAmount: number | null
+  requiredByDate: string
+  deliveryCountries: string[]
+  preferredSupplierMentioned: string | null
+  incumbentSupplier: string | null
+  contractTypeRequested: string
+  dataResidencyConstraint: boolean
+  esgRequirement: boolean
+  requesterInstruction: string | null
+  scenarioTags: ScenarioTag[]
+  status: string
+}
+
+export interface ExtractionWarning {
+  code: string
+  severity: Severity
+  message: string
+}
+
+export interface ExtractionResult {
+  draft: CaseDraftPayload
+  fieldStatus: Partial<Record<keyof CaseDraftPayload, IntakeFieldMeta>>
+  missingRequired: Array<keyof CaseDraftPayload>
+  warnings: ExtractionWarning[]
+  extractionStrength: "strong" | "partial" | "low"
+}
+
+export type CreateCasePayload = CaseDraftPayload

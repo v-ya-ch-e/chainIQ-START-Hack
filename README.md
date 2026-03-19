@@ -50,6 +50,39 @@ docker compose --profile localdb up -d mysql
 docker compose --profile tools run --rm migrator
 ```
 
+## Simplified run modes
+
+Use the root `Makefile` to run both local and deployed setups with one command.
+
+```bash
+# list available commands
+make help
+
+# local full stack (mysql + migrator + backend + frontend)
+make local-up
+
+# local full stack with frontend hot reload
+make local-dev
+
+# deployed mode (frontend only; points to deployed backend URLs)
+make deployed-up
+
+# stop local stacks
+make local-down
+```
+
+First-time setup for mode-specific env files:
+
+```bash
+make env-local
+make env-deployed
+```
+
+Then edit:
+
+- `.env.local` for local container URLs
+- `.env.deployed` for deployed backend URLs
+
 ## Notes
 
 - `docker-compose.override.yml` is intentionally minimal for deployment safety.
