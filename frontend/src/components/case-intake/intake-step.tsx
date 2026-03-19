@@ -60,116 +60,131 @@ export function IntakeStep({
     mode === "upload" ? "Analyze file" : "Extract information"
 
   return (
-    <Card className="mx-auto max-w-4xl">
+    <Card className="mx-auto max-w-6xl">
       <CardHeader>
         <CardTitle>Provide request input</CardTitle>
         <CardDescription>
-          Paste text, upload a document, or switch to manual entry. The system will
-          extract what it can and guide completion.
+          Share what you have. We will extract structured fields and guide completion.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {error ? <Alert variant="destructive">{error}</Alert> : null}
-
-        <Tabs
-          value={mode}
-          onValueChange={(value) => onModeChange((value as IntakeSourceType) ?? "paste")}
-          className="space-y-4"
-        >
-          <TabsList>
-            <TabsTrigger value="paste">Paste text</TabsTrigger>
-            <TabsTrigger value="upload">Upload file</TabsTrigger>
-            <TabsTrigger value="manual">Manual entry</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="paste" className="space-y-4">
-            <Textarea
-              placeholder="Paste email body, Teams message, or free-text request..."
-              value={sourceText}
-              onChange={(event) => onSourceTextChange(event.target.value)}
-            />
-          </TabsContent>
-
-          <TabsContent value="upload" className="space-y-4">
-            <label
-              htmlFor="request-upload"
-              className="flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-4 py-8 text-center"
-            >
-              <Upload className="mb-2 size-4 text-muted-foreground" />
-              <p className="text-sm font-medium">Upload request document</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Drag and drop supported (PDF, DOCX, TXT, CSV)
-              </p>
-            </label>
-            <Input
-              id="request-upload"
-              type="file"
-              accept=".pdf,.docx,.txt,.csv"
-              onChange={(event) => handleFileInputChange(event.target.files)}
-              className="sr-only"
-            />
-            {selectedFileNames.length > 0 ? (
-              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                {selectedFileNames.join(", ")}
-              </div>
-            ) : null}
-            <Textarea
-              placeholder="Optional: add copied text or context note"
-              value={sourceText}
-              onChange={(event) => onSourceTextChange(event.target.value)}
-            />
-          </TabsContent>
-
-          <TabsContent value="manual" className="space-y-4">
-            <Alert>
-              Manual entry starts with a minimal template and lets you fill fields
-              directly in completion.
-            </Alert>
-            <Textarea
-              placeholder="Optional: add initial context before manual completion"
-              value={sourceText}
-              onChange={(event) => onSourceTextChange(event.target.value)}
-            />
-          </TabsContent>
-        </Tabs>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="space-y-1">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Request channel
-            </p>
-            <Select
-              value={requestChannel}
+        <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+          <div className="space-y-4">
+            <Tabs
+              value={mode}
               onValueChange={(value) =>
-                onRequestChannelChange((value as RequestChannel) ?? "portal")
+                onModeChange((value as IntakeSourceType) ?? "paste")
               }
+              className="space-y-4"
             >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="portal">Portal</SelectItem>
-                <SelectItem value="email">Email</SelectItem>
-                <SelectItem value="teams">Teams</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="space-y-1">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Supporting note
-            </p>
-            <Input
-              placeholder="Optional context"
-              value={note}
-              onChange={(event) => onNoteChange(event.target.value)}
-            />
-          </div>
-        </div>
+              <TabsList>
+                <TabsTrigger value="paste">Paste text</TabsTrigger>
+                <TabsTrigger value="upload">Upload file</TabsTrigger>
+                <TabsTrigger value="manual">Manual entry</TabsTrigger>
+              </TabsList>
 
-        <div className="flex items-center justify-end">
-          <Button onClick={onExtract} disabled={processing}>
-            {processing ? "Extracting..." : extractionButtonLabel}
-          </Button>
+              <TabsContent value="paste" className="space-y-4">
+                <Textarea
+                  className="min-h-[280px]"
+                  placeholder="Paste email body, Teams message, or free-text request..."
+                  value={sourceText}
+                  onChange={(event) => onSourceTextChange(event.target.value)}
+                />
+              </TabsContent>
+
+              <TabsContent value="upload" className="space-y-4">
+                <label
+                  htmlFor="request-upload"
+                  className="flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 py-8 text-center"
+                >
+                  <Upload className="mb-2 size-4 text-muted-foreground" />
+                  <p className="text-sm font-medium">Upload request document</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Drag and drop supported (PDF, DOCX, TXT, CSV)
+                  </p>
+                </label>
+                <Input
+                  id="request-upload"
+                  type="file"
+                  accept=".pdf,.docx,.txt,.csv"
+                  onChange={(event) => handleFileInputChange(event.target.files)}
+                  className="sr-only"
+                />
+                {selectedFileNames.length > 0 ? (
+                  <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                    {selectedFileNames.join(", ")}
+                  </div>
+                ) : null}
+                <Textarea
+                  placeholder="Optional: add copied text or context note"
+                  value={sourceText}
+                  onChange={(event) => onSourceTextChange(event.target.value)}
+                />
+              </TabsContent>
+
+              <TabsContent value="manual" className="space-y-4">
+                <Alert>
+                  Start with manual completion when no source text is available.
+                </Alert>
+                <Textarea
+                  className="min-h-[220px]"
+                  placeholder="Optional: add initial context before manual completion"
+                  value={sourceText}
+                  onChange={(event) => onSourceTextChange(event.target.value)}
+                />
+              </TabsContent>
+            </Tabs>
+          </div>
+
+          <div className="space-y-4 rounded-lg border bg-muted/20 p-4">
+            <div>
+              <p className="text-sm font-medium">Request metadata</p>
+              <p className="text-xs text-muted-foreground">
+                Add optional context to improve extraction quality.
+              </p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Request channel
+              </p>
+              <Select
+                value={requestChannel}
+                onValueChange={(value) =>
+                  onRequestChannelChange((value as RequestChannel) ?? "portal")
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="portal">Portal</SelectItem>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="teams">Teams</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Supporting note
+              </p>
+              <Textarea
+                className="min-h-[120px]"
+                placeholder="Optional context for procurement reviewers"
+                value={note}
+                onChange={(event) => onNoteChange(event.target.value)}
+              />
+            </div>
+
+            <Alert>
+              Tip: include quantity, budget, and required-by date in source text to
+              skip most manual edits.
+            </Alert>
+
+            <Button onClick={onExtract} disabled={processing} className="w-full">
+              {processing ? "Extracting..." : extractionButtonLabel}
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>

@@ -7,11 +7,23 @@ import { Alert } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import type { CaseDraftPayload, ExtractionWarning, IntakeFieldMeta } from "@/lib/types/case"
+import type {
+  CaseDraftPayload,
+  CategoryOption,
+  ExtractionWarning,
+  IntakeFieldMeta,
+} from "@/lib/types/case"
 
 interface ReviewStepProps {
   draft: CaseDraftPayload
+  categories: CategoryOption[]
   sourceText: string
   fieldStatus: Partial<Record<keyof CaseDraftPayload, IntakeFieldMeta>>
   missingRequired: Array<keyof CaseDraftPayload>
@@ -27,6 +39,7 @@ interface ReviewStepProps {
 
 export function ReviewStep({
   draft,
+  categories,
   sourceText,
   fieldStatus,
   missingRequired,
@@ -40,6 +53,16 @@ export function ReviewStep({
   onSaveDraft,
 }: ReviewStepProps) {
   const canCreate = missingRequired.length === 0 && !isSubmitting
+  const selectedCategoryId = draft.categoryId ? String(draft.categoryId) : ""
+  const categoryLabelById = new Map(
+    categories.map((category) => [
+      String(category.id),
+      `${category.categoryL1} / ${category.categoryL2}`,
+    ]),
+  )
+  const selectedCategoryLabel = selectedCategoryId
+    ? (categoryLabelById.get(selectedCategoryId) ?? "Unknown category")
+    : "Select category"
 
   return (
     <div className="space-y-4">
@@ -58,6 +81,20 @@ export function ReviewStep({
           creation.
         </Alert>
       ) : null}
+
+      <Card className="border-muted bg-muted/20">
+        <CardContent className="flex flex-wrap items-center gap-2 pt-4 text-xs text-muted-foreground">
+          <span className="rounded-md border bg-background px-2 py-1">
+            Required unresolved: {missingRequired.length}
+          </span>
+          <span className="rounded-md border bg-background px-2 py-1">
+            Warning count: {warnings.length}
+          </span>
+          <span className="rounded-md border bg-background px-2 py-1">
+            Ready to create: {canCreate ? "Yes" : "No"}
+          </span>
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
         <Card>
@@ -79,18 +116,26 @@ export function ReviewStep({
               }
             />
             <EditableRow
-              label="Category ID"
+              label="Category"
               status={fieldStatus.categoryId?.status ?? "needs_review"}
               control={
-                <Input
-                  inputMode="numeric"
-                  value={draft.categoryId ?? ""}
-                  onChange={(event) =>
-                    onDraftChange({
-                      categoryId: event.target.value ? Number(event.target.value) : null,
-                    })
+                <Select
+                  value={selectedCategoryId}
+                  onValueChange={(value) =>
+                    onDraftChange({ categoryId: value ? Number(value) : null })
                   }
-                />
+                >
+                  <SelectTrigger className="w-full">
+                    <span className="truncate">{selectedCategoryLabel}</span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((category) => (
+                      <SelectItem key={category.id} value={String(category.id)}>
+                        {category.categoryL1} / {category.categoryL2}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               }
             />
             <EditableRow
@@ -136,7 +181,7 @@ export function ReviewStep({
               }
             />
 
-            <div className="space-y-1">
+            <div className="space-y-1 rounded-lg border bg-muted/15 p-3">
               <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Request text
               </p>
@@ -148,7 +193,7 @@ export function ReviewStep({
           </CardContent>
         </Card>
 
-        <Card className="h-fit">
+        <Card className="h-fit xl:sticky xl:top-4">
           <CardHeader>
             <CardTitle>Source reference</CardTitle>
             <CardDescription>
@@ -161,7 +206,7 @@ export function ReviewStep({
         </Card>
       </div>
 
-      <div className="sticky bottom-2 z-10 flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card p-3 shadow-sm">
+      <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card/95 p-3 shadow-sm backdrop-blur-sm">
         <Button variant="outline" onClick={onBackToEdit}>
           Back to edit
         </Button>

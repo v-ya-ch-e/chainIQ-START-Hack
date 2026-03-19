@@ -167,6 +167,28 @@ export interface AuditFeedEvent extends AuditTimelineEvent {
   caseTitle: string
 }
 
+export interface AuditSummaryMetric {
+  label: string
+  value: string
+  helper: string
+}
+
+export interface AuditFeedMeta {
+  mode: "fresh" | "degraded"
+  source: "orgLogs" | "orgLogsFallback" | "none"
+  isTruncated: boolean
+  totalKnown: number
+  fetchedCount: number
+  asOf: string
+  warning?: string
+}
+
+export interface AuditPageData {
+  summary: AuditSummaryMetric[]
+  feed: AuditFeedEvent[]
+  feedMeta: AuditFeedMeta
+}
+
 export interface AuditTrail {
   policiesChecked: string[]
   supplierIdsEvaluated: string[]

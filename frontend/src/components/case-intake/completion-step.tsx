@@ -1,6 +1,6 @@
 "use client"
 
-import type { ChangeEvent } from "react"
+import type { ChangeEvent, ReactNode } from "react"
 
 import { FieldStatusBadge } from "@/components/case-intake/field-status-badge"
 import { Alert } from "@/components/ui/alert"
@@ -62,6 +62,16 @@ export function CompletionStep({
   onContinue,
 }: CompletionStepProps) {
   const missingSet = new Set(missingRequired)
+  const selectedCategoryId = draft.categoryId ? String(draft.categoryId) : ""
+  const categoryLabelById = new Map(
+    categories.map((category) => [
+      String(category.id),
+      `${category.categoryL1} / ${category.categoryL2}`,
+    ]),
+  )
+  const selectedCategoryLabel = selectedCategoryId
+    ? (categoryLabelById.get(selectedCategoryId) ?? "Unknown category")
+    : "Select category"
 
   function handleInput<K extends keyof CaseDraftPayload>(
     key: K,
@@ -88,8 +98,22 @@ export function CompletionStep({
         </Alert>
       ))}
 
+      <Card className="border-muted bg-muted/20">
+        <CardContent className="flex flex-wrap items-center gap-2 pt-4 text-xs text-muted-foreground">
+          <span className="rounded-md border bg-background px-2 py-1">
+            Filled from extraction: {Object.keys(fieldStatus).length}
+          </span>
+          <span className="rounded-md border bg-background px-2 py-1">
+            Needs completion: {missingRequired.length}
+          </span>
+          <span className="rounded-md border bg-background px-2 py-1">
+            Warnings: {warnings.length}
+          </span>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
-        <Card className="h-fit">
+        <Card className="h-fit xl:sticky xl:top-4">
           <CardHeader>
             <CardTitle>Source input</CardTitle>
             <CardDescription>Keep this visible while you complete fields.</CardDescription>
@@ -99,7 +123,7 @@ export function CompletionStep({
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="border-muted">
           <CardHeader>
             <CardTitle>Complete structured case</CardTitle>
             <CardDescription>
@@ -107,8 +131,8 @@ export function CompletionStep({
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
-            <SectionTitle title="Request source" />
-            <div className="grid gap-3 md:grid-cols-2">
+            <SectionCard title="Request source">
+              <div className="grid gap-3 md:grid-cols-2">
               <FieldLabel label="Title" missing={missingSet.has("title")} status={statusForField(fieldStatus, "title")} />
               <Input
                 value={draft.title}
@@ -185,18 +209,19 @@ export function CompletionStep({
                   onChange={(event) => handleInput("requestText", event.target.value)}
                 />
               </div>
-            </div>
+              </div>
+            </SectionCard>
 
             <Separator />
-            <SectionTitle title="Sourcing requirements" />
-            <div className="grid gap-3 md:grid-cols-2">
+            <SectionCard title="Sourcing requirements">
+              <div className="grid gap-3 md:grid-cols-2">
               <FieldLabel label="Category" missing={missingSet.has("categoryId")} status={statusForField(fieldStatus, "categoryId")} />
               <Select
-                value={draft.categoryId ? String(draft.categoryId) : ""}
+                value={selectedCategoryId}
                 onValueChange={(value) => handleInput("categoryId", value ? Number(value) : null)}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select category" />
+                  <span className="truncate">{selectedCategoryLabel}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {categories.map((category) => (
@@ -257,11 +282,12 @@ export function CompletionStep({
                   handleInput("contractTypeRequested", event.target.value)
                 }
               />
-            </div>
+              </div>
+            </SectionCard>
 
             <Separator />
-            <SectionTitle title="Constraints & preferences" />
-            <div className="grid gap-3 md:grid-cols-2">
+            <SectionCard title="Constraints & preferences">
+              <div className="grid gap-3 md:grid-cols-2">
               <FieldLabel label="Preferred supplier" missing={false} status={statusForField(fieldStatus, "preferredSupplierMentioned")} />
               <Input
                 value={draft.preferredSupplierMentioned ?? ""}
@@ -310,12 +336,13 @@ export function CompletionStep({
                 />
                 ESG requirement
               </label>
-            </div>
+              </div>
+            </SectionCard>
           </CardContent>
         </Card>
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="sticky bottom-0 z-10 flex items-center justify-between rounded-lg border bg-card/95 p-3 backdrop-blur-sm">
         <Button variant="outline" onClick={onBack}>
           Back
         </Button>
@@ -330,6 +357,21 @@ function SectionTitle({ title }: { title: string }) {
     <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
       {title}
     </p>
+  )
+}
+
+function SectionCard({
+  title,
+  children,
+}: {
+  title: string
+  children: ReactNode
+}) {
+  return (
+    <div className="space-y-3 rounded-lg border bg-muted/15 p-3">
+      <SectionTitle title={title} />
+      {children}
+    </div>
   )
 }
 

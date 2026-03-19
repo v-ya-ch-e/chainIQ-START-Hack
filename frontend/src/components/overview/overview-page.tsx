@@ -8,7 +8,7 @@ import { formatCurrency, formatDateTime } from "@/lib/data/formatters"
 import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
@@ -343,9 +343,12 @@ export function OverviewPage({
         <Card>
           <CardHeader className="flex-row items-center justify-between pb-3">
             <CardTitle className="text-base">Blocked cases</CardTitle>
-            <Button variant="ghost" size="sm" render={<Link href="/escalations" />}>
+            <Link
+              href="/escalations"
+              className={buttonVariants({ variant: "ghost", size: "sm" })}
+            >
               View all
-            </Button>
+            </Link>
           </CardHeader>
           <CardContent className="space-y-2">
             {blockedCases.length === 0 ? (
@@ -389,9 +392,12 @@ export function OverviewPage({
         <Card>
           <CardHeader className="flex-row items-center justify-between pb-3">
             <CardTitle className="text-base">Recent escalations</CardTitle>
-            <Button variant="ghost" size="sm" render={<Link href="/inbox" />}>
+            <Link
+              href="/inbox"
+              className={buttonVariants({ variant: "ghost", size: "sm" })}
+            >
               Open inbox
-            </Button>
+            </Link>
           </CardHeader>
           <CardContent className="space-y-2">
             {escalatedCases.length === 0 ? (
