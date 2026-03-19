@@ -123,6 +123,19 @@ class PipelineRunner:
             )
             await pl.flush_audit()
 
+            # ── Persist evaluation run (hard_rule_checks, policy_checks, supplier_evaluations) ─
+            try:
+                await self.org.persist_evaluation_run(
+                    request_id=request_id,
+                    run_id=run_id,
+                    output_snapshot=output.model_dump(),
+                    triggered_by="agent",
+                    agent_version="1.0",
+                    trigger_reason="pipeline_complete",
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist evaluation run: %s", exc)
+
             # ── Update request status ─────────────────────────
             if recommendation_result.status == "cannot_proceed":
                 await self.org.update_request_status(request_id, "escalated")

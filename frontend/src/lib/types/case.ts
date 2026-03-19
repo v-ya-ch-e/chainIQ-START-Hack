@@ -112,6 +112,39 @@ export interface SupplierRow {
   recommendationNote: string
 }
 
+export type RuleCheckResult = "passed" | "failed" | "warned" | "skipped"
+
+export interface SupplierRuleCheck {
+  checkId: string
+  ruleId: string
+  versionId: string
+  supplierId: string | null
+  result: RuleCheckResult
+  checkedAt: string
+  skipped?: boolean | null
+  skipReason?: string | null
+  evidence?: Record<string, unknown> | null
+}
+
+export interface SupplierRuleBreakdown {
+  supplierId: string
+  supplierName: string | null
+  excluded: boolean
+  exclusionRuleId: string | null
+  exclusionReason: string | null
+  hardRuleChecks: SupplierRuleCheck[]
+  policyChecks: SupplierRuleCheck[]
+}
+
+export interface EvaluationRunDetail {
+  runId: string
+  requestId: string
+  status: string
+  startedAt: string
+  finishedAt: string | null
+  supplierBreakdowns: SupplierRuleBreakdown[]
+}
+
 export interface ExcludedSupplier {
   supplierId: string
   supplierName: string
@@ -217,6 +250,7 @@ export interface CaseDetail {
   policyCards: PolicyCardData[]
   supplierShortlist: SupplierRow[]
   excludedSuppliers: ExcludedSupplier[]
+  evaluationRuns: EvaluationRunDetail[]
   escalations: EscalationItem[]
   auditTrail: AuditTrail
   historicalPrecedent?: HistoricalPrecedent

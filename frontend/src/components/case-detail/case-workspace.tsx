@@ -18,6 +18,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   formatCurrency,
@@ -26,7 +33,13 @@ import {
   scoreTone,
   severityTone,
 } from "@/lib/data/formatters"
-import type { CaseDetail } from "@/lib/types/case"
+import type {
+  CaseDetail,
+  EvaluationRunDetail,
+  SupplierRuleBreakdown,
+  SupplierRuleCheck,
+  SupplierRow,
+} from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
 import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
@@ -120,10 +133,62 @@ export function CaseWorkspace({
     data.escalations.find((entry) => entry.status !== "resolved") ??
     data.escalations[0] ??
     null
+  const selectedRun =
+    data.evaluationRuns.find((run) => run.runId === selectedRunId) ??
+    data.evaluationRuns[0] ??
+    null
   const overviewRef = useRef<HTMLDivElement>(null)
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
+
+  async function handleRerun() {
+    if (isRerunning) return
+    setIsRerunning(true)
+    try {
+      const res = await fetch("/api/pipeline/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: data.id }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        const detail = err.detail
+        const msg =
+          typeof detail === "string"
+            ? detail
+            : Array.isArray(detail)
+              ? detail.map((d: { msg?: string }) => d.msg).filter(Boolean).join("; ") || `HTTP ${res.status}`
+              : `HTTP ${res.status}`
+        throw new Error(msg)
+      }
+      router.refresh()
+    } catch (err) {
+      console.error("Re-run failed:", err)
+      alert(err instanceof Error ? err.message : "Re-run failed. Check console.")
+    } finally {
+      setIsRerunning(false)
+    }
+  }
+
+  const shortlistWithBreakdown = data.supplierShortlist.map((s) => ({
+    supplier: s,
+    breakdown: getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
+    meetsAll: meetsAllCriteria(
+      getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
+    ),
+  }))
+  const compliantFirst = [...shortlistWithBreakdown].sort((a, b) =>
+    a.meetsAll === b.meetsAll ? 0 : a.meetsAll ? -1 : 1,
+  )
+  const compliantCount = compliantFirst.filter((x) => x.meetsAll).length
+  const visibleCount = suppliersExpanded
+    ? compliantFirst.length
+    : compliantCount > 0
+      ? Math.min(3, compliantCount)
+      : Math.min(3, compliantFirst.length)
+  const visibleSuppliers = compliantFirst.slice(0, visibleCount)
+  const hasMore = compliantFirst.length > visibleCount
 
   useEffect(() => {
     const tabPanelMap: Record<CaseTab, HTMLDivElement | null> = {
@@ -885,6 +950,8 @@ export function CaseWorkspace({
                           <TableHead>Pricing Tier</TableHead>
                           <TableHead>Total</TableHead>
                           <TableHead>Lead Time</TableHead>
+                          <TableHead>Rules</TableHead>
+                          <TableHead>Policy</TableHead>
                           <TableHead>Quality</TableHead>
                           <TableHead>Risk</TableHead>
                           <TableHead>ESG</TableHead>
@@ -1010,8 +1077,44 @@ export function CaseWorkspace({
                       </TableBody>
                     </Table>
                   </div>
+                  {hasMore ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSuppliersExpanded(true)}
+                      className="w-full"
+                    >
+                      Extend — show {compliantFirst.length - visibleCount} more
+                    </Button>
+                  ) : null}
                 </CardContent>
               </Card>
+
+              <Sheet
+                open={!!selectedSupplierDetail}
+                onOpenChange={(open) => !open && setSelectedSupplierDetail(null)}
+              >
+                <SheetContent
+                  side="right"
+                  className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl overflow-y-auto px-6"
+                >
+                  <SheetHeader>
+                    <SheetTitle>
+                      {selectedSupplierDetail?.supplier.supplierName ?? "Supplier"}
+                    </SheetTitle>
+                    <SheetDescription>
+                      Rule and policy check results for this supplier.
+                    </SheetDescription>
+                  </SheetHeader>
+                  {selectedSupplierDetail ? (
+                    <SupplierDetailSheetContent
+                      requestId={data.id}
+                      supplier={selectedSupplierDetail.supplier}
+                      breakdown={selectedSupplierDetail.breakdown}
+                    />
+                  ) : null}
+                </SheetContent>
+              </Sheet>
 
               <div
                 className={cn(
@@ -1079,6 +1182,50 @@ export function CaseWorkspace({
                   </Card>
                 ) : null}
               </div>
+            </section>
+
+            <section className="space-y-4">
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Rule checks by supplier</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {data.evaluationRuns.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No stored evaluation runs found for this case yet.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge
+                          label={`Runs: ${data.evaluationRuns.length}`}
+                          tone="neutral"
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          {data.evaluationRuns.slice(0, 4).map((run) => (
+                            <Button
+                              key={run.runId}
+                              type="button"
+                              size="sm"
+                              variant={run.runId === selectedRun?.runId ? "default" : "outline"}
+                              onClick={() => setSelectedRunId(run.runId)}
+                            >
+                              {run.runId.slice(0, 8)}
+                            </Button>
+                          ))}
+                          {data.evaluationRuns.length > 4 ? (
+                            <StatusBadge label="More in API" tone="info" />
+                          ) : null}
+                        </div>
+                      </div>
+
+                      {selectedRun ? (
+                        <EvaluationRunBreakdown run={selectedRun} />
+                      ) : null}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
             </section>
           </div>
           </TabsContent>
@@ -1474,6 +1621,371 @@ export function CaseWorkspace({
           </TabsContent>
         </div>
       </Tabs>
+    </div>
+  )
+}
+
+function toneForCheckResult(result: SupplierRuleCheck["result"]) {
+  if (result === "passed") return "success"
+  if (result === "warned") return "warning"
+  if (result === "skipped") return "neutral"
+  return "destructive"
+}
+
+function SupplierDetailSheetContent({
+  requestId,
+  supplier,
+  breakdown,
+}: {
+  requestId: string
+  supplier: SupplierRow
+  breakdown: SupplierRuleBreakdown | null
+}) {
+  const [fetchedBreakdown, setFetchedBreakdown] =
+    useState<SupplierRuleBreakdown | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  const effectiveBreakdown = breakdown ?? fetchedBreakdown
+
+  useEffect(() => {
+    if (breakdown || !requestId || !supplier.supplierId) {
+      setFetchedBreakdown(null)
+      setFetchError(null)
+      return
+    }
+    let cancelled = false
+    setIsLoading(true)
+    setFetchError(null)
+    Promise.all([
+      fetch(
+        `/api/rule-versions/hard-rule-checks?request_id=${encodeURIComponent(requestId)}&supplier_id=${encodeURIComponent(supplier.supplierId)}`,
+      ).then((r) => (r.ok ? r.json() : [])),
+      fetch(
+        `/api/rule-versions/policy-checks?request_id=${encodeURIComponent(requestId)}&supplier_id=${encodeURIComponent(supplier.supplierId)}`,
+      ).then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([hardChecks, policyChecks]) => {
+        if (cancelled) return
+        const h = Array.isArray(hardChecks) ? hardChecks : []
+        const p = Array.isArray(policyChecks) ? policyChecks : []
+        if (h.length === 0 && p.length === 0) {
+          setFetchedBreakdown(null)
+          return
+        }
+        setFetchedBreakdown({
+          supplierId: supplier.supplierId,
+          supplierName: supplier.supplierName,
+          excluded: false,
+          exclusionRuleId: null,
+          exclusionReason: null,
+          hardRuleChecks: h.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; skipped?: boolean; checked_at: string }) => ({
+            checkId: c.check_id,
+            ruleId: c.rule_id,
+            versionId: c.version_id,
+            supplierId: c.supplier_id,
+            result: (c.skipped ? "skipped" : c.result) ?? "skipped",
+            checkedAt: c.checked_at,
+          })),
+          policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
+            checkId: c.check_id,
+            ruleId: c.rule_id,
+            versionId: c.version_id,
+            supplierId: c.supplier_id,
+            result: c.result,
+            checkedAt: c.checked_at,
+          })),
+        })
+      })
+      .catch((err) => {
+        if (!cancelled) setFetchError(err instanceof Error ? err.message : "Failed to load checks")
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [requestId, supplier.supplierId, supplier.supplierName, breakdown])
+
+  if (isLoading && !effectiveBreakdown) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading rule checks…
+      </div>
+    )
+  }
+
+  if (fetchError && !effectiveBreakdown) {
+    return (
+      <p className="text-sm text-destructive">
+        Could not load checks: {fetchError}
+      </p>
+    )
+  }
+
+  if (!effectiveBreakdown) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No evaluation run data found for this supplier.
+      </p>
+    )
+  }
+
+  const hardPassed = effectiveBreakdown.hardRuleChecks
+    .filter((c) => c.result === "passed")
+    .map((c) => c.ruleId)
+  const policyPassed = effectiveBreakdown.policyChecks
+    .filter((c) => c.result === "passed")
+    .map((c) => c.ruleId)
+
+  return (
+    <div className="space-y-6 pt-4 pb-6">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge label={supplier.supplierId} tone="neutral" />
+        <StatusBadge
+          label={`Hard: ${hardPassed.length}/${effectiveBreakdown.hardRuleChecks.length}`}
+          tone={
+            effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
+              ? "destructive"
+              : "neutral"
+          }
+        />
+        <StatusBadge
+          label={`Policy: ${policyPassed.length}/${effectiveBreakdown.policyChecks.length}`}
+          tone={
+            effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
+              ? "destructive"
+              : effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
+                ? "warning"
+                : "neutral"
+          }
+        />
+      </div>
+
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Hard checks
+          </p>
+          {hardPassed.length > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Rules passed: {hardPassed.join(", ")}
+            </p>
+          ) : null}
+          <div className="overflow-x-auto rounded-lg border p-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="px-3 py-3">Rule</TableHead>
+                  <TableHead className="py-3">Version</TableHead>
+                  <TableHead className="py-3">Result</TableHead>
+                  <TableHead className="py-3">Checked</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {effectiveBreakdown.hardRuleChecks.map((check) => (
+                  <TableRow key={check.checkId}>
+                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
+                    <TableCell className="py-3 text-xs text-muted-foreground">
+                      {check.versionId.slice(0, 8)}
+                    </TableCell>
+                    <TableCell className="py-3">
+                      <StatusBadge
+                        label={check.result}
+                        tone={toneForCheckResult(check.result)}
+                      />
+                    </TableCell>
+                    <TableCell className="py-3 text-xs text-muted-foreground">
+                      {formatDateTime(check.checkedAt)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Policy checks
+          </p>
+          {policyPassed.length > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Rules passed: {policyPassed.join(", ")}
+            </p>
+          ) : null}
+          <div className="overflow-x-auto rounded-lg border p-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="px-3 py-3">Rule</TableHead>
+                  <TableHead className="py-3">Version</TableHead>
+                  <TableHead className="py-3">Result</TableHead>
+                  <TableHead className="py-3">Checked</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {effectiveBreakdown.policyChecks.map((check) => (
+                  <TableRow key={check.checkId}>
+                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
+                    <TableCell className="py-3 text-xs text-muted-foreground">
+                      {check.versionId.slice(0, 8)}
+                    </TableCell>
+                    <TableCell className="py-3">
+                      <StatusBadge
+                        label={check.result}
+                        tone={toneForCheckResult(check.result)}
+                      />
+                    </TableCell>
+                    <TableCell className="py-3 text-xs text-muted-foreground">
+                      {formatDateTime(check.checkedAt)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
+  const suppliers = run.supplierBreakdowns
+    .slice()
+    .sort((a, b) => (a.excluded === b.excluded ? 0 : a.excluded ? 1 : -1))
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge label={`Run ${run.runId}`} tone="neutral" />
+        <StatusBadge label={run.status} tone="info" />
+        <StatusBadge label={`Suppliers ${suppliers.length}`} tone="neutral" />
+      </div>
+
+      <div className="space-y-4">
+        {suppliers.map((supplier) => {
+          const passedHard = supplier.hardRuleChecks.filter((c) => c.result === "passed").length
+          const failedHard = supplier.hardRuleChecks.filter((c) => c.result === "failed").length
+          const skippedHard = supplier.hardRuleChecks.filter((c) => c.result === "skipped").length
+
+          const passedPolicy = supplier.policyChecks.filter((c) => c.result === "passed").length
+          const warnedPolicy = supplier.policyChecks.filter((c) => c.result === "warned").length
+          const failedPolicy = supplier.policyChecks.filter((c) => c.result === "failed").length
+
+          return (
+            <div key={supplier.supplierId} className="rounded-lg border bg-background/80 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <StatusBadge label={supplier.supplierId} tone="neutral" />
+                    {supplier.excluded ? (
+                      <StatusBadge label="excluded" tone="destructive" />
+                    ) : (
+                      <StatusBadge label="evaluated" tone="success" />
+                    )}
+                  </div>
+                  <p className="text-sm font-semibold">
+                    {supplier.supplierName ?? "Supplier"}
+                  </p>
+                  {supplier.exclusionReason ? (
+                    <p className="text-sm text-muted-foreground">
+                      {supplier.exclusionRuleId ? `${supplier.exclusionRuleId}: ` : ""}
+                      {supplier.exclusionReason}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <StatusBadge
+                    label={`Hard: ${passedHard}✓ ${failedHard}✕ ${skippedHard}⎯`}
+                    tone={failedHard > 0 ? "destructive" : "neutral"}
+                  />
+                  <StatusBadge
+                    label={`Policy: ${passedPolicy}✓ ${warnedPolicy}⚠ ${failedPolicy}✕`}
+                    tone={failedPolicy > 0 ? "destructive" : warnedPolicy > 0 ? "warning" : "neutral"}
+                  />
+                </div>
+              </div>
+
+              <Separator className="my-4" />
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="space-y-2">
+                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Hard checks
+                  </p>
+                  <div className="overflow-x-auto rounded-lg border p-4">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="px-3 py-3">Rule</TableHead>
+                          <TableHead className="py-3">Version</TableHead>
+                          <TableHead className="py-3">Result</TableHead>
+                          <TableHead className="py-3">Checked</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {supplier.hardRuleChecks.map((check) => (
+                          <TableRow key={check.checkId}>
+                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
+                            <TableCell className="py-3 text-xs text-muted-foreground">
+                              {check.versionId.slice(0, 8)}
+                            </TableCell>
+                            <TableCell className="py-3">
+                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
+                            </TableCell>
+                            <TableCell className="py-3 text-xs text-muted-foreground">
+                              {formatDateTime(check.checkedAt)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Policy checks
+                  </p>
+                  <div className="overflow-x-auto rounded-lg border p-4">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="px-3 py-3">Rule</TableHead>
+                          <TableHead className="py-3">Version</TableHead>
+                          <TableHead className="py-3">Result</TableHead>
+                          <TableHead className="py-3">Checked</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {supplier.policyChecks.map((check) => (
+                          <TableRow key={check.checkId}>
+                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
+                            <TableCell className="py-3 text-xs text-muted-foreground">
+                              {check.versionId.slice(0, 8)}
+                            </TableCell>
+                            <TableCell className="py-3">
+                              <StatusBadge label={check.result} tone={toneForCheckResult(check.result)} />
+                            </TableCell>
+                            <TableCell className="py-3 text-xs text-muted-foreground">
+                              {formatDateTime(check.checkedAt)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
