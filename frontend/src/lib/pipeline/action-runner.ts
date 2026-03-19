@@ -23,11 +23,26 @@ export interface PipelineActionOptions<T> {
   successMessage?: string
 }
 
+export type PipelineActionPhase = "running" | "success" | "error"
+
+export interface PipelineActionLifecycle {
+  label: string
+  phase: PipelineActionPhase
+  startedAt: string
+  finishedAt?: string
+  errorMessage?: string
+}
+
 export function usePipelineActionRunner() {
   const [loadingAction, setLoadingAction] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [fallback, setFallback] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [actionLifecycleByLabel, setActionLifecycleByLabel] = useState<
+    Record<string, PipelineActionLifecycle>
+  >({})
+  const [lastActionLifecycle, setLastActionLifecycle] =
+    useState<PipelineActionLifecycle | null>(null)
 
   const clearNotices = useCallback(() => {
     setError(null)
@@ -37,11 +52,20 @@ export function usePipelineActionRunner() {
 
   const runAction = useCallback(async <T>(options: PipelineActionOptions<T>) => {
     const { label, request, onSuccess, successMessage } = options
+    const startedAt = new Date().toISOString()
 
     setLoadingAction(label)
     setError(null)
     setFallback(null)
     setMessage(null)
+    setActionLifecycleByLabel((current) => ({
+      ...current,
+      [label]: {
+        label,
+        phase: "running",
+        startedAt,
+      },
+    }))
 
     try {
       const result = await request()
@@ -49,13 +73,37 @@ export function usePipelineActionRunner() {
       if (successMessage) {
         setMessage(successMessage)
       }
+      const completedLifecycle: PipelineActionLifecycle = {
+        label,
+        phase: "success",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      }
+      setActionLifecycleByLabel((current) => ({
+        ...current,
+        [label]: completedLifecycle,
+      }))
+      setLastActionLifecycle(completedLifecycle)
       return result
     } catch (actionError) {
+      const failureMessage = errorMessage(actionError)
       if (isRunsEndpointInstability(actionError)) {
-        setFallback(errorMessage(actionError))
+        setFallback(failureMessage)
       } else {
-        setError(errorMessage(actionError))
+        setError(failureMessage)
       }
+      const failedLifecycle: PipelineActionLifecycle = {
+        label,
+        phase: "error",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        errorMessage: failureMessage,
+      }
+      setActionLifecycleByLabel((current) => ({
+        ...current,
+        [label]: failedLifecycle,
+      }))
+      setLastActionLifecycle(failedLifecycle)
       throw actionError
     } finally {
       setLoadingAction(null)
@@ -70,6 +118,8 @@ export function usePipelineActionRunner() {
     setError,
     setFallback,
     setMessage,
+    actionLifecycleByLabel,
+    lastActionLifecycle,
     clearNotices,
     runAction,
   }

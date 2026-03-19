@@ -1431,10 +1431,31 @@ type CategoryApiRow = {
 }
 
 export async function getCategoryOptions(): Promise<CategoryOption[]> {
-  const response = await fetch(getApiUrl("/api/categories/"), { cache: "no-store" })
-  if (!response.ok) {
-    throw new Error(`Request failed (${response.status}) for /api/categories/`)
+  const requestUrls =
+    typeof window === "undefined"
+      ? [getApiUrl("/api/categories/"), "/api/categories/"]
+      : ["/api/categories/"]
+
+  let response: Response | null = null
+  let lastError: unknown = null
+
+  for (const url of requestUrls) {
+    try {
+      response = await fetch(url, { cache: "no-store" })
+      if (response.ok) break
+      lastError = new Error(`Request failed (${response.status}) for /api/categories/`)
+    } catch (error) {
+      lastError = error
+    }
   }
+
+  if (!response || !response.ok) {
+    if (lastError instanceof Error && lastError.message.trim()) {
+      throw lastError
+    }
+    throw new Error("Request failed for /api/categories/")
+  }
+
   const rows = (await response.json()) as CategoryApiRow[]
   return rows.map((row) => ({
     id: row.id,

@@ -36,9 +36,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { formatCurrency, formatDate } from "@/lib/data/formatters"
+import { formatCurrency, formatDate, formatDateTime } from "@/lib/data/formatters"
 import { chainIqApi } from "@/lib/api/client"
 import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
+import {
+  type PipelineLivePhase,
+  useRequestStatusPoller,
+} from "@/lib/pipeline/request-status-poller"
 import type { CaseListItem } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 
@@ -61,6 +65,39 @@ const escalationOptions = [
   { value: "blocking", label: "Blocking" },
 ]
 
+function labelForLivePhase(phase: PipelineLivePhase) {
+  switch (phase) {
+    case "queued":
+      return "Queued"
+    case "running":
+      return "Running"
+    case "completed":
+      return "Completed"
+    case "failed":
+      return "Failed"
+    case "timed_out":
+      return "Timed out"
+    default:
+      return "Unknown"
+  }
+}
+
+function toneForLivePhase(phase: PipelineLivePhase) {
+  switch (phase) {
+    case "completed":
+      return "success" as const
+    case "failed":
+    case "timed_out":
+      return "destructive" as const
+    case "running":
+      return "info" as const
+    case "queued":
+      return "warning" as const
+    default:
+      return "neutral" as const
+  }
+}
+
 export function InboxPage({ cases }: InboxPageProps) {
   const router = useRouter()
   const [query, setQuery] = useState("")
@@ -71,10 +108,14 @@ export function InboxPage({ cases }: InboxPageProps) {
   const [batchIds, setBatchIds] = useState("")
   const [concurrency, setConcurrency] = useState("5")
   const [batchResult, setBatchResult] = useState<unknown>(null)
+  const {
+    requestLiveState,
+    startPolling,
+    patchRequestState,
+    clearRequestState,
+  } = useRequestStatusPoller()
   const { loadingAction, error, fallback, message, runAction } =
     usePipelineActionRunner()
-
-  const isAnyActionRunning = loadingAction !== null
 
   const filteredCases = useMemo(() => {
     return cases.filter((entry) => {
@@ -110,14 +151,38 @@ export function InboxPage({ cases }: InboxPageProps) {
     "All escalations"
 
   function triggerRequest(requestId: string) {
+    const startedAt = new Date().toISOString()
+    patchRequestState(requestId, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+
     void runAction({
       label: `trigger:${requestId}`,
       request: () => chainIqApi.pipeline.process({ request_id: requestId }),
       successMessage: `Pipeline trigger started for ${requestId}.`,
     })
-      .then(() => router.refresh())
+      .then(async () => {
+        const phase = await startPolling(requestId, {
+          initialPhase: "queued",
+          intervalMs: 2000,
+          timeoutMs: 45_000,
+        })
+        if (phase === "completed" || phase === "failed" || phase === "timed_out") {
+          window.setTimeout(() => clearRequestState(requestId), 10_000)
+        }
+        router.refresh()
+      })
       .catch(() => {
-        // Error state is handled by shared action runner.
+        patchRequestState(requestId, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+        window.setTimeout(() => clearRequestState(requestId), 10_000)
       })
   }
 
@@ -127,6 +192,16 @@ export function InboxPage({ cases }: InboxPageProps) {
       .map((entry) => entry.trim())
       .filter(Boolean)
     if (requestIds.length === 0) return
+    const startedAt = new Date().toISOString()
+    for (const requestId of requestIds) {
+      patchRequestState(requestId, {
+        phase: "queued",
+        startedAt,
+        lastCheckedAt: startedAt,
+        finishedAt: undefined,
+        error: undefined,
+      })
+    }
 
     void runAction({
       label: "batch",
@@ -138,9 +213,35 @@ export function InboxPage({ cases }: InboxPageProps) {
       onSuccess: setBatchResult,
       successMessage: "Batch process submitted.",
     })
-      .then(() => router.refresh())
+      .then(async () => {
+        await Promise.allSettled(
+          requestIds.map(async (requestId) => {
+            const phase = await startPolling(requestId, {
+              initialPhase: "queued",
+              intervalMs: 2000,
+              timeoutMs: 45_000,
+            })
+            if (
+              phase === "completed" ||
+              phase === "failed" ||
+              phase === "timed_out"
+            ) {
+              window.setTimeout(() => clearRequestState(requestId), 10_000)
+            }
+          }),
+        )
+        router.refresh()
+      })
       .catch(() => {
-        // Error state is handled by shared action runner.
+        const failedAt = new Date().toISOString()
+        for (const requestId of requestIds) {
+          patchRequestState(requestId, {
+            phase: "failed",
+            lastCheckedAt: failedAt,
+            finishedAt: failedAt,
+          })
+          window.setTimeout(() => clearRequestState(requestId), 10_000)
+        }
       })
   }
 
@@ -186,6 +287,15 @@ export function InboxPage({ cases }: InboxPageProps) {
         <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
           <CardContent className="py-3 text-sm">
             Runs endpoint degraded. Other trigger actions remain usable. {fallback}
+          </CardContent>
+        </Card>
+      ) : null}
+      {Object.keys(requestLiveState).length > 0 ? (
+        <Card className="border-blue-200 bg-blue-50/70 text-blue-900">
+          <CardContent className="py-3 text-sm">
+            {Object.keys(requestLiveState).length} request
+            {Object.keys(requestLiveState).length > 1 ? "s are" : " is"} currently
+            updating. Live row feedback is active.
           </CardContent>
         </Card>
       ) : null}
@@ -272,6 +382,9 @@ export function InboxPage({ cases }: InboxPageProps) {
               </TableHeader>
               <TableBody>
                 {filteredCases.map((entry) => {
+                  const liveState = requestLiveState[entry.requestId]
+                  const isLiveRunning =
+                    liveState?.phase === "queued" || liveState?.phase === "running"
                   const recommendationTone =
                     entry.recommendationStatus === "proceed"
                       ? "success"
@@ -287,6 +400,10 @@ export function InboxPage({ cases }: InboxPageProps) {
                         "group",
                         entry.needsAttention &&
                           "border-l-2 border-l-amber-400",
+                        liveState?.phase === "completed" && "bg-emerald-50/40",
+                        (liveState?.phase === "failed" ||
+                          liveState?.phase === "timed_out") &&
+                          "bg-rose-50/40",
                       )}
                     >
                       <TableCell className="px-4 py-3">
@@ -352,30 +469,49 @@ export function InboxPage({ cases }: InboxPageProps) {
                         />
                       </TableCell>
                       <TableCell>
-                        {entry.status === "received" ? (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => triggerRequest(entry.requestId)}
-                            disabled={isAnyActionRunning}
-                          >
-                            {loadingAction === `trigger:${entry.requestId}` ? (
-                              <>
-                                <Loader2 className="size-3.5 animate-spin" />
-                                Triggering...
-                              </>
-                            ) : (
-                              <>
-                                <Play className="size-3.5" />
-                                Trigger now
-                              </>
-                            )}
-                          </Button>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">
-                            Open case for actions
-                          </span>
-                        )}
+                        <div className="flex flex-col items-start gap-2">
+                          {entry.status === "received" ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => triggerRequest(entry.requestId)}
+                              disabled={
+                                loadingAction === `trigger:${entry.requestId}` ||
+                                isLiveRunning
+                              }
+                            >
+                              {loadingAction === `trigger:${entry.requestId}` ||
+                              isLiveRunning ? (
+                                <>
+                                  <Loader2 className="size-3.5 animate-spin" />
+                                  Triggering...
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="size-3.5" />
+                                  Trigger now
+                                </>
+                              )}
+                            </Button>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              Open case for actions
+                            </span>
+                          )}
+                          {liveState ? (
+                            <div className="space-y-1">
+                              <StatusBadge
+                                label={labelForLivePhase(liveState.phase)}
+                                tone={toneForLivePhase(liveState.phase)}
+                              />
+                              {liveState.lastCheckedAt ? (
+                                <p className="text-[11px] text-muted-foreground">
+                                  Checked {formatDateTime(liveState.lastCheckedAt)}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
                       </TableCell>
                     </TableRow>
                   )
@@ -410,7 +546,7 @@ export function InboxPage({ cases }: InboxPageProps) {
             />
             <Button
               onClick={processBatch}
-              disabled={isAnyActionRunning || batchIds.trim().length === 0}
+              disabled={loadingAction === "batch" || batchIds.trim().length === 0}
             >
               {loadingAction === "batch" ? (
                 <>

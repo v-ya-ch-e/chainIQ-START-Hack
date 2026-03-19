@@ -30,6 +30,10 @@ import type { CaseDetail } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
 import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
+import {
+  classifyPipelineStatus,
+  useRequestStatusPoller,
+} from "@/lib/pipeline/request-status-poller"
 
 interface CaseWorkspaceProps {
   data: CaseDetail
@@ -38,6 +42,39 @@ interface CaseWorkspaceProps {
 }
 
 type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
+
+function livePhaseLabel(phase: "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out") {
+  switch (phase) {
+    case "queued":
+      return "Queued"
+    case "running":
+      return "Running"
+    case "completed":
+      return "Completed"
+    case "failed":
+      return "Failed"
+    case "timed_out":
+      return "Timed out"
+    default:
+      return "Unknown"
+  }
+}
+
+function livePhaseTone(phase: "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out") {
+  switch (phase) {
+    case "completed":
+      return "success" as const
+    case "failed":
+    case "timed_out":
+      return "destructive" as const
+    case "running":
+      return "info" as const
+    case "queued":
+      return "warning" as const
+    default:
+      return "neutral" as const
+  }
+}
 
 export function CaseWorkspace({
   data,
@@ -55,8 +92,18 @@ export function CaseWorkspace({
   const [auditResult, setAuditResult] = useState<unknown>(null)
   const [summaryResult, setSummaryResult] = useState<unknown>(null)
   const [stepResult, setStepResult] = useState<unknown>(null)
-  const { loadingAction, error, fallback, message, setMessage, runAction } =
-    usePipelineActionRunner()
+  const {
+    loadingAction,
+    error,
+    fallback,
+    message,
+    setMessage,
+    runAction,
+    actionLifecycleByLabel,
+    lastActionLifecycle,
+  } = usePipelineActionRunner()
+  const { requestLiveState, startPolling, patchRequestState } =
+    useRequestStatusPoller()
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const evaluatedSuppliers =
@@ -107,6 +154,14 @@ export function CaseWorkspace({
   }, [createdFromIntake, data.id, setMessage])
 
   function handleRerun() {
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
     void runAction({
       label: "rerun",
       request: () =>
@@ -114,16 +169,42 @@ export function CaseWorkspace({
           request_id: data.id,
         }),
       successMessage: `Pipeline re-run started for ${data.id}.`,
-    }).catch(() => {
-      // Error state is handled by shared action runner.
     })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "queued",
+          intervalMs: 2000,
+          timeoutMs: 45_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
   }
 
   function handleStatus() {
     void runAction({
       label: "status",
       request: () => chainIqApi.pipeline.status(data.id),
-      onSuccess: setStatusResult,
+      onSuccess: (result) => {
+        setStatusResult(result)
+        const phase = classifyPipelineStatus(result)
+        patchRequestState(data.id, {
+          phase,
+          startedAt:
+            requestLiveState[data.id]?.startedAt ?? new Date().toISOString(),
+          lastCheckedAt: new Date().toISOString(),
+          ...(phase === "completed" || phase === "failed"
+            ? { finishedAt: new Date().toISOString() }
+            : {}),
+          statusPayload: result,
+        })
+      },
       successMessage: `Fetched latest pipeline status for ${data.id}.`,
     }).catch(() => {
       // Error state is handled by shared action runner.
@@ -187,14 +268,35 @@ export function CaseWorkspace({
   }
 
   function handleStep(step: "fetch" | "validate" | "filter" | "comply" | "rank" | "escalate") {
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "running",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
     void runAction({
       label: `step:${step}`,
       request: () => chainIqApi.pipeline.steps[step]({ request_id: data.id }),
       onSuccess: setStepResult,
       successMessage: `Executed ${step} step for ${data.id}.`,
-    }).catch(() => {
-      // Error state is handled by shared action runner.
     })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "running",
+          intervalMs: 2000,
+          timeoutMs: 30_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
   }
 
   function handleExport() {
@@ -214,6 +316,11 @@ export function CaseWorkspace({
   function handleEscalate() {
     router.push(`/escalations?caseId=${data.id}`)
   }
+
+  const requestLive = requestLiveState[data.id]
+  const activeActionLifecycle = loadingAction
+    ? actionLifecycleByLabel[loadingAction] ?? null
+    : null
 
   return (
     <div className="space-y-6">
@@ -324,6 +431,56 @@ export function CaseWorkspace({
           </CardContent>
         </Card>
       ) : null}
+
+      <Card className="border-blue-200 bg-blue-50/60">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 py-3">
+          <div className="space-y-1">
+            <p className="text-xs font-medium uppercase tracking-wider text-blue-800">
+              Live run state
+            </p>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <StatusBadge
+                label={
+                  requestLive ? livePhaseLabel(requestLive.phase) : "No live run"
+                }
+                tone={requestLive ? livePhaseTone(requestLive.phase) : "neutral"}
+              />
+              {activeActionLifecycle ? (
+                <StatusBadge
+                  label={`Action: ${activeActionLifecycle.label}`}
+                  tone={activeActionLifecycle.phase === "error" ? "destructive" : "info"}
+                />
+              ) : null}
+              {lastActionLifecycle ? (
+                <StatusBadge
+                  label={`Last: ${lastActionLifecycle.phase}`}
+                  tone={
+                    lastActionLifecycle.phase === "success"
+                      ? "success"
+                      : lastActionLifecycle.phase === "error"
+                        ? "destructive"
+                        : "neutral"
+                  }
+                />
+              ) : null}
+            </div>
+          </div>
+          <div className="text-right text-xs text-blue-900/70">
+            <p>
+              Last checked:{" "}
+              {requestLive?.lastCheckedAt
+                ? formatDateTime(requestLive.lastCheckedAt)
+                : "Not yet"}
+            </p>
+            <p>
+              Last transition:{" "}
+              {lastActionLifecycle?.finishedAt
+                ? formatDateTime(lastActionLifecycle.finishedAt)
+                : "No completed action"}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Primary summary strip */}
       <section className="animate-fade-in-up grid gap-4 xl:grid-cols-[1.2fr_0.8fr]" style={{ animationDelay: "80ms" }}>

@@ -13,7 +13,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
@@ -72,6 +71,11 @@ export function CompletionStep({
   const selectedCategoryLabel = selectedCategoryId
     ? (categoryLabelById.get(selectedCategoryId) ?? "Unknown category")
     : "Select category"
+  const requestChannelLabelByValue: Record<RequestChannel, string> = {
+    portal: "Portal",
+    email: "Email",
+    teams: "Teams",
+  }
 
   function handleInput<K extends keyof CaseDraftPayload>(
     key: K,
@@ -151,7 +155,9 @@ export function CompletionStep({
                 }
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue />
+                  <span className="truncate">
+                    {requestChannelLabelByValue[draft.requestChannel] ?? "Portal"}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="portal">Portal</SelectItem>
