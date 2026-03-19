@@ -727,6 +727,8 @@ export function CaseWorkspace({
   }
 
   const requestLive = requestLiveState[data.id]
+  const isRerunning =
+    requestLive?.phase === "queued" || requestLive?.phase === "running"
   const activeActionLifecycle = loadingAction
     ? actionLifecycleByLabel[loadingAction] ?? null
     : null
