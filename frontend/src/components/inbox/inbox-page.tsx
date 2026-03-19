@@ -436,7 +436,7 @@ export function InboxPage({
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="max-h-[calc(100svh-9rem)] overflow-y-auto p-5">
-            <CaseIntakeWizard embedded />
+            {newRequestOpen ? <CaseIntakeWizard embedded /> : null}
           </DialogBody>
         </DialogContent>
       </Dialog>
@@ -608,7 +608,7 @@ export function InboxPage({
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col items-start gap-2">
-                          {entry.status === "received" ? (
+                          {entry.recommendationStatus === "not_evaluated" ? (
                             <Button
                               size="sm"
                               variant="outline"

@@ -371,7 +371,7 @@ export interface CaseIntakeInput {
   sourceText: string
   note?: string
   requestChannel?: RequestChannel
-  fileNames?: string[]
+  files?: File[]
 }
 
 export interface CategoryOption {

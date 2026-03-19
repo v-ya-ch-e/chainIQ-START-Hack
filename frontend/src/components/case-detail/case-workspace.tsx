@@ -372,6 +372,7 @@ export function CaseWorkspace({
   const suppliersRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
+  const createdFlowHandledRef = useRef(false)
 
   const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
     supplier: s,
@@ -420,6 +421,71 @@ export function CaseWorkspace({
       toast.success("Case created successfully", { description: data.id })
     }
   }, [createdFromIntake, data.id])
+
+  useEffect(() => {
+    if (!createdFromIntake || createdFlowHandledRef.current) return
+    createdFlowHandledRef.current = true
+
+    const nextUrl = `/cases/${data.id}?tab=${activeTab}`
+    const clearCreatedFlag = () => {
+      router.replace(nextUrl, { scroll: false })
+    }
+
+    if (data.evaluationRuns.length > 0) {
+      clearCreatedFlag()
+      return
+    }
+
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+
+    void runAction({
+      label: "autoTrigger",
+      request: () =>
+        chainIqApi.pipeline.processBatch({
+          request_ids: [data.id],
+          concurrency: 1,
+        }),
+      successMessage: "Pipeline trigger started",
+      successDescription: data.id,
+    })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "queued",
+          intervalMs: 2000,
+          timeoutMs: 45_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+        toast.warning("Case created but auto-trigger failed", {
+          description: "Use Re-run to start processing manually.",
+        })
+      })
+      .finally(() => {
+        clearCreatedFlag()
+      })
+  }, [
+    activeTab,
+    createdFromIntake,
+    data.evaluationRuns.length,
+    data.id,
+    patchRequestState,
+    router,
+    runAction,
+    startPolling,
+  ])
 
   function handleRerun() {
     const startedAt = new Date().toISOString()
