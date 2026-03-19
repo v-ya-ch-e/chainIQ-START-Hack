@@ -132,6 +132,7 @@ export interface EvaluationRunDetail {
   status: string
   startedAt: string
   finishedAt: string | null
+  favorite: boolean
   supplierBreakdowns: SupplierRuleBreakdown[]
   /** Supplier shortlist from this run (from output_snapshot). Used when run is selected. */
   supplierShortlist?: SupplierRow[]
@@ -179,6 +180,8 @@ export interface AuditTimelineEvent {
   kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit" | "evaluation_run"
   /** When kind is evaluation_run, links to /cases/eval/{runId} */
   runId?: string
+  /** When kind is evaluation_run, whether this run is favorited */
+  favorite?: boolean
 }
 
 export interface AuditFeedEvent extends AuditTimelineEvent {

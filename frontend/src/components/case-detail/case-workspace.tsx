@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowLeft, Download, Loader2, Play, ShieldCheck, TimerReset } from "lucide-react"
+import { ArrowLeft, Download, Loader2, Play, ShieldCheck, ShoppingCart, TimerReset } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState, type ReactNode } from "react"
@@ -80,6 +80,70 @@ function getRuleCounts(breakdown: SupplierRuleBreakdown | null) {
   const policyTotal = breakdown.policyChecks.length
   const policyPassed = breakdown.policyChecks.filter((c) => c.result === "passed").length
   return { hardPassed, hardTotal, policyPassed, policyTotal }
+}
+
+function FavoriteToggle({
+  runId,
+  favorite,
+  onToggled,
+  variant = "icon",
+}: {
+  runId: string
+  favorite: boolean
+  onToggled: () => void
+  variant?: "icon" | "button"
+}) {
+  const [loading, setLoading] = useState(false)
+  const handleClick = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (loading) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/rule-versions/evaluations/${runId}/favorite`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favorite: !favorite }),
+      })
+      if (res.ok) onToggled()
+    } finally {
+      setLoading(false)
+    }
+  }
+  const title = favorite ? "Remove from favorites" : "Add to favorites"
+  const icon = (
+    <ShoppingCart
+      className={cn(variant === "button" ? "size-3.5" : "size-4", favorite && "fill-primary text-primary")}
+    />
+  )
+  if (variant === "button") {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={handleClick}
+        disabled={loading}
+        title={title}
+        aria-label={title}
+      >
+        {icon}
+        Buying Decision
+      </Button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={loading}
+      className="shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+      title={title}
+      aria-label={title}
+    >
+      {icon}
+    </button>
+  )
 }
 
 export function CaseWorkspace({
@@ -291,6 +355,14 @@ export function CaseWorkspace({
             <ShieldCheck className="size-3.5" />
             Audit
           </Button>
+          {selectedRun ? (
+            <FavoriteToggle
+              runId={selectedRun.runId}
+              favorite={selectedRun.favorite}
+              onToggled={() => router.refresh()}
+              variant="button"
+            />
+          ) : null}
           <Button size="sm">
             <TimerReset className="size-3.5" />
             Escalate
@@ -316,7 +388,7 @@ export function CaseWorkspace({
                 tone="info"
               />
               <StatusBadge
-                label={`${data.recommendation.quotesRequired} quotes`}
+                label={`${data.recommendation.quotesRequired} Quotes`}
                 tone="neutral"
               />
             </div>
@@ -1179,6 +1251,7 @@ export function CaseWorkspace({
               <CardContent className="space-y-5">
                 {data.auditTrail.timeline.map((event, index) => {
                   const isRunEvent = event.kind === "evaluation_run" && event.runId
+                  const isFavorite = Boolean(isRunEvent && event.favorite)
                   const content = (
                     <>
                       {index !== data.auditTrail.timeline.length - 1 ? (
@@ -1199,12 +1272,19 @@ export function CaseWorkspace({
                   return (
                     <div key={event.id} className="relative pl-7">
                       {isRunEvent ? (
-                        <Link
-                          href={`/cases/eval/${event.runId}`}
-                          className="block"
-                        >
-                          {content}
-                        </Link>
+                        <div className="flex items-start justify-between gap-2">
+                          <Link
+                            href={`/cases/eval/${event.runId}`}
+                            className="min-w-0 flex-1 block"
+                          >
+                            {content}
+                          </Link>
+                          <FavoriteToggle
+                            runId={event.runId!}
+                            favorite={isFavorite}
+                            onToggled={() => router.refresh()}
+                          />
+                        </div>
                       ) : (
                         content
                       )}

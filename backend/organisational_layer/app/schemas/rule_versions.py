@@ -171,6 +171,12 @@ class SupplierRuleBreakdownOut(BaseModel):
     exclusion_reason: str | None = None
 
 
+class EvaluationFavoritePatch(BaseModel):
+    """Body for PATCH /evaluations/{run_id}/favorite."""
+
+    favorite: bool
+
+
 class EvaluationDetailOut(BaseModel):
     """Full evaluation detail with rule version traceability per supplier."""
 
@@ -179,6 +185,7 @@ class EvaluationDetailOut(BaseModel):
     status: str
     started_at: datetime
     finished_at: datetime | None
+    favorite: bool = False
     supplier_breakdowns: list[SupplierRuleBreakdownOut] = []
     supplier_shortlist: list[dict[str, Any]] = []
     suppliers_excluded: list[dict[str, Any]] = []
