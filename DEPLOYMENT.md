@@ -105,15 +105,15 @@ This starts:
 - **mysql** on port 3306
 - **frontend** on port 3000
 
-In development mode (default, uses `docker-compose.override.yml`):
-- Frontend runs `next dev` with hot reload
-- Source files are mounted into the container
-
-For production-like mode (no hot reload):
+For local hot reload development (`next dev`):
 
 ```bash
-docker compose -f docker-compose.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
+
+Notes:
+- `docker-compose.override.yml` is intentionally minimal so deployment does not accidentally run in dev mode.
+- Use `docker-compose.dev.yml` only for local development.
 
 ### 1.5 Bootstrap the database (first run only)
 

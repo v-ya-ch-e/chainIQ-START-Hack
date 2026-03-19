@@ -39,19 +39,21 @@ cd backend
 docker compose up --build -d
 cd ..
 
-# 4. Start frontend only (dev mode with hot reload)
+# 4. Start frontend only (production-safe defaults)
 docker compose up --build
+
+# Optional: local dev mode with hot reload
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 # 5. Optional: run local DB + migration instead of deployed backend
 docker compose --profile localdb up -d mysql
 docker compose --profile tools run --rm migrator
 ```
 
-## Production-like mode (no hot reload)
+## Notes
 
-```bash
-docker compose -f docker-compose.yml up --build
-```
+- `docker-compose.override.yml` is intentionally minimal for deployment safety.
+- Use `docker-compose.dev.yml` only when you explicitly want `next dev` + hot reload.
 
 ## Common commands
 
