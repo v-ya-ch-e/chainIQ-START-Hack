@@ -98,6 +98,7 @@ export function CaseWorkspace({
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const [runId, setRunId] = useState("")
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [statusResult, setStatusResult] = useState<unknown>(null)
   const [pipelineResult, setPipelineResult] = useState<unknown>(null)
   const [runsResult, setRunsResult] = useState<unknown>(null)

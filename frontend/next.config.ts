@@ -10,6 +10,9 @@ const logicalApiBase =
 
 const nextConfig: NextConfig = {
   transpilePackages: ["@assistant-ui/react", "@assistant-ui/react-markdown", "@assistant-ui/react-ai-sdk"],
+  // Keep trailing-slash API paths untouched so rewrites don't trigger
+  // redirect chains that expose internal container hostnames to browsers.
+  skipTrailingSlashRedirect: true,
   async rewrites() {
     return [
       {
