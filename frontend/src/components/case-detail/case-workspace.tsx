@@ -138,6 +138,22 @@ function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
   return !failedHard && !failedPolicy
 }
 
+function getRuleCounts(breakdown: SupplierRuleBreakdown | null): {
+  hardPassed: number
+  hardTotal: number
+  policyPassed: number
+  policyTotal: number
+} {
+  const hard = breakdown?.hardRuleChecks ?? []
+  const policy = breakdown?.policyChecks ?? []
+  return {
+    hardPassed: hard.filter((c) => c.result === "passed").length,
+    hardTotal: hard.length,
+    policyPassed: policy.filter((c) => c.result === "passed").length,
+    policyTotal: policy.length,
+  }
+}
+
 export function CaseWorkspace({
   data,
   initialTab = "overview",
@@ -221,14 +237,11 @@ export function CaseWorkspace({
   const compliantFirst = [...shortlistWithBreakdown].sort((a, b) =>
     a.meetsAll === b.meetsAll ? 0 : a.meetsAll ? -1 : 1,
   )
-  const compliantCount = compliantFirst.filter((x) => x.meetsAll).length
   const visibleCount = suppliersExpanded
     ? compliantFirst.length
-    : compliantCount > 0
-      ? Math.min(3, compliantCount)
-      : Math.min(3, compliantFirst.length)
+    : Math.min(3, compliantFirst.length)
   const visibleSuppliers = compliantFirst.slice(0, visibleCount)
-  const hasMore = compliantFirst.length > visibleCount
+  const hasMore = !suppliersExpanded && compliantFirst.length > 3
 
   useEffect(() => {
     const tabPanelMap: Record<CaseTab, HTMLDivElement | null> = {
@@ -992,14 +1005,27 @@ export function CaseWorkspace({
               />
             </section>
 
-            <section className="space-y-4">
-              <Card className="h-fit">
+            <section className="min-w-0 space-y-4">
+              <Card className="h-fit w-full max-w-full overflow-hidden">
                 <CardHeader>
                   <CardTitle>Supplier comparison</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="overflow-x-auto rounded-lg border">
-                    <Table>
+                    <Table className="min-w-[720px] table-fixed">
+                      <colgroup>
+                        <col className="w-[4%]" />
+                        <col className="w-[18%]" />
+                        <col className="w-[11%]" />
+                        <col className="w-[12%]" />
+                        <col className="w-[10%]" />
+                        <col className="w-[7%]" />
+                        <col className="w-[7%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[6%]" />
+                        <col className="w-[13%]" />
+                      </colgroup>
                       <TableHeader>
                         <TableRow>
                           <TableHead className="px-3">Rank</TableHead>
@@ -1016,121 +1042,151 @@ export function CaseWorkspace({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {visibleSuppliers.map(({ supplier }) => (
-                          <TableRow
-                            key={supplier.supplierId}
-                            className={
-                              supplier.rank === 1 ? "bg-emerald-50/40" : ""
-                            }
-                          >
-                            <TableCell className="px-3">
-                              <div className="space-y-1">
+                        {compliantFirst.length === 0 ? (
+                          <TableRow>
+                            <TableCell
+                              colSpan={11}
+                              className="py-8 text-center text-sm text-muted-foreground"
+                            >
+                              No suppliers on the shortlist for this case.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                        {visibleSuppliers.map(({ supplier, breakdown }) => {
+                          const { hardPassed, hardTotal, policyPassed, policyTotal } =
+                            getRuleCounts(breakdown)
+                          const rulesLabel =
+                            data.evaluationRuns.length > 0
+                              ? `${hardPassed}/${hardTotal}`
+                              : "—"
+                          const policyLabel =
+                            data.evaluationRuns.length > 0
+                              ? `${policyPassed}/${policyTotal}`
+                              : "—"
+                          return (
+                            <TableRow
+                              key={supplier.supplierId}
+                              className="cursor-pointer"
+                              onClick={() =>
+                                setSelectedSupplierDetail({ supplier, breakdown })
+                              }
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`View details for ${supplier.supplierName}`}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault()
+                                  setSelectedSupplierDetail({ supplier, breakdown })
+                                }
+                              }}
+                            >
+                              <TableCell className="px-3">
                                 <p className="text-base font-semibold tabular-nums">
                                   #{supplier.rank}
                                 </p>
-                                {supplier.rank === 1 ? (
-                                  <StatusBadge label="Top option" tone="success" />
-                                ) : null}
-                              </div>
-                            </TableCell>
-                            <TableCell className="align-top">
-                              <div className="space-y-1">
-                                <p className="font-medium">
-                                  {supplier.supplierName}
-                                </p>
-                                <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                                  {supplier.supplierId}
+                              </TableCell>
+                              <TableCell className="align-top">
+                                <div className="space-y-1">
+                                  <p className="font-medium">
+                                    {supplier.supplierName}
+                                  </p>
+                                  <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                                    {supplier.supplierId}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground">
+                                    {supplier.countryHq ?? "N/A"} ·{" "}
+                                    {supplier.currency ?? data.recommendation.currency}
+                                  </p>
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-sm">
+                                <p>{supplier.pricingTierApplied}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {supplier.region ?? "N/A"} · qty{" "}
+                                  {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
                                 </p>
                                 <p className="text-xs text-muted-foreground">
-                                  {supplier.countryHq ?? "N/A"} ·{" "}
-                                  {supplier.currency ?? data.recommendation.currency}
+                                  MOQ {supplier.moq ?? "N/A"}
                                 </p>
-                                <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
-                                  {supplier.recommendationNote}
-                                </p>
-                              </div>
-                            </TableCell>
-                            <TableCell className="text-sm">
-                              <p>{supplier.pricingTierApplied}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {supplier.region ?? "N/A"} · qty{" "}
-                                {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                MOQ {supplier.moq ?? "N/A"}
-                              </p>
-                            </TableCell>
-                            <TableCell className="font-medium tabular-nums">
-                              <div>
-                                {formatCurrency(
-                                  supplier.totalPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Unit{" "}
-                                {formatCurrency(
-                                  supplier.unitPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Exp.{" "}
-                                {formatCurrency(
-                                  supplier.expeditedTotal,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Exp unit{" "}
-                                {formatCurrency(
-                                  supplier.expeditedUnitPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell className="tabular-nums">
-                              <div>{supplier.standardLeadTimeDays}d std</div>
-                              <div className="text-xs text-muted-foreground">
-                                {supplier.expeditedLeadTimeDays}d exp
-                              </div>
-                            </TableCell>
-                            <TableCell
-                              className={scoreTone(supplier.qualityScore)}
-                            >
-                              {supplier.qualityScore}
-                            </TableCell>
-                            <TableCell
-                              className={scoreTone(supplier.riskScore, true)}
-                            >
-                              {supplier.riskScore}
-                            </TableCell>
-                            <TableCell className={scoreTone(supplier.esgScore)}>
-                              {supplier.esgScore}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex max-w-[180px] flex-wrap gap-1">
-                                {supplier.preferred ? (
-                                  <StatusBadge label="Preferred" tone="info" />
-                                ) : null}
-                                {supplier.incumbent ? (
-                                  <StatusBadge label="Incumbent" tone="neutral" />
-                                ) : null}
-                                {supplier.policyCompliant ? (
-                                  <StatusBadge label="Compliant" tone="success" />
-                                ) : (
-                                  <StatusBadge label="Conflict" tone="destructive" />
-                                )}
-                                {supplier.dataResidencySupported ? (
-                                  <StatusBadge label="Data residency" tone="info" />
-                                ) : null}
-                                {supplier.coversDeliveryCountry ? (
-                                  <StatusBadge label="Covers country" tone="neutral" />
-                                ) : null}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                              </TableCell>
+                              <TableCell className="font-medium tabular-nums">
+                                <div>
+                                  {formatCurrency(
+                                    supplier.totalPrice,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Unit{" "}
+                                  {formatCurrency(
+                                    supplier.unitPrice,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Exp.{" "}
+                                  {formatCurrency(
+                                    supplier.expeditedTotal,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  Exp unit{" "}
+                                  {formatCurrency(
+                                    supplier.expeditedUnitPrice,
+                                    data.recommendation.currency,
+                                  )}
+                                </div>
+                              </TableCell>
+                              <TableCell className="tabular-nums">
+                                <div>{supplier.standardLeadTimeDays}d std</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {supplier.expeditedLeadTimeDays}d exp
+                                </div>
+                              </TableCell>
+                              <TableCell className="tabular-nums text-sm">
+                                {rulesLabel}
+                              </TableCell>
+                              <TableCell className="tabular-nums text-sm">
+                                {policyLabel}
+                              </TableCell>
+                              <TableCell
+                                className={scoreTone(supplier.qualityScore)}
+                              >
+                                {supplier.qualityScore}
+                              </TableCell>
+                              <TableCell
+                                className={scoreTone(supplier.riskScore, true)}
+                              >
+                                {supplier.riskScore}
+                              </TableCell>
+                              <TableCell className={scoreTone(supplier.esgScore)}>
+                                {supplier.esgScore}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex max-w-[180px] flex-wrap gap-1">
+                                  {supplier.preferred ? (
+                                    <StatusBadge label="Preferred" tone="info" />
+                                  ) : null}
+                                  {supplier.incumbent ? (
+                                    <StatusBadge label="Incumbent" tone="neutral" />
+                                  ) : null}
+                                  {supplier.policyCompliant ? (
+                                    <StatusBadge label="Compliant" tone="success" />
+                                  ) : (
+                                    <StatusBadge label="Conflict" tone="destructive" />
+                                  )}
+                                  {supplier.dataResidencySupported ? (
+                                    <StatusBadge label="Data residency" tone="info" />
+                                  ) : null}
+                                  {supplier.coversDeliveryCountry ? (
+                                    <StatusBadge label="Covers country" tone="neutral" />
+                                  ) : null}
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
                       </TableBody>
                     </Table>
                   </div>
@@ -1141,7 +1197,16 @@ export function CaseWorkspace({
                       onClick={() => setSuppliersExpanded(true)}
                       className="w-full"
                     >
-                      Extend — show {compliantFirst.length - visibleCount} more
+                      Show all
+                    </Button>
+                  ) : suppliersExpanded && compliantFirst.length > 3 ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSuppliersExpanded(false)}
+                      className="w-full"
+                    >
+                      Minimize
                     </Button>
                   ) : null}
                 </CardContent>
@@ -1165,6 +1230,7 @@ export function CaseWorkspace({
                   </SheetHeader>
                   {selectedSupplierDetail ? (
                     <SupplierDetailSheetContent
+                      key={`${data.id}-${selectedSupplierDetail.supplier.supplierId}`}
                       requestId={data.id}
                       supplier={selectedSupplierDetail.supplier}
                       breakdown={selectedSupplierDetail.breakdown}
@@ -1290,6 +1356,35 @@ export function CaseWorkspace({
                 </CardContent>
               </Card>
             </section>
+
+            {visibleSuppliers.length > 0 ? (
+              <section className="min-w-0">
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Supplier notes</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {visibleSuppliers.map(({ supplier }) => (
+                      <div
+                        key={supplier.supplierId}
+                        className="rounded-lg border bg-background/80 p-3.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <StatusBadge label={`#${supplier.rank}`} tone="neutral" />
+                          <span className="font-medium">{supplier.supplierName}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {supplier.supplierId}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                          {supplier.recommendationNote}
+                        </p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </section>
+            ) : null}
           </div>
           </TabsContent>
 
@@ -1713,8 +1808,6 @@ function SupplierDetailSheetContent({
 
   useEffect(() => {
     if (breakdown || !requestId || !supplier.supplierId) {
-      setFetchedBreakdown(null)
-      setFetchError(null)
       return
     }
     let cancelled = false
@@ -1911,6 +2004,13 @@ function SupplierDetailSheetContent({
             </Table>
           </div>
         </div>
+      </div>
+
+      <div className="rounded-lg border bg-muted/20 p-4">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Rationale
+        </p>
+        <p className="mt-2 text-sm leading-relaxed">{supplier.recommendationNote}</p>
       </div>
     </div>
   )

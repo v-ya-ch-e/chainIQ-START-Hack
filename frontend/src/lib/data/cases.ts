@@ -1107,6 +1107,7 @@ export async function getCaseDetailByRunId(
   return { caseDetail, runId: evaluation.run_id }
 }
 
+/** Aggregates request, analytics overview, awards, escalations, audit, and evaluation runs into the `CaseDetail` view model used by `CaseWorkspace`. */
 export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> {
   let detail: RequestDetail
   try {
