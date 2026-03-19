@@ -21,6 +21,16 @@ Both the normal completion path and the early-exit path (invalid requests) persi
 
 The `GET /api/pipeline/result/{request_id}` endpoint checks in-memory cache first, then falls back to the org layer's persisted `pipeline_results` table. This means results survive server restarts and are available across instances.
 
+## PDF Audit Report
+
+`GET /api/pipeline/report/{request_id}` generates a downloadable PDF audit report. It aggregates:
+
+1. **Pipeline result** — from in-memory cache or persisted `pipeline_results` table
+2. **Audit logs** — from `GET /api/logs/audit/by-request/{id}` (best-effort)
+3. **Audit summary** — from `GET /api/logs/audit/summary/{id}` (best-effort)
+
+The PDF is rendered via `reportlab` in `app/reports/audit_report.py` and returned as a `StreamingResponse` with `Content-Type: application/pdf`. Report generation is self-contained — if audit logs or summary are unavailable the report still renders with pipeline result data only.
+
 ## Org Layer Endpoints Used
 
 - `GET /api/analytics/request-overview/{id}` — fetch data
