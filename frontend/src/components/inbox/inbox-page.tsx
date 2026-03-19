@@ -1,16 +1,19 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useMemo, useState } from "react"
-import { ArrowRight, Search, Sparkles } from "lucide-react"
+import { ArrowRight, Loader2, Play, Search, Sparkles } from "lucide-react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { IntakeWizardDialog } from "@/components/inbox/intake-wizard-dialog"
+import { JsonViewer } from "@/components/shared/json-viewer"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
@@ -27,6 +30,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatCurrency, formatDate } from "@/lib/data/formatters"
+import { chainIqApi } from "@/lib/api/client"
+import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
 import type { CaseListItem } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 
@@ -50,11 +55,19 @@ const escalationOptions = [
 ]
 
 export function InboxPage({ cases }: InboxPageProps) {
+  const router = useRouter()
   const [query, setQuery] = useState("")
   const [isWizardOpen, setIsWizardOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState("all")
   const [escalationFilter, setEscalationFilter] = useState("all")
   const [attentionOnly, setAttentionOnly] = useState(false)
+  const [batchIds, setBatchIds] = useState("")
+  const [concurrency, setConcurrency] = useState("5")
+  const [batchResult, setBatchResult] = useState<unknown>(null)
+  const { loadingAction, error, fallback, message, runAction } =
+    usePipelineActionRunner()
+
+  const isAnyActionRunning = loadingAction !== null
 
   const filteredCases = useMemo(() => {
     return cases.filter((entry) => {
@@ -83,6 +96,41 @@ export function InboxPage({ cases }: InboxPageProps) {
     })
   }, [attentionOnly, cases, escalationFilter, query, statusFilter])
 
+  function triggerRequest(requestId: string) {
+    void runAction({
+      label: `trigger:${requestId}`,
+      request: () => chainIqApi.pipeline.process({ request_id: requestId }),
+      successMessage: `Pipeline trigger started for ${requestId}.`,
+    })
+      .then(() => router.refresh())
+      .catch(() => {
+        // Error state is handled by shared action runner.
+      })
+  }
+
+  function processBatch() {
+    const requestIds = batchIds
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+    if (requestIds.length === 0) return
+
+    void runAction({
+      label: "batch",
+      request: () =>
+        chainIqApi.pipeline.processBatch({
+          request_ids: requestIds,
+          concurrency: Number(concurrency) || 5,
+        }),
+      onSuccess: setBatchResult,
+      successMessage: "Batch process submitted.",
+    })
+      .then(() => router.refresh())
+      .catch(() => {
+        // Error state is handled by shared action runner.
+      })
+  }
+
   return (
     <div className="space-y-6">
       <div className="animate-fade-in-up flex items-start justify-between">
@@ -98,6 +146,24 @@ export function InboxPage({ cases }: InboxPageProps) {
       </div>
 
       <IntakeWizardDialog open={isWizardOpen} onOpenChange={setIsWizardOpen} />
+
+      {message ? (
+        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
+          <CardContent className="py-3 text-sm">{message}</CardContent>
+        </Card>
+      ) : null}
+      {error ? (
+        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
+          <CardContent className="py-3 text-sm">{error}</CardContent>
+        </Card>
+      ) : null}
+      {fallback ? (
+        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
+          <CardContent className="py-3 text-sm">
+            Runs endpoint degraded. Other trigger actions remain usable. {fallback}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card className="animate-fade-in-up" style={{ animationDelay: "80ms" }}>
         <CardHeader className="border-b pb-4">
@@ -176,6 +242,7 @@ export function InboxPage({ cases }: InboxPageProps) {
                   <TableHead className="min-w-[120px]">
                     Recommendation
                   </TableHead>
+                  <TableHead className="min-w-[150px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -259,6 +326,32 @@ export function InboxPage({ cases }: InboxPageProps) {
                           tone={recommendationTone}
                         />
                       </TableCell>
+                      <TableCell>
+                        {entry.status === "received" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => triggerRequest(entry.requestId)}
+                            disabled={isAnyActionRunning}
+                          >
+                            {loadingAction === `trigger:${entry.requestId}` ? (
+                              <>
+                                <Loader2 className="size-3.5 animate-spin" />
+                                Triggering...
+                              </>
+                            ) : (
+                              <>
+                                <Play className="size-3.5" />
+                                Trigger now
+                              </>
+                            )}
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">
+                            Open case for actions
+                          </span>
+                        )}
+                      </TableCell>
                     </TableRow>
                   )
                 })}
@@ -267,6 +360,53 @@ export function InboxPage({ cases }: InboxPageProps) {
           </div>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Advanced actions</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Bulk trigger requests from Inbox (moved from Pipeline Ops).
+          </p>
+          <Textarea
+            value={batchIds}
+            onChange={(event) => setBatchIds(event.target.value)}
+            placeholder="REQ-000001,REQ-000004"
+            className="min-h-20"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={concurrency}
+              onChange={(event) => setConcurrency(event.target.value)}
+              placeholder="Concurrency (1-20)"
+              type="number"
+              className="w-[220px]"
+            />
+            <Button
+              onClick={processBatch}
+              disabled={isAnyActionRunning || batchIds.trim().length === 0}
+            >
+              {loadingAction === "batch" ? (
+                <>
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Submitting...
+                </>
+              ) : (
+                <>
+                  <Play className="size-3.5" />
+                  Process batch
+                </>
+              )}
+            </Button>
+            <Button variant="outline" asChild>
+              <Link href="/audit">View audit diagnostics</Link>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {batchResult ? <JsonViewer title="Batch Result" value={batchResult} /> : null}
     </div>
   )
 }

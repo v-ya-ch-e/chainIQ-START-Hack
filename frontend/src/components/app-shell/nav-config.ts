@@ -3,9 +3,7 @@ import {
   Database,
   Inbox,
   LayoutDashboard,
-  PlayCircle,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react"
 
 export interface NavItem {
@@ -18,7 +16,6 @@ export interface NavItem {
 export const navItems: NavItem[] = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/inbox", label: "Inbox", icon: Inbox },
-  { href: "/pipeline", label: "Pipeline", icon: PlayCircle },
   { href: "/escalations", label: "Escalations", icon: BellRing },
   { href: "/audit", label: "Audit", icon: ShieldCheck },
   { href: "/data", label: "Data", icon: Database },

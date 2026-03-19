@@ -1,13 +1,15 @@
 "use client"
 
-import { Download, Play, ShieldCheck, TimerReset } from "lucide-react"
+import { Activity, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
 import { SectionHeading } from "@/components/shared/section-heading"
+import { JsonViewer } from "@/components/shared/json-viewer"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -27,6 +29,7 @@ import {
 import type { CaseDetail } from "@/lib/types/case"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
+import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
 
 interface CaseWorkspaceProps {
   data: CaseDetail
@@ -39,9 +42,16 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
   const router = useRouter()
   const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [actionMessage, setActionMessage] = useState<string | null>(null)
-  const [rerunPending, setRerunPending] = useState(false)
+  const [runId, setRunId] = useState("")
+  const [statusResult, setStatusResult] = useState<unknown>(null)
+  const [pipelineResult, setPipelineResult] = useState<unknown>(null)
+  const [runsResult, setRunsResult] = useState<unknown>(null)
+  const [runDetailResult, setRunDetailResult] = useState<unknown>(null)
+  const [auditResult, setAuditResult] = useState<unknown>(null)
+  const [summaryResult, setSummaryResult] = useState<unknown>(null)
+  const [stepResult, setStepResult] = useState<unknown>(null)
+  const { loadingAction, error, fallback, message, setMessage, runAction } =
+    usePipelineActionRunner()
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const evaluatedSuppliers =
@@ -85,23 +95,95 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
     }
   }, [activeTab, data.id])
 
-  async function handleRerun() {
-    try {
-      setRerunPending(true)
-      setActionError(null)
-      const result = await chainIqApi.pipeline.process({
-        request_id: data.id,
-      })
-      setActionMessage(
-        `Pipeline re-run started for ${data.id}${result && typeof result === "object" && "run_id" in result ? ` (run ${(result as { run_id?: string }).run_id ?? "created"})` : ""}.`,
-      )
-    } catch (error) {
-      setActionError(
-        error instanceof Error ? error.message : "Failed to trigger re-run.",
-      )
-    } finally {
-      setRerunPending(false)
-    }
+  function handleRerun() {
+    void runAction({
+      label: "rerun",
+      request: () =>
+        chainIqApi.pipeline.process({
+          request_id: data.id,
+        }),
+      successMessage: `Pipeline re-run started for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleStatus() {
+    void runAction({
+      label: "status",
+      request: () => chainIqApi.pipeline.status(data.id),
+      onSuccess: setStatusResult,
+      successMessage: `Fetched latest pipeline status for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleResult() {
+    void runAction({
+      label: "result",
+      request: () => chainIqApi.pipeline.result(data.id),
+      onSuccess: setPipelineResult,
+      successMessage: `Fetched latest pipeline result for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleRunDiagnostics() {
+    void runAction({
+      label: "runs",
+      request: () => chainIqApi.pipeline.runs({ limit: 25, skip: 0 }),
+      onSuccess: setRunsResult,
+      successMessage: "Fetched recent pipeline runs.",
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleRunDetail() {
+    if (!runId.trim()) return
+    void runAction({
+      label: "run",
+      request: () => chainIqApi.pipeline.run(runId.trim()),
+      onSuccess: setRunDetailResult,
+      successMessage: `Fetched run details for ${runId.trim()}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditTrail() {
+    void runAction({
+      label: "audit",
+      request: () => chainIqApi.pipeline.audit(data.id, { limit: 100, skip: 0 }),
+      onSuccess: setAuditResult,
+      successMessage: `Fetched audit trail for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditSummary() {
+    void runAction({
+      label: "summary",
+      request: () => chainIqApi.pipeline.auditSummary(data.id),
+      onSuccess: setSummaryResult,
+      successMessage: `Fetched audit summary for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleStep(step: "fetch" | "validate" | "filter" | "comply" | "rank" | "escalate") {
+    void runAction({
+      label: `step:${step}`,
+      request: () => chainIqApi.pipeline.steps[step]({ request_id: data.id }),
+      onSuccess: setStepResult,
+      successMessage: `Executed ${step} step for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
   }
 
   function handleExport() {
@@ -115,7 +197,7 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
-    setActionMessage(`Exported ${data.id} payload as JSON.`)
+    setMessage(`Exported ${data.id} payload as JSON.`)
   }
 
   function handleEscalate() {
@@ -159,10 +241,40 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
             variant="outline"
             size="sm"
             onClick={handleRerun}
-            disabled={rerunPending}
+            disabled={loadingAction !== null}
           >
-            <Play className="size-3.5" />
-            {rerunPending ? "Re-running..." : "Re-run"}
+            {loadingAction === "rerun" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleStatus}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "status" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Activity className="size-3.5" />
+            )}
+            Status
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleResult}
+            disabled={loadingAction !== null}
+          >
+            {loadingAction === "result" ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <ShieldCheck className="size-3.5" />
+            )}
+            Result
           </Button>
           <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="size-3.5" />
@@ -183,15 +295,22 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
         </div>
       </div>
 
-      {actionError ? (
+      {error ? (
         <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
-          <CardContent className="py-3 text-sm">{actionError}</CardContent>
+          <CardContent className="py-3 text-sm">{error}</CardContent>
         </Card>
       ) : null}
 
-      {actionMessage ? (
+      {message ? (
         <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
-          <CardContent className="py-3 text-sm">{actionMessage}</CardContent>
+          <CardContent className="py-3 text-sm">{message}</CardContent>
+        </Card>
+      ) : null}
+      {fallback ? (
+        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
+          <CardContent className="py-3 text-sm">
+            Runs endpoint degraded. Other pipeline actions remain usable. {fallback}
+          </CardContent>
         </Card>
       ) : null}
 
@@ -1071,6 +1190,118 @@ export function CaseWorkspace({ data, initialTab = "overview" }: CaseWorkspacePr
               </Card>
             </div>
           </div>
+
+          <Card className="bg-muted/15">
+            <CardHeader>
+              <CardTitle>Advanced pipeline diagnostics</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Access run diagnostics and step-level controls moved from Pipeline Ops.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={runId}
+                  onChange={(event) => setRunId(event.target.value)}
+                  placeholder="Run ID (optional for run detail)"
+                  className="w-full sm:w-[340px]"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDiagnostics}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "runs" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Activity className="size-3.5" />
+                  )}
+                  List runs
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDetail}
+                  disabled={loadingAction !== null || !runId.trim()}
+                >
+                  {loadingAction === "run" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  Get run
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditTrail}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "audit" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit trail
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditSummary}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "summary" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit summary
+                </Button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map(
+                  (step) => (
+                    <Button
+                      key={step}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleStep(step)}
+                      disabled={loadingAction !== null}
+                    >
+                      {loadingAction === `step:${step}` ? (
+                        <RefreshCw className="size-3.5 animate-spin" />
+                      ) : (
+                        <Play className="size-3.5" />
+                      )}
+                      {step}
+                    </Button>
+                  ),
+                )}
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                {statusResult ? (
+                  <JsonViewer title="Pipeline Status" value={statusResult} />
+                ) : null}
+                {pipelineResult ? (
+                  <JsonViewer title="Pipeline Result" value={pipelineResult} />
+                ) : null}
+                {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
+                {runDetailResult ? (
+                  <JsonViewer title="Run Detail" value={runDetailResult} />
+                ) : null}
+                {auditResult ? (
+                  <JsonViewer title="Audit Trail" value={auditResult} />
+                ) : null}
+                {summaryResult ? (
+                  <JsonViewer title="Audit Summary" value={summaryResult} />
+                ) : null}
+                {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
+              </div>
+            </CardContent>
+          </Card>
           </TabsContent>
         </div>
       </Tabs>

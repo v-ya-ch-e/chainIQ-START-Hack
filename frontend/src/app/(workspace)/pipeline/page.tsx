@@ -1,7 +1,7 @@
-import { PipelinePage } from "@/components/pipeline/pipeline-page"
+import { redirect } from "next/navigation"
 
 export const dynamic = "force-dynamic"
 
 export default function Page() {
-  return <PipelinePage />
+  redirect("/inbox")
 }
