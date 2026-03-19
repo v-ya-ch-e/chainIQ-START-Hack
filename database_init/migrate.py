@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import sys
+import uuid as uuid_std
 from datetime import datetime
 from pathlib import Path
 
@@ -71,6 +72,7 @@ CREATE_TABLES = [
     """
     CREATE TABLE suppliers (
         supplier_id     VARCHAR(20)  PRIMARY KEY,
+        uuid            CHAR(36)     NOT NULL UNIQUE,
         supplier_name   VARCHAR(120) NOT NULL,
         country_hq      VARCHAR(5)   NOT NULL,
         currency        VARCHAR(5)   NOT NULL,
@@ -132,6 +134,7 @@ CREATE_TABLES = [
     """
     CREATE TABLE requests (
         request_id                  VARCHAR(20)  PRIMARY KEY,
+        uuid                        CHAR(36)     NOT NULL UNIQUE,
         created_at                  DATETIME     NOT NULL,
         request_channel             VARCHAR(20)  NOT NULL,
         request_language            VARCHAR(5)   NOT NULL,
@@ -478,6 +481,7 @@ def load_suppliers(raw_rows: list[dict]) -> tuple[list[tuple], list[tuple], list
         if sid not in seen_suppliers:
             seen_suppliers[sid] = (
                 sid,
+                str(uuid_std.uuid4()),
                 r["supplier_name"],
                 r["country_hq"],
                 r["currency"],
@@ -535,6 +539,7 @@ def load_requests(raw: list[dict]) -> tuple[list[tuple], list[tuple], list[tuple
     for r in raw:
         reqs.append((
             r["request_id"],
+            str(uuid_std.uuid4()),
             normalize_mysql_datetime(r["created_at"]),
             r["request_channel"],
             r["request_language"],
@@ -750,7 +755,7 @@ def run_migration():
     print("  Inserting suppliers...")
     sup_rows, sup_cat_data, svc_regions = load_suppliers(suppliers_csv)
     batch_insert(cursor,
-        "INSERT INTO suppliers (supplier_id, supplier_name, country_hq, currency, contract_status, capacity_per_month) VALUES (%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO suppliers (supplier_id, uuid, supplier_name, country_hq, currency, contract_status, capacity_per_month) VALUES (%s,%s,%s,%s,%s,%s,%s)",
         sup_rows)
     conn.commit()
 
@@ -797,14 +802,14 @@ def run_migration():
     req_data, req_countries, req_tags = load_requests(requests_json)
     req_insert = []
     for r in req_data:
-        c1, c2 = r[10], r[11]
+        c1, c2 = r[11], r[12]
         cid = cat_lookup.get((c1, c2))
         if cid is None:
             print(f"    WARNING: category ({c1}, {c2}) not found for request {r[0]}, skipping")
             continue
-        req_insert.append(r[:10] + (cid,) + r[12:])
+        req_insert.append(r[:11] + (cid,) + r[13:])
     batch_insert(cursor,
-        "INSERT INTO requests (request_id, created_at, request_channel, request_language, business_unit, country, site, requester_id, requester_role, submitted_for_id, category_id, title, request_text, currency, budget_amount, quantity, unit_of_measure, required_by_date, preferred_supplier_mentioned, incumbent_supplier, contract_type_requested, data_residency_constraint, esg_requirement, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        "INSERT INTO requests (request_id, uuid, created_at, request_channel, request_language, business_unit, country, site, requester_id, requester_role, submitted_for_id, category_id, title, request_text, currency, budget_amount, quantity, unit_of_measure, required_by_date, preferred_supplier_mentioned, incumbent_supplier, contract_type_requested, data_residency_constraint, esg_requirement, status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         req_insert)
     conn.commit()
 
