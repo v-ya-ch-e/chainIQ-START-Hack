@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.mysql import JSON
 
 from app.database import Base
@@ -10,6 +10,10 @@ from app.database import Base
 
 class PipelineResult(Base):
     __tablename__ = "pipeline_results"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_0900_ai_ci",
+    }
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String(36), unique=True, nullable=False, index=True)

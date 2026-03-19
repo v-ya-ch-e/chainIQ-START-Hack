@@ -256,6 +256,9 @@ def mock_org_client() -> OrganisationalClient:
     client.get_audit_by_request = AsyncMock(return_value={"items": [], "total": 0})
     client.get_audit_summary = AsyncMock(return_value={"request_id": "REQ-000004", "total_entries": 0})
     client.persist_evaluation_run = AsyncMock(return_value={"evaluation_run_id": 1})
+    client.save_pipeline_result = AsyncMock(return_value={"id": 1, "run_id": "test-run"})
+    client.get_latest_pipeline_result = AsyncMock(return_value=None)
+    client.list_pipeline_results = AsyncMock(return_value={"items": [], "total": 0, "skip": 0, "limit": 50})
 
     return client
 
@@ -276,6 +279,9 @@ def mock_org_client_minimal() -> OrganisationalClient:
     client.update_entry = AsyncMock()
     client.batch_audit_logs = AsyncMock()
     client.persist_evaluation_run = AsyncMock(return_value={"evaluation_run_id": 1})
+    client.save_pipeline_result = AsyncMock(return_value={"id": 1, "run_id": "test-run"})
+    client.get_latest_pipeline_result = AsyncMock(return_value=None)
+    client.list_pipeline_results = AsyncMock(return_value={"items": [], "total": 0, "skip": 0, "limit": 50})
 
     return client
 

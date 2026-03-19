@@ -129,25 +129,7 @@ def list_pipeline_results(
 
 
 # ---------------------------------------------------------------------------
-# Detail by run_id
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{run_id}", response_model=PipelineResultOut)
-def get_pipeline_result(run_id: str, db: Session = Depends(get_db)):
-    """Get a single pipeline result by run_id, including the full output."""
-    result = (
-        db.query(PipelineResult)
-        .filter(PipelineResult.run_id == run_id)
-        .first()
-    )
-    if not result:
-        raise HTTPException(status_code=404, detail=f"Pipeline result {run_id} not found")
-    return result
-
-
-# ---------------------------------------------------------------------------
-# By request
+# By request (must be above /{run_id} to avoid route conflicts)
 # ---------------------------------------------------------------------------
 
 
@@ -167,7 +149,7 @@ def get_results_by_request(request_id: str, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Latest for a request
+# Latest for a request (must be above /{run_id} to avoid route conflicts)
 # ---------------------------------------------------------------------------
 
 
@@ -188,6 +170,24 @@ def get_latest_result(request_id: str, db: Session = Depends(get_db)):
             status_code=404,
             detail=f"No pipeline results found for request {request_id}",
         )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Detail by run_id
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{run_id}", response_model=PipelineResultOut)
+def get_pipeline_result(run_id: str, db: Session = Depends(get_db)):
+    """Get a single pipeline result by run_id, including the full output."""
+    result = (
+        db.query(PipelineResult)
+        .filter(PipelineResult.run_id == run_id)
+        .first()
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Pipeline result {run_id} not found")
     return result
 
 

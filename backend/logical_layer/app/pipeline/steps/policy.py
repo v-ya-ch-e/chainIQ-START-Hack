@@ -1,4 +1,4 @@
-"""Step 6: Evaluate procurement policy constraints."""
+"""Step 6: Evaluate procurement policy constraints using dynamic rules."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from app.models.pipeline_io import (
     RuleRef,
 )
 from app.pipeline.logger import PipelineLogger
+from app.pipeline.rule_engine import RuleEngine
 from app.utils import coerce_budget, primary_delivery_country, country_to_region
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,9 @@ async def evaluate_policy(
     rank_result: RankResult,
     compliance_result: ComplianceResult,
     pipeline_logger: PipelineLogger,
+    *,
+    rule_engine: RuleEngine | None = None,
+    dynamic_rules: list[dict] | None = None,
 ) -> PolicyResult:
     """Determine which procurement policies apply and how they constrain the decision."""
 
@@ -91,11 +95,54 @@ async def evaluate_policy(
                 {"policy_id": rule.rule_id, "rule_type": rule.rule_type},
             )
 
+        # ── 6e: Dynamic rule evaluation ───────────────────────
+
+        dynamic_rule_refs: list[RuleRef] = []
+        if rule_engine and dynamic_rules:
+            preferred_in_compliant = any(
+                req.preferred_supplier_mentioned
+                and req.preferred_supplier_mentioned.lower() in s.supplier_name.lower()
+                for s in compliance_result.compliant
+            ) if req.preferred_supplier_mentioned else False
+
+            context = {
+                "request_id": req.request_id,
+                "category_l1": req.category_l1,
+                "category_l2": req.category_l2,
+                "budget_amount": budget,
+                "currency": currency,
+                "country": delivery_country,
+                "compliant_supplier_count": len(compliance_result.compliant),
+                "quotes_required": approval_eval.quotes_required,
+                "preferred_supplier_mentioned": req.preferred_supplier_mentioned,
+                "preferred_in_compliant": preferred_in_compliant,
+                "category_rule_categories": [
+                    r.rule_id for r in fetch_result.applicable_rules.category_rules
+                ],
+                "geography_rule_countries": [
+                    r.rule_id for r in fetch_result.applicable_rules.geography_rules
+                ],
+            }
+
+            rule_results = await rule_engine.evaluate_rules(dynamic_rules, context)
+            for rr in rule_results:
+                status = "passed" if rr.result == "passed" else rr.result
+                dynamic_rule_refs.append(RuleRef(
+                    rule_id=rr.rule_id,
+                    rule_type=rr.eval_type,
+                    rule_text=rr.message or rr.rule_name,
+                ))
+                pipeline_logger.audit(
+                    "policy", "info" if rr.result == "passed" else "warn", STEP_NAME,
+                    f"Dynamic rule {rr.rule_id} ({rr.rule_name}): {status} — {rr.message}",
+                    {"rule_id": rr.rule_id, "result": rr.result},
+                )
+
         result = PolicyResult(
             approval_threshold=approval_eval,
             preferred_supplier=preferred_eval,
             restricted_suppliers=restricted_evals,
-            category_rules_applied=category_rules,
+            category_rules_applied=category_rules + dynamic_rule_refs,
             geography_rules_applied=geography_rules,
         )
 
@@ -122,7 +169,6 @@ def _evaluate_approval_threshold(
 
     tier = fetch_result.approval_tier
 
-    # If budget is null, use the minimum total from ranked suppliers
     reference_amount = budget
     basis_note = ""
 
@@ -153,7 +199,6 @@ def _evaluate_approval_threshold(
     deviation_approvers = tier.get_deviation_approvers()
     deviation_approval = deviation_approvers[0] if deviation_approvers else None
 
-    # Compute basis text
     if rank_result.ranked_suppliers:
         totals = [
             s.total_price for s in rank_result.ranked_suppliers
@@ -172,7 +217,6 @@ def _evaluate_approval_threshold(
     else:
         basis = f"Approval tier {rule_applied} applies based on budget {currency} {budget:,.2f}." if budget else ""
 
-    # Note about budget near boundary
     note = tier.policy_note or ""
     if basis_note:
         note = f"{basis_note} {note}".strip()
@@ -214,7 +258,6 @@ def _evaluate_preferred_supplier(
     if not preferred_name:
         return PreferredSupplierEval(status="not_stated")
 
-    # Find supplier in compliant set by name match
     all_suppliers = fetch_result.compliant_suppliers
     matched = None
     for s in all_suppliers:
@@ -237,10 +280,8 @@ def _evaluate_preferred_supplier(
     is_preferred = matched.preferred_supplier
     is_restricted = False
 
-    # Check if excluded
     excluded_ids = {e.supplier_id for e in compliance_result.excluded}
     in_ranked = any(r.supplier_id == matched.supplier_id for r in rank_result.ranked_suppliers)
-    covers_country = True
 
     if matched.supplier_id in excluded_ids:
         for exc in compliance_result.excluded:
@@ -270,7 +311,7 @@ def _evaluate_preferred_supplier(
         supplier=matched.supplier_name,
         status=status,
         is_preferred=is_preferred,
-        covers_delivery_country=covers_country,
+        covers_delivery_country=True,
         is_restricted=is_restricted,
         policy_note=policy_note,
     )

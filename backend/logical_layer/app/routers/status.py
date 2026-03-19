@@ -33,17 +33,23 @@ async def get_pipeline_status(
 
     latest = runs[0] if isinstance(runs, list) else runs
 
-    cached = runner.get_cached_result(request_id)
-
     response: dict = {
         "request_id": request_id,
         "latest_run": latest,
     }
 
+    cached = runner.get_cached_result(request_id)
     if cached:
         response["recommendation_status"] = cached.recommendation.status
         response["escalation_count"] = len(cached.escalations)
         response["confidence_score"] = cached.recommendation.confidence_score
+    else:
+        persisted = await org.get_latest_pipeline_result(request_id)
+        if persisted:
+            summary = persisted.get("summary") or {}
+            response["recommendation_status"] = persisted.get("recommendation_status")
+            response["escalation_count"] = summary.get("escalation_count", 0)
+            response["confidence_score"] = summary.get("confidence_score", 0)
 
     return response
 
@@ -51,16 +57,26 @@ async def get_pipeline_status(
 @router.get("/result/{request_id}")
 async def get_pipeline_result(
     request_id: str,
+    org: OrganisationalClient = Depends(get_org_client),
     runner: PipelineRunner = Depends(get_pipeline_runner),
 ):
-    """Get the full pipeline result from the latest successful run."""
+    """Get the full pipeline result from the latest successful run.
+
+    Checks in-memory cache first, then falls back to the org layer's
+    persisted pipeline results.
+    """
     cached = runner.get_cached_result(request_id)
-    if not cached:
-        raise HTTPException(
-            status_code=404,
-            detail="No pipeline result found. Process the request first.",
-        )
-    return cached.model_dump()
+    if cached:
+        return cached.model_dump()
+
+    persisted = await org.get_latest_pipeline_result(request_id)
+    if persisted and persisted.get("output"):
+        return persisted["output"]
+
+    raise HTTPException(
+        status_code=404,
+        detail="No pipeline result found. Process the request first.",
+    )
 
 
 @router.get("/runs")

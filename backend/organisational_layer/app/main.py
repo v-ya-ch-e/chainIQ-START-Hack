@@ -10,6 +10,7 @@ from app.routers import (
     analytics,
     awards,
     categories,
+    dynamic_rules,
     escalations,
     logs,
     parse,
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 import app.models.logs  # noqa: F401
 import app.models.evaluations  # noqa: F401
 import app.models.pipeline_results  # noqa: F401
+import app.models.dynamic_rules  # noqa: F401
 
 
 @asynccontextmanager
@@ -65,6 +67,7 @@ app.include_router(logs.router)
 app.include_router(pipeline_results.router)
 app.include_router(parse.router)
 app.include_router(intake.router)
+app.include_router(dynamic_rules.router)
 
 
 @app.get("/health", tags=["Health"])
