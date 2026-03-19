@@ -110,6 +110,18 @@ cd backend && docker compose logs -f organisational-layer
 - Frontend routes under `/api/*` are proxied to the backend via Next.js rewrites.
 - Server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal requests.
 
+## Intake API guardrails
+
+- `POST /api/chat/intake` (frontend route) requires `ANTHROPIC_API_KEY` in frontend runtime env.
+- If `ANTHROPIC_API_KEY` is missing, `POST /api/chat/intake` returns `503` with code `ANTHROPIC_NOT_CONFIGURED`.
+- `POST /api/intake/extract` is deterministic in the current architecture (not Anthropic-backed).
+- The logical layer stays operational without Anthropic config, but runs with deterministic fallback. Set `backend/logical_layer/.env` `ANTHROPIC_API_KEY` to enable LLM-assisted behavior.
+
+## Backlog follow-ups
+
+- Unify duplicate deterministic intake extraction paths into one backend source of truth.
+- Migrate organisational parse service Anthropic calls to an async-safe execution model.
+
 ## Deployment
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for full deployment instructions covering local development, AWS (EC2 + RDS), and nginx reverse proxy setup.

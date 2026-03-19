@@ -91,10 +91,19 @@ async def health_check():
         org_status = "unreachable"
 
     llm_status = "configured" if app.state.llm_client else "not_configured"
+    llm_detail = (
+        f"Configured for Anthropic model {settings.ANTHROPIC_MODEL}."
+        if app.state.llm_client
+        else (
+            "ANTHROPIC_API_KEY is not set. LLM-assisted steps run in deterministic "
+            "fallback mode."
+        )
+    )
 
     return {
         "status": "ok",
         "org_layer": org_status,
         "llm": llm_status,
+        "llm_detail": llm_detail,
         "version": "2.0.0",
     }

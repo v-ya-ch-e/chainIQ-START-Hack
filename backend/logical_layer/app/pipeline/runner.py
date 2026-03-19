@@ -198,6 +198,8 @@ class PipelineRunner:
                         )
                         for i in validation_result.issues
                     ],
+                    llm_used=validation_result.llm_used,
+                    llm_fallback=validation_result.llm_fallback,
                 ),
                 policy_evaluation=PolicyEvaluationOutput(),
                 supplier_shortlist=[],
@@ -215,6 +217,8 @@ class PipelineRunner:
                     status="cannot_proceed",
                     reason="Request is missing critical required fields (category and/or currency). Cannot proceed with supplier evaluation.",
                     confidence_score=0,
+                    llm_used=False,
+                    llm_fallback=False,
                 ),
                 audit_trail=AuditTrailOutput(
                     data_sources_used=["requests.json"],

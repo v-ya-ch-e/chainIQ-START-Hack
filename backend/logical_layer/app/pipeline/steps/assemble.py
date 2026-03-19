@@ -138,6 +138,8 @@ async def assemble_output(
                 )
                 for i in enriched_issues
             ],
+            llm_used=validation_result.llm_used,
+            llm_fallback=validation_result.llm_fallback,
         )
 
         # ── Policy evaluation ─────────────────────────────────
@@ -233,6 +235,8 @@ async def assemble_output(
             minimum_budget_required=recommendation_result.minimum_budget_required,
             minimum_budget_currency=recommendation_result.minimum_budget_currency,
             confidence_score=recommendation_result.confidence_score,
+            llm_used=recommendation_result.llm_used,
+            llm_fallback=recommendation_result.llm_fallback,
         )
 
         # ── Audit trail ───────────────────────────────────────
