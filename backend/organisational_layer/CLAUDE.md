@@ -6,7 +6,7 @@
 
 # **SERVICE OVERVIEW**
 
-FastAPI backend microservice for the ChainIQ procurement platform. Provides CRUD and analytics endpoints for all 22 normalised MySQL tables hosted on AWS RDS.
+FastAPI backend microservice for the ChainIQ procurement platform. Provides CRUD, analytics, and pipeline logging endpoints for all 24 normalised MySQL tables hosted on AWS RDS.
 
 ## How to run
 
@@ -38,7 +38,7 @@ docker compose up --build
 | `app/main.py` | FastAPI app entry point, CORS, router registration, `/health` endpoint |
 | `app/config.py` | Pydantic Settings — reads DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME from env |
 | `app/database.py` | SQLAlchemy engine, session factory, `get_db` dependency |
-| `app/models/` | SQLAlchemy ORM models for all 22 tables (reference, requests, historical, policies) |
+| `app/models/` | SQLAlchemy ORM models for all 24 tables (reference, requests, historical, policies, logs) |
 | `app/schemas/` | Pydantic request/response schemas |
 | `app/routers/categories.py` | CRUD for categories |
 | `app/routers/suppliers.py` | CRUD for suppliers + sub-resources (categories, regions, pricing) |
@@ -48,7 +48,11 @@ docker compose up --build
 | `app/routers/rules.py` | Read endpoints for category, geography, and escalation rules |
 | `app/routers/escalations.py` | Deterministic escalation queue endpoints (read-only) |
 | `app/routers/analytics.py` | Domain-specific analytics: compliant suppliers, pricing lookup, approval tiers, restriction/preferred checks, applicable rules, request overview, spend aggregations, supplier win rates |
+| `app/routers/logs.py` | Pipeline logging endpoints — CRUD for pipeline runs and step-level log entries |
+| `app/models/logs.py` | SQLAlchemy models: `PipelineRun`, `PipelineLogEntry` |
+| `app/schemas/logs.py` | Pydantic schemas for pipeline logging create/update/read |
 | `app/services/escalations.py` | Escalation evaluation engine (ER rules + AT conflict detection) |
+| `LOGGING_API.md` | Full documentation for the pipeline logging API |
 | `Dockerfile` | Python 3.14-slim container, installs deps, runs uvicorn |
 | `requirements.txt` | fastapi, uvicorn, sqlalchemy, pymysql, pydantic-settings, python-dotenv, cryptography |
 | `.env.example` | Template for DB connection env vars |
@@ -63,6 +67,15 @@ docker compose up --build
 - `GET /api/policies/approval-thresholds`, `GET /api/policies/preferred-suppliers`, `GET /api/policies/restricted-suppliers`
 - `GET /api/rules/category`, `GET /api/rules/geography`, `GET /api/rules/escalation`
 - `GET /api/escalations/queue`, `GET /api/escalations/by-request/{id}`
+
+### Pipeline Logging
+- `POST /api/logs/runs` — create a new pipeline run
+- `PATCH /api/logs/runs/{run_id}` — update run status/completion
+- `GET /api/logs/runs` — list runs (filterable by request_id, status)
+- `GET /api/logs/runs/{run_id}` — get run with all log entries
+- `GET /api/logs/by-request/{request_id}` — get all runs for a request
+- `POST /api/logs/entries` — create a log entry (step started)
+- `PATCH /api/logs/entries/{entry_id}` — update entry (step completed/failed)
 
 ### Analytics
 - `GET /api/analytics/compliant-suppliers` — non-restricted suppliers for category+country

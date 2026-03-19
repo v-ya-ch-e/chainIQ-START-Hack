@@ -38,10 +38,11 @@ docker compose up --build
 |------|---------|
 | `app/main.py` | FastAPI app entry point, CORS, router registration, `/health` endpoint |
 | `app/config.py` | Pydantic Settings — reads `ORGANISATIONAL_LAYER_URL` from env |
-| `app/clients/organisational.py` | Async HTTP client wrapping all Org Layer API calls (requests, analytics, escalations, awards) |
-| `app/routers/processing.py` | `POST /api/processRequest` — full pipeline endpoint |
+| `app/clients/organisational.py` | Async HTTP client wrapping all Org Layer API calls (requests, analytics, escalations, awards, pipeline logging) |
+| `app/routers/processing.py` | `POST /api/processRequest` — full pipeline endpoint (instrumented with step-level logging) |
+| `app/services/pipeline_logger.py` | `PipelineLogger` — async context-manager that records step-level timing, inputs, outputs, and errors to the Org Layer's logging API |
 | `app/routers/scripts.py` | `POST /api/filter-suppliers`, `/api/rank-suppliers`, `/api/validate-request` — script-backed endpoints |
-| `app/routers/pipeline.py` | `POST /api/fetch-request`, `/api/check-compliance`, `/api/evaluate-policy`, `/api/check-escalations`, `/api/generate-recommendation`, `/api/assemble-output`, `/api/format-invalid-response` — pipeline step endpoints |
+| `app/routers/pipeline.py` | `POST /api/fetch-request`, `/api/check-compliance`, `/api/evaluate-policy`, `/api/check-escalations`, `/api/generate-recommendation`, `/api/assemble-output`, `/api/format-invalid-response` — pipeline step endpoints (supports `X-Pipeline-Run-Id` header for logging) |
 | `app/schemas/processing.py` | Pydantic models for the processRequest endpoint |
 | `app/schemas/scripts.py` | Pydantic models for the filter, rank, and validate endpoints |
 | `app/schemas/pipeline.py` | Pydantic models for all pipeline step endpoints |
@@ -134,6 +135,12 @@ n8n workflow
 ```
 
 n8n orchestrates the multi-step pipeline with branching on validation and compliance. The Logical Layer delegates data access to the Organisational Layer via HTTP and uses the Anthropic API for LLM-powered validation, recommendation, and enrichment.
+
+## Pipeline Logging
+
+Every invocation of `/api/processRequest` is instrumented with `PipelineLogger` (`app/services/pipeline_logger.py`). The logger creates a pipeline run record and logs each step (timing, truncated input/output, errors) to the Org Layer's `/api/logs/*` endpoints. Logging is fire-and-forget: if the Org Layer is unreachable, the pipeline continues unaffected.
+
+Individual pipeline endpoints (`/api/fetch-request`, `/api/check-compliance`, etc.) also support logging when the `X-Pipeline-Run-Id` header is provided. See `LOGGING_API.md` in the organisational layer for full API documentation.
 
 ## Environment variables
 

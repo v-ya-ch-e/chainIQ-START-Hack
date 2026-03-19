@@ -187,5 +187,49 @@ class OrganisationalClient:
         r.raise_for_status()
         return r.json()
 
+    # ------------------------------------------------------------------
+    # Pipeline logging
+    # ------------------------------------------------------------------
+
+    async def create_pipeline_run(
+        self, run_id: str, request_id: str, started_at: str
+    ) -> dict[str, Any]:
+        r = await self.client.post(
+            "/api/logs/runs",
+            json={"run_id": run_id, "request_id": request_id, "started_at": started_at},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def update_pipeline_run(
+        self, run_id: str, **fields: Any
+    ) -> dict[str, Any]:
+        r = await self.client.patch(f"/api/logs/runs/{run_id}", json=fields)
+        r.raise_for_status()
+        return r.json()
+
+    async def create_log_entry(
+        self, run_id: str, step_name: str, step_order: int,
+        started_at: str, input_summary: Any | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "step_name": step_name,
+            "step_order": step_order,
+            "started_at": started_at,
+        }
+        if input_summary is not None:
+            payload["input_summary"] = input_summary
+        r = await self.client.post("/api/logs/entries", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+    async def update_log_entry(
+        self, entry_id: int, **fields: Any
+    ) -> dict[str, Any]:
+        r = await self.client.patch(f"/api/logs/entries/{entry_id}", json=fields)
+        r.raise_for_status()
+        return r.json()
+
 
 org_client = OrganisationalClient()
