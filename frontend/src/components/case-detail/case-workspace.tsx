@@ -1,10 +1,12 @@
+"use client"
+
 import { Download, Play, ShieldCheck, TimerReset } from "lucide-react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Separator } from "@/components/ui/separator"
 import {
   Table,
   TableBody,
@@ -22,12 +24,17 @@ import {
   severityTone,
 } from "@/lib/data/formatters"
 import type { CaseDetail } from "@/lib/types/case"
+import { cn } from "@/lib/utils"
 
 interface CaseWorkspaceProps {
   data: CaseDetail
 }
 
+type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
+
 export function CaseWorkspace({ data }: CaseWorkspaceProps) {
+  const [activeTab, setActiveTab] = useState<CaseTab>("overview")
+  const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const evaluatedSuppliers =
@@ -39,6 +46,37 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
   const fastestExpeditedLeadTime = hasShortlist
     ? Math.min(...data.supplierShortlist.map((entry) => entry.expeditedLeadTimeDays))
     : null
+  const activeEscalation =
+    data.escalations.find((entry) => entry.status !== "resolved") ??
+    data.escalations[0] ??
+    null
+  const overviewRef = useRef<HTMLDivElement>(null)
+  const suppliersRef = useRef<HTMLDivElement>(null)
+  const escalationsRef = useRef<HTMLDivElement>(null)
+  const auditRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const tabPanelMap: Record<CaseTab, HTMLDivElement | null> = {
+      overview: overviewRef.current,
+      suppliers: suppliersRef.current,
+      escalations: escalationsRef.current,
+      audit: auditRef.current,
+    }
+
+    const updateHeight = () => {
+      const activePanel = tabPanelMap[activeTab]
+      if (!activePanel) return
+      setContentMinHeight(activePanel.offsetHeight)
+    }
+
+    const frame = window.requestAnimationFrame(updateHeight)
+    window.addEventListener("resize", updateHeight)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener("resize", updateHeight)
+    }
+  }, [activeTab, data.id])
 
   return (
     <div className="space-y-6">
@@ -178,6 +216,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                 data.recommendation.preferredSupplierIfResolved ??
                 "Pending human resolution"
               }
+              variant="emphasis"
             />
             <FieldCell
               label="Approval Tier"
@@ -197,6 +236,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                 data.rawRequest.budgetAmount,
                 data.rawRequest.currency,
               )}
+              variant="default"
             />
             <FieldCell
               label="Last Updated"
@@ -207,39 +247,52 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
       </section>
 
       {/* Tabs */}
-      <Tabs defaultValue="overview" className="animate-fade-in-up space-y-4" style={{ animationDelay: "160ms" }}>
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as CaseTab)}
+        className="animate-fade-in-up space-y-6"
+        style={{ animationDelay: "160ms" }}
+      >
         <TabsList
           variant="line"
-          className="w-full justify-start rounded-none border-b p-0"
+          className="w-full justify-start rounded-none border-b border-border/70 p-0"
         >
-          <TabsTrigger value="overview" className="px-4 py-2.5">
+          <TabsTrigger value="overview" className="px-5 py-3">
             Overview
           </TabsTrigger>
-          <TabsTrigger value="suppliers" className="px-4 py-2.5">
+          <TabsTrigger value="suppliers" className="px-5 py-3">
             Suppliers
           </TabsTrigger>
-          <TabsTrigger value="escalations" className="px-4 py-2.5">
+          <TabsTrigger value="escalations" className="px-5 py-3">
             Escalations
           </TabsTrigger>
-          <TabsTrigger value="audit" className="px-4 py-2.5">
+          <TabsTrigger value="audit" className="px-5 py-3">
             Audit Trace
           </TabsTrigger>
         </TabsList>
 
-        {/* Overview tab */}
-        <TabsContent value="overview">
-          <div className="grid gap-4 xl:grid-cols-2">
+        <div
+          className="transition-[min-height] duration-300 ease-out"
+          style={contentMinHeight ? { minHeight: `${contentMinHeight}px` } : undefined}
+        >
+          {/* Overview tab */}
+          <TabsContent
+            ref={overviewRef}
+            value="overview"
+            className="space-y-6 transition-all duration-200 ease-out"
+          >
+          <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
             <Card>
               <CardHeader>
                 <CardTitle>Original request</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="rounded-lg border bg-muted/40 p-3">
+              <CardContent className="space-y-5">
+                <div className="rounded-lg border bg-muted/30 p-4">
                   <p className="text-sm leading-relaxed">
                     {data.rawRequest.requestText}
                   </p>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2">
                   <FieldCell
                     label="Request channel"
                     value={data.rawRequest.requestChannel}
@@ -279,11 +332,16 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
               <CardHeader>
                 <CardTitle>Interpreted requirements</CardTitle>
               </CardHeader>
-              <CardContent className="grid gap-2 sm:grid-cols-2">
+              <CardContent className="grid gap-3">
                 {data.interpretedRequirements.map((item) => (
                   <div
                     key={item.label}
-                    className="rounded-lg border bg-muted/30 p-3"
+                    className={cn(
+                      "rounded-lg border p-3.5",
+                      item.emphasis
+                        ? "border-primary/30 bg-primary/[0.05]"
+                        : "bg-muted/20",
+                    )}
                   >
                     <div className="flex items-center gap-1.5">
                       <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -294,7 +352,10 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                       ) : null}
                     </div>
                     <p
-                      className={`mt-1 text-sm leading-relaxed ${item.emphasis ? "font-medium" : "text-muted-foreground"}`}
+                      className={cn(
+                        "mt-1 text-sm leading-relaxed",
+                        item.emphasis ? "font-medium" : "text-muted-foreground",
+                      )}
                     >
                       {item.value}
                     </p>
@@ -304,16 +365,16 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
             </Card>
           </div>
 
-          <div className="mt-4 grid gap-4 xl:grid-cols-2">
-            <Card>
+          <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+            <Card className="bg-card/70">
               <CardHeader>
                 <CardTitle>Validation & issues</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-4">
                 {data.validationIssues.map((issue) => (
                   <div
                     key={issue.issueId}
-                    className="rounded-lg border p-3"
+                    className="rounded-lg border bg-background/80 p-3.5"
                   >
                     <div className="flex flex-wrap items-center gap-1.5">
                       <StatusBadge label={issue.issueId} tone="neutral" />
@@ -340,15 +401,15 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card className="bg-card/70">
               <CardHeader>
                 <CardTitle>Policy evaluation</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
+              <CardContent className="space-y-4">
                 {data.policyCards.map((policy) => (
                   <div
                     key={policy.ruleId}
-                    className="rounded-lg border p-3"
+                    className="rounded-lg border bg-background/80 p-3.5"
                   >
                     <div className="flex flex-wrap items-center gap-1.5">
                       <StatusBadge label={policy.ruleId} tone="info" />
@@ -369,7 +430,7 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                     <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
                       {policy.summary}
                     </p>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
                       {policy.detail.map((detail) => (
                         <FieldCell
                           key={detail.label}
@@ -383,12 +444,16 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
               </CardContent>
             </Card>
           </div>
-        </TabsContent>
+          </TabsContent>
 
-        {/* Suppliers tab */}
-        <TabsContent value="suppliers">
-          <div className="space-y-4">
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {/* Suppliers tab */}
+          <TabsContent
+            ref={suppliersRef}
+            value="suppliers"
+            className="space-y-5 transition-all duration-200 ease-out"
+          >
+          <div className="space-y-5">
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MiniMetric
                 label="Suppliers evaluated"
                 value={evaluatedSuppliers}
@@ -415,180 +480,220 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
               />
             </section>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>Supplier comparison</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="overflow-hidden rounded-lg border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="px-3">Rank</TableHead>
-                        <TableHead>Supplier</TableHead>
-                        <TableHead>Pricing Tier</TableHead>
-                        <TableHead>Total</TableHead>
-                        <TableHead>Lead Time</TableHead>
-                        <TableHead>Quality</TableHead>
-                        <TableHead>Risk</TableHead>
-                        <TableHead>ESG</TableHead>
-                        <TableHead>Flags</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {data.supplierShortlist.map((supplier) => (
-                        <TableRow
-                          key={supplier.supplierId}
-                          className={
-                            supplier.rank === 1 ? "bg-emerald-50/40" : ""
-                          }
-                        >
-                          <TableCell className="px-3">
-                            <div className="space-y-1">
-                              <p className="text-base font-semibold tabular-nums">
-                                #{supplier.rank}
-                              </p>
-                              {supplier.rank === 1 ? (
-                                <StatusBadge label="Top option" tone="success" />
-                              ) : null}
-                            </div>
-                          </TableCell>
-                          <TableCell className="align-top">
-                            <div className="space-y-1">
-                              <p className="font-medium">
-                                {supplier.supplierName}
-                              </p>
-                              <p className="text-xs uppercase tracking-wider text-muted-foreground">
-                                {supplier.supplierId}
-                              </p>
-                              <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
-                                {supplier.recommendationNote}
-                              </p>
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            {supplier.pricingTierApplied}
-                          </TableCell>
-                          <TableCell className="font-medium tabular-nums">
-                            <div>
-                              {formatCurrency(
-                                supplier.totalPrice,
-                                data.recommendation.currency,
-                              )}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              Exp.{" "}
-                              {formatCurrency(
-                                supplier.expeditedTotal,
-                                data.recommendation.currency,
-                              )}
-                            </div>
-                          </TableCell>
-                          <TableCell className="tabular-nums">
-                            <div>{supplier.standardLeadTimeDays}d std</div>
-                            <div className="text-xs text-muted-foreground">
-                              {supplier.expeditedLeadTimeDays}d exp
-                            </div>
-                          </TableCell>
-                          <TableCell
-                            className={scoreTone(supplier.qualityScore)}
-                          >
-                            {supplier.qualityScore}
-                          </TableCell>
-                          <TableCell
-                            className={scoreTone(supplier.riskScore, true)}
-                          >
-                            {supplier.riskScore}
-                          </TableCell>
-                          <TableCell className={scoreTone(supplier.esgScore)}>
-                            {supplier.esgScore}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex max-w-[180px] flex-wrap gap-1">
-                              {supplier.preferred ? (
-                                <StatusBadge label="Preferred" tone="info" />
-                              ) : null}
-                              {supplier.incumbent ? (
-                                <StatusBadge label="Incumbent" tone="neutral" />
-                              ) : null}
-                              {supplier.policyCompliant ? (
-                                <StatusBadge label="Compliant" tone="success" />
-                              ) : (
-                                <StatusBadge label="Conflict" tone="destructive" />
-                              )}
-                            </div>
-                          </TableCell>
+            <section className="space-y-4">
+              <Card className="h-fit">
+                <CardHeader>
+                  <CardTitle>Supplier comparison</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="overflow-x-auto rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="px-3">Rank</TableHead>
+                          <TableHead>Supplier</TableHead>
+                          <TableHead>Pricing Tier</TableHead>
+                          <TableHead>Total</TableHead>
+                          <TableHead>Lead Time</TableHead>
+                          <TableHead>Quality</TableHead>
+                          <TableHead>Risk</TableHead>
+                          <TableHead>ESG</TableHead>
+                          <TableHead>Flags</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                      </TableHeader>
+                      <TableBody>
+                        {data.supplierShortlist.map((supplier) => (
+                          <TableRow
+                            key={supplier.supplierId}
+                            className={
+                              supplier.rank === 1 ? "bg-emerald-50/40" : ""
+                            }
+                          >
+                            <TableCell className="px-3">
+                              <div className="space-y-1">
+                                <p className="text-base font-semibold tabular-nums">
+                                  #{supplier.rank}
+                                </p>
+                                {supplier.rank === 1 ? (
+                                  <StatusBadge label="Top option" tone="success" />
+                                ) : null}
+                              </div>
+                            </TableCell>
+                            <TableCell className="align-top">
+                              <div className="space-y-1">
+                                <p className="font-medium">
+                                  {supplier.supplierName}
+                                </p>
+                                <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                                  {supplier.supplierId}
+                                </p>
+                                <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
+                                  {supplier.recommendationNote}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {supplier.pricingTierApplied}
+                            </TableCell>
+                            <TableCell className="font-medium tabular-nums">
+                              <div>
+                                {formatCurrency(
+                                  supplier.totalPrice,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                Exp.{" "}
+                                {formatCurrency(
+                                  supplier.expeditedTotal,
+                                  data.recommendation.currency,
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell className="tabular-nums">
+                              <div>{supplier.standardLeadTimeDays}d std</div>
+                              <div className="text-xs text-muted-foreground">
+                                {supplier.expeditedLeadTimeDays}d exp
+                              </div>
+                            </TableCell>
+                            <TableCell
+                              className={scoreTone(supplier.qualityScore)}
+                            >
+                              {supplier.qualityScore}
+                            </TableCell>
+                            <TableCell
+                              className={scoreTone(supplier.riskScore, true)}
+                            >
+                              {supplier.riskScore}
+                            </TableCell>
+                            <TableCell className={scoreTone(supplier.esgScore)}>
+                              {supplier.esgScore}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex max-w-[180px] flex-wrap gap-1">
+                                {supplier.preferred ? (
+                                  <StatusBadge label="Preferred" tone="info" />
+                                ) : null}
+                                {supplier.incumbent ? (
+                                  <StatusBadge label="Incumbent" tone="neutral" />
+                                ) : null}
+                                {supplier.policyCompliant ? (
+                                  <StatusBadge label="Compliant" tone="success" />
+                                ) : (
+                                  <StatusBadge label="Conflict" tone="destructive" />
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </CardContent>
+              </Card>
 
-                <Separator />
-
-                <div className="space-y-3">
-                  <h3 className="text-sm font-semibold">Excluded suppliers</h3>
-                  {data.excludedSuppliers.map((supplier) => (
-                    <div
-                      key={supplier.supplierId}
-                      className="rounded-lg border p-3"
-                    >
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <StatusBadge
-                          label={supplier.supplierId}
-                          tone="neutral"
-                        />
-                        <StatusBadge
-                          label={
-                            supplier.hardExclusion
-                              ? "hard exclusion"
-                              : "not shortlisted"
-                          }
-                          tone={
-                            supplier.hardExclusion ? "destructive" : "warning"
-                          }
-                        />
+              <div
+                className={cn(
+                  "grid gap-4",
+                  data.historicalPrecedent ? "xl:grid-cols-2" : "xl:grid-cols-1",
+                )}
+              >
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Excluded suppliers</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {data.excludedSuppliers.map((supplier) => (
+                      <div
+                        key={supplier.supplierId}
+                        className="rounded-lg border bg-background/80 p-3.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StatusBadge
+                            label={supplier.supplierId}
+                            tone="neutral"
+                          />
+                          <StatusBadge
+                            label={
+                              supplier.hardExclusion
+                                ? "hard exclusion"
+                                : "not shortlisted"
+                            }
+                            tone={
+                              supplier.hardExclusion ? "destructive" : "warning"
+                            }
+                          />
+                        </div>
+                        <p className="mt-2 text-sm font-medium">
+                          {supplier.supplierName}
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                          {supplier.reason}
+                        </p>
                       </div>
-                      <p className="mt-2 text-sm font-medium">
-                        {supplier.supplierName}
-                      </p>
-                      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                        {supplier.reason}
-                      </p>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </CardContent>
+                </Card>
 
                 {data.historicalPrecedent ? (
-                  <div className="rounded-lg border border-blue-200 bg-blue-50/50 p-4">
-                    <h3 className="text-sm font-semibold">
-                      {data.historicalPrecedent.title}
-                    </h3>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                      {data.historicalPrecedent.description}
-                    </p>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                      {data.historicalPrecedent.metrics.map((metric) => (
-                        <FieldCell
-                          key={metric.label}
-                          label={metric.label}
-                          value={metric.value}
-                        />
-                      ))}
-                    </div>
-                  </div>
+                  <Card className="border-blue-200 bg-blue-50/50">
+                    <CardHeader>
+                      <CardTitle>{data.historicalPrecedent.title}</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm leading-relaxed text-muted-foreground">
+                        {data.historicalPrecedent.description}
+                      </p>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        {data.historicalPrecedent.metrics.map((metric) => (
+                          <FieldCell
+                            key={metric.label}
+                            label={metric.label}
+                            value={metric.value}
+                            variant="default"
+                          />
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
                 ) : null}
-              </CardContent>
-            </Card>
+              </div>
+            </section>
           </div>
-        </TabsContent>
+          </TabsContent>
 
-        {/* Escalations tab */}
-        <TabsContent value="escalations">
-          <div className="space-y-4">
+          {/* Escalations tab */}
+          <TabsContent
+            ref={escalationsRef}
+            value="escalations"
+            className="space-y-5 transition-all duration-200 ease-out"
+          >
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <MiniMetric
+                label="Escalations total"
+                value={data.escalations.length}
+                helper="All escalation objects on this case"
+              />
+              <MiniMetric
+                label="Open escalations"
+                value={data.escalations.filter((entry) => entry.status === "open").length}
+                helper="Awaiting first human action"
+              />
+              <MiniMetric
+                label="Blocking escalations"
+                value={data.escalations.filter((entry) => entry.blocking).length}
+                helper="Prevent autonomous progression"
+              />
+              <MiniMetric
+                label="Resolved escalations"
+                value={data.escalations.filter((entry) => entry.status === "resolved").length}
+                helper="Closed and no longer actionable"
+              />
+            </section>
+
             {data.escalations.some((entry) => entry.blocking) ? (
-              <Card className="border-rose-200 bg-rose-50/50">
-                <CardContent className="px-4 py-4">
+              <Card className="border-rose-200 bg-rose-50/60">
+                <CardContent className="px-5 py-4">
                   <p className="text-xs font-medium uppercase tracking-wider text-rose-700">
                     Blocking escalation state
                   </p>
@@ -596,75 +701,132 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
                     Autonomous progression is paused
                   </h3>
                   <p className="mt-1 text-sm leading-relaxed text-rose-800/70">
-                    One or more escalation objects require human review before
-                    the sourcing case can proceed to award.
+                    One or more escalation objects require human review before the
+                    sourcing case can proceed to award.
                   </p>
                 </CardContent>
               </Card>
             ) : null}
 
-            <div className="grid gap-3">
-              {data.escalations.map((entry) => (
-                <Card key={entry.escalationId}>
-                  <CardContent className="px-4 py-4">
-                    <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <StatusBadge
-                            label={entry.escalationId}
-                            tone="neutral"
-                          />
-                          <StatusBadge label={entry.rule} tone="info" />
-                          <StatusBadge
-                            label={entry.status}
-                            tone={
-                              entry.status === "resolved"
-                                ? "success"
-                                : entry.status === "acknowledged"
-                                  ? "warning"
-                                  : "destructive"
-                            }
-                          />
-                          {entry.blocking ? (
-                            <StatusBadge label="blocking" tone="destructive" />
-                          ) : (
-                            <StatusBadge label="advisory" tone="warning" />
-                          )}
-                        </div>
-                        <h3 className="text-sm font-semibold">
-                          Escalate to {entry.escalateTo}
-                        </h3>
-                        <p className="text-sm leading-relaxed text-muted-foreground">
-                          {entry.trigger}
-                        </p>
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[280px]">
-                        <FieldCell label="Target" value={entry.escalateTo} />
-                        <FieldCell
-                          label="Next action"
-                          value={entry.nextAction}
-                        />
-                      </div>
+            {activeEscalation ? (
+              <Card className="border-primary/20 bg-primary/[0.04]">
+                <CardHeader>
+                  <CardTitle>Current escalation focus</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <StatusBadge label={activeEscalation.escalationId} tone="neutral" />
+                      <StatusBadge label={activeEscalation.rule} tone="info" />
+                      <StatusBadge
+                        label={activeEscalation.status}
+                        tone={
+                          activeEscalation.status === "resolved"
+                            ? "success"
+                            : activeEscalation.status === "acknowledged"
+                              ? "warning"
+                              : "destructive"
+                        }
+                      />
+                      <StatusBadge
+                        label={activeEscalation.blocking ? "blocking" : "advisory"}
+                        tone={activeEscalation.blocking ? "destructive" : "warning"}
+                      />
                     </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </div>
-        </TabsContent>
+                    <h3 className="text-base font-semibold">
+                      Escalate to {activeEscalation.escalateTo}
+                    </h3>
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      {activeEscalation.trigger}
+                    </p>
+                  </div>
+                  <FieldCell
+                    label="Next action"
+                    value={activeEscalation.nextAction}
+                    variant="default"
+                  />
+                </CardContent>
+              </Card>
+            ) : null}
 
-        {/* Audit tab */}
-        <TabsContent value="audit">
-          <div className="grid gap-4 xl:grid-cols-2">
+            <Card className="bg-muted/15">
+              <CardHeader>
+                <CardTitle>Escalation queue</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="overflow-x-auto rounded-lg border bg-background">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="px-3">Escalation</TableHead>
+                        <TableHead>Rule</TableHead>
+                        <TableHead>Target</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Next action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {data.escalations.map((entry) => (
+                        <TableRow key={entry.escalationId}>
+                          <TableCell className="px-3 align-top">
+                            <p className="font-medium">{entry.escalationId}</p>
+                            <p className="mt-1 max-w-[320px] text-xs leading-relaxed text-muted-foreground">
+                              {entry.trigger}
+                            </p>
+                          </TableCell>
+                          <TableCell className="align-top text-sm">
+                            {entry.rule}
+                          </TableCell>
+                          <TableCell className="align-top text-sm">
+                            {entry.escalateTo}
+                          </TableCell>
+                          <TableCell className="align-top">
+                            <StatusBadge
+                              label={entry.status}
+                              tone={
+                                entry.status === "resolved"
+                                  ? "success"
+                                  : entry.status === "acknowledged"
+                                    ? "warning"
+                                    : "destructive"
+                              }
+                            />
+                          </TableCell>
+                          <TableCell className="align-top">
+                            <StatusBadge
+                              label={entry.blocking ? "blocking" : "advisory"}
+                              tone={entry.blocking ? "destructive" : "warning"}
+                            />
+                          </TableCell>
+                          <TableCell className="align-top text-sm">
+                            {entry.nextAction}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Audit tab */}
+          <TabsContent
+            ref={auditRef}
+            value="audit"
+            className="space-y-5 transition-all duration-200 ease-out"
+          >
+          <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
             <Card>
               <CardHeader>
                 <CardTitle>Decision timeline</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-5">
                 {data.auditTrail.timeline.map((event, index) => (
                   <div key={event.id} className="relative pl-7">
                     {index !== data.auditTrail.timeline.length - 1 ? (
-                      <div className="absolute left-[9px] top-6 h-[calc(100%+0.25rem)] w-px bg-border" />
+                      <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
                     ) : null}
                     <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
                     <p className="text-xs font-medium text-muted-foreground">
@@ -682,47 +844,53 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
             </Card>
 
             <div className="space-y-4">
-              <Card>
+              <Card className="bg-card/70">
                 <CardHeader>
                   <CardTitle>Audit facts</CardTitle>
                 </CardHeader>
-                <CardContent className="grid gap-2 sm:grid-cols-2">
+                <CardContent className="grid gap-3 sm:grid-cols-2">
                   <FieldCell
                     label="Policies checked"
                     value={data.auditTrail.policiesChecked.join(", ")}
+                    variant="default"
                   />
                   <FieldCell
                     label="Suppliers evaluated"
                     value={data.auditTrail.supplierIdsEvaluated.join(", ")}
+                    variant="default"
                   />
                   <FieldCell
                     label="Pricing tiers applied"
                     value={data.auditTrail.pricingTiersApplied}
+                    variant="default"
                   />
                   <FieldCell
                     label="Data sources used"
                     value={data.auditTrail.dataSourcesUsed.join(", ")}
+                    variant="default"
                   />
                   <FieldCell
                     label="Historical awards consulted"
                     value={
                       data.auditTrail.historicalAwardsConsulted ? "Yes" : "No"
                     }
+                    variant="default"
                   />
                   <FieldCell
                     label="Historical award note"
                     value={data.auditTrail.historicalAwardNote}
+                    variant="default"
                   />
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="bg-card/70">
                 <CardHeader>
                   <CardTitle>Reasoning trace</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-2">
+                <CardContent className="space-y-3">
                   {data.auditTrail.reasoningTrace.map((step, index) => (
-                    <div key={step} className="rounded-lg border p-3">
+                    <div key={step} className="rounded-lg border bg-background/80 p-3.5">
                       <div className="flex items-center gap-1.5">
                         <StatusBadge
                           label={`Step ${index + 1}`}
@@ -746,7 +914,8 @@ export function CaseWorkspace({ data }: CaseWorkspaceProps) {
               </Card>
             </div>
           </div>
-        </TabsContent>
+          </TabsContent>
+        </div>
       </Tabs>
     </div>
   )
@@ -762,7 +931,7 @@ function KpiCell({
   helper: string
 }) {
   return (
-    <div className="rounded-lg border bg-card/50 p-3">
+    <div className="rounded-lg border bg-card/50 p-3.5">
       <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
@@ -772,13 +941,33 @@ function KpiCell({
   )
 }
 
-function FieldCell({ label, value }: { label: string; value: string }) {
+function FieldCell({
+  label,
+  value,
+  variant = "muted",
+  className,
+  valueClassName,
+}: {
+  label: string
+  value: ReactNode
+  variant?: "muted" | "default" | "emphasis"
+  className?: string
+  valueClassName?: string
+}) {
   return (
-    <div className="rounded-lg border bg-muted/30 p-3">
+    <div
+      className={cn(
+        "rounded-lg border p-3",
+        variant === "default" && "bg-background/80",
+        variant === "muted" && "bg-muted/20",
+        variant === "emphasis" && "border-primary/30 bg-primary/[0.05]",
+        className,
+      )}
+    >
       <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </p>
-      <p className="mt-1 text-sm leading-relaxed">{value}</p>
+      <p className={cn("mt-1 text-sm leading-relaxed", valueClassName)}>{value}</p>
     </div>
   )
 }
@@ -793,8 +982,8 @@ function MiniMetric({
   helper: string
 }) {
   return (
-    <Card>
-      <CardContent className="space-y-1 px-4 py-3">
+    <Card className="bg-card/70">
+      <CardContent className="space-y-1.5 px-4 py-3.5">
         <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {label}
         </p>
