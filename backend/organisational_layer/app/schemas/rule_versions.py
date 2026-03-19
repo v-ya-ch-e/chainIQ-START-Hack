@@ -59,6 +59,106 @@ class RuleCheckOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class HardRuleCheckOut(RuleCheckOut):
+    """Hard rule check with full fields."""
+
+    run_id: str | None = None
+    actual_value: dict[str, Any] | None = None
+    threshold: dict[str, Any] | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PolicyCheckOut(RuleCheckOut):
+    """Policy check with override fields."""
+
+    run_id: str | None = None
+    override_by: str | None = None
+    override_at: datetime | None = None
+    override_reason: str | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PolicyCheckOverrideBody(BaseModel):
+    """Payload for PATCH policy check override."""
+
+    changed_by: str
+    new_result: str  # passed, warned, failed
+    override_reason: str | None = None
+    new_evidence: dict[str, Any] | None = None
+
+
+class EvaluationRunLogOut(BaseModel):
+    log_id: str
+    run_id: str
+    changed_at: datetime
+    changed_by: str
+    change_type: str
+    old_status: str | None
+    new_status: str | None
+    old_outcome: str | None
+    new_outcome: str | None
+    note: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class EscalationLogOut(BaseModel):
+    log_id: str
+    escalation_id: str
+    changed_at: datetime
+    changed_by: str
+    change_type: str
+    field_changed: str | None
+    old_value: dict[str, Any] | None
+    new_value: dict[str, Any] | None
+    note: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class PolicyChangeLogOut(BaseModel):
+    log_id: str
+    escalation_id: str
+    changed_at: datetime
+    changed_by: str
+    change_type: str
+    policy_rule_id: str | None
+    old_value: dict[str, Any] | None
+    new_value: dict[str, Any] | None
+    note: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class PolicyCheckLogOut(BaseModel):
+    log_id: str
+    check_id: str
+    run_id: str
+    changed_at: datetime
+    changed_by: str
+    change_type: str
+    old_result: str | None
+    new_result: str | None
+    override_reason: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class RuleChangeLogOut(BaseModel):
+    log_id: str
+    rule_id: str
+    old_version_id: str | None
+    new_version_id: str
+    changed_at: datetime
+    changed_by: str
+    change_reason: str | None
+    affected_runs: list[str] | None
+
+    model_config = {"from_attributes": True}
+
+
 class SupplierRuleBreakdownOut(BaseModel):
     """Per-supplier breakdown of which rules passed/failed."""
 
@@ -162,3 +262,14 @@ class FullEvaluationTriggerCreate(EvaluationRunCreate):
     """Full evaluation trigger with escalations. Uses ACID workflow with audit trail."""
 
     escalations: list[EscalationCreate] = []
+
+
+class PipelineEvaluationInput(BaseModel):
+    """Pipeline output for persisting evaluation. Backend maps to checks from output_snapshot."""
+
+    request_id: str
+    run_id: str
+    triggered_by: str = "agent"
+    agent_version: str = "1.0"
+    trigger_reason: str | None = "manual_recheck"
+    output_snapshot: dict[str, Any] | None = None  # Full PipelineOutput.model_dump()

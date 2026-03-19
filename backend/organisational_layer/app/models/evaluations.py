@@ -235,3 +235,21 @@ class EvaluationRunLog(Base):
     old_outcome = Column(String(20), nullable=True)
     new_outcome = Column(String(20), nullable=True)
     note = Column(Text, nullable=True)
+
+
+class PolicyCheckLog(Base):
+    """Audit trail for human overrides on policy checks."""
+
+    __tablename__ = "policy_check_logs"
+
+    log_id = Column(String(36), primary_key=True)
+    check_id = Column(String(36), ForeignKey("policy_checks.check_id"), nullable=False)
+    run_id = Column(String(36), ForeignKey("evaluation_runs.run_id"), nullable=False)
+    changed_at = Column(DateTime, nullable=False)
+    changed_by = Column(String(100), nullable=False)
+    change_type = Column(String(30), nullable=False)
+    old_result = Column(String(10), nullable=True)
+    new_result = Column(String(10), nullable=True)
+    old_evidence = Column(JSON, nullable=True)
+    new_evidence = Column(JSON, nullable=True)
+    override_reason = Column(Text, nullable=True)

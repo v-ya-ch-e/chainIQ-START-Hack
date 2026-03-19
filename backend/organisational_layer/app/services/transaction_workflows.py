@@ -31,6 +31,7 @@ from app.models.evaluations import (
     HardRuleCheck,
     PolicyChangeLog,
     PolicyCheck,
+    PolicyCheckLog,
     RuleChangeLog,
     RuleVersion,
     SupplierEvaluation,
@@ -361,3 +362,59 @@ def apply_rule_update(
     db.commit()
     db.refresh(new_version)
     return new_version
+
+
+# ---------------------------------------------------------------------------
+# 4. Policy Check Override Workflow
+# ---------------------------------------------------------------------------
+# When a user overrides a policy check:
+#   1. INSERT policy_check_logs (audit trail)
+#   2. UPDATE policy_checks (override_by, override_at, override_reason, result)
+# ---------------------------------------------------------------------------
+
+
+def apply_policy_check_override(
+    db: Session,
+    check_id: str,
+    changed_by: str,
+    new_result: str,
+    override_reason: str | None = None,
+    new_evidence: dict[str, Any] | None = None,
+) -> PolicyCheck:
+    """
+    Apply a human override to a policy check with audit trail.
+    Wrapped in ACID transaction.
+    """
+    check = db.query(PolicyCheck).filter(PolicyCheck.check_id == check_id).first()
+    if not check:
+        raise ValueError(f"Policy check {check_id} not found")
+
+    now = datetime.utcnow()
+
+    # Step 1: INSERT policy_check_logs
+    log = PolicyCheckLog(
+        log_id=str(uuid.uuid4()),
+        check_id=check_id,
+        run_id=check.run_id,
+        changed_at=now,
+        changed_by=changed_by,
+        change_type="override_applied",
+        old_result=check.result,
+        new_result=new_result,
+        old_evidence=check.evidence if isinstance(check.evidence, dict) else {},
+        new_evidence=new_evidence or (check.evidence if isinstance(check.evidence, dict) else {}),
+        override_reason=override_reason,
+    )
+    db.add(log)
+
+    # Step 2: UPDATE policy_checks
+    check.result = new_result
+    check.override_by = changed_by
+    check.override_at = now
+    check.override_reason = override_reason
+    if new_evidence is not None:
+        check.evidence = new_evidence
+
+    db.commit()
+    db.refresh(check)
+    return check

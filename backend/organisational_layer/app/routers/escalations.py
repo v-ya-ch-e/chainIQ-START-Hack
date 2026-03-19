@@ -36,6 +36,7 @@ def get_request_escalations(request_id: str, db: Session = Depends(get_db)):
     return evaluate_escalation_queue(db, request_id=request_id)
 
 
+@router.patch("/{escalation_id}")
 @router.patch("/stored/{escalation_id}")
 def update_stored_escalation(
     escalation_id: str,
