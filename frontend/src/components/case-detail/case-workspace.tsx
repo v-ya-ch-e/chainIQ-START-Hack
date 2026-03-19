@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowLeft, ChevronLeft, ChevronRight, Download, Loader2, Play, ShieldCheck, TimerReset } from "lucide-react"
+import { ArrowLeft, Download, Loader2, Play, ShieldCheck, TimerReset } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState, type ReactNode } from "react"
@@ -19,13 +19,6 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
   Sheet,
   SheetContent,
   SheetDescription,
@@ -36,6 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   formatCurrency,
   formatDate,
+  formatDateDdMmYyyy,
   formatDateTime,
   scoreTone,
   severityTone,
@@ -116,6 +110,15 @@ export function CaseWorkspace({
     data.evaluationRuns.find((run) => run.runId === selectedRunId) ??
     data.evaluationRuns[0] ??
     null
+
+  // On the main case details page, always keep the selected run in sync
+  // with the latest evaluation run after a re-run (router.refresh).
+  const latestRunId = data.evaluationRuns[0]?.runId ?? null
+  useEffect(() => {
+    if (!showReturnToLatest) {
+      setSelectedRunId(latestRunId)
+    }
+  }, [latestRunId, showReturnToLatest])
   const effectiveShortlist =
     selectedRun?.supplierShortlist && selectedRun.supplierShortlist.length > 0
       ? selectedRun.supplierShortlist
@@ -236,8 +239,24 @@ export function CaseWorkspace({
           </div>
           <SectionHeading
             eyebrow={data.id}
-            title={data.title}
-            description={`${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`}
+            title={
+              showReturnToLatest && selectedRun
+                ? (() => {
+                    const idx = data.evaluationRuns.findIndex(
+                      (r) => r.runId === selectedRun.runId,
+                    )
+                    if (idx >= 0) {
+                      return `${data.title} - Evaluation ${idx + 1}`
+                    }
+                    return data.title
+                  })()
+                : data.title
+            }
+            description={
+              showReturnToLatest && selectedRun
+                ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · Evaluation from ${formatDateDdMmYyyy(selectedRun.startedAt)}`
+                : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
+            }
           />
         </div>
 
@@ -629,8 +648,8 @@ export function CaseWorkspace({
               />
             </section>
 
-            <section className="space-y-4">
-              <Card className="h-fit">
+            <section className="min-w-0 space-y-4">
+              <Card className="h-fit w-full max-w-full overflow-hidden">
                 <CardHeader>
                   <CardTitle>Supplier comparison</CardTitle>
                 </CardHeader>
@@ -701,15 +720,12 @@ export function CaseWorkspace({
                                 </div>
                               </TableCell>
                               <TableCell className="align-top">
-                                <div className="space-y-1">
+                                <div className="space-y-0.5">
                                   <p className="font-medium">
                                     {supplier.supplierName}
                                   </p>
                                   <p className="text-xs uppercase tracking-wider text-muted-foreground">
                                     {supplier.supplierId}
-                                  </p>
-                                  <p className="max-w-[260px] text-xs leading-relaxed text-muted-foreground">
-                                    {supplier.recommendationNote}
                                   </p>
                                 </div>
                               </TableCell>
@@ -756,19 +772,43 @@ export function CaseWorkspace({
                               <TableCell className={scoreTone(supplier.esgScore)}>
                                 {supplier.esgScore}
                               </TableCell>
-                              <TableCell>
-                                <div className="flex max-w-[180px] flex-wrap gap-1">
-                                  {supplier.preferred ? (
-                                    <StatusBadge label="Preferred" tone="info" />
-                                  ) : null}
-                                  {supplier.incumbent ? (
-                                    <StatusBadge label="Incumbent" tone="neutral" />
-                                  ) : null}
-                                  {supplier.policyCompliant ? (
-                                    <StatusBadge label="Compliant" tone="success" />
-                                  ) : (
-                                    <StatusBadge label="Conflict" tone="destructive" />
-                                  )}
+                              <TableCell className="align-top py-2">
+                                <div className="flex max-w-[100px] flex-col items-start gap-0.5">
+                                  {[
+                                    supplier.preferred && (
+                                      <StatusBadge
+                                        key="preferred"
+                                        label="Preferred"
+                                        tone="info"
+                                        className="shrink-0"
+                                      />
+                                    ),
+                                    supplier.incumbent && (
+                                      <StatusBadge
+                                        key="incumbent"
+                                        label="Incumbent"
+                                        tone="neutral"
+                                        className="shrink-0"
+                                      />
+                                    ),
+                                    supplier.policyCompliant ? (
+                                      <StatusBadge
+                                        key="compliant"
+                                        label="Compliant"
+                                        tone="success"
+                                        className="shrink-0"
+                                      />
+                                    ) : (
+                                      <StatusBadge
+                                        key="conflict"
+                                        label="Conflict"
+                                        tone="destructive"
+                                        className="shrink-0"
+                                      />
+                                    ),
+                                  ]
+                                    .filter(Boolean)
+                                    .slice(0, 2)}
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -1092,72 +1132,6 @@ export function CaseWorkspace({
             className="space-y-5 transition-all duration-200 ease-out"
           >
           <div className="space-y-5">
-            {data.evaluationRuns.length > 0 ? (
-              <Card className="bg-card/70">
-                <CardHeader>
-                  <CardTitle>Evaluation run</CardTitle>
-                  <p className="text-sm text-muted-foreground">
-                    Select which evaluation to view. Decisions and suppliers update when you change the run.
-                  </p>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-1 rounded-lg border border-input bg-transparent">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-8 shrink-0"
-                        onClick={() => {
-                          const idx = data.evaluationRuns.findIndex((r) => r.runId === selectedRunId)
-                          if (idx > 0) setSelectedRunId(data.evaluationRuns[idx - 1].runId)
-                        }}
-                        disabled={
-                          !selectedRunId ||
-                          data.evaluationRuns.findIndex((r) => r.runId === selectedRunId) <= 0
-                        }
-                        aria-label="Previous evaluation run"
-                      >
-                        <ChevronLeft className="size-4" />
-                      </Button>
-                      <Select
-                        value={selectedRunId ?? ""}
-                        onValueChange={(v) => setSelectedRunId(v || null)}
-                      >
-                        <SelectTrigger className="h-8 w-[220px] border-0 bg-transparent shadow-none focus:ring-0">
-                          <SelectValue placeholder="Select run" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {data.evaluationRuns.map((run, idx) => (
-                            <SelectItem key={run.runId} value={run.runId}>
-                              Run {idx + 1} — {formatDateTime(run.startedAt)}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="size-8 shrink-0"
-                        onClick={() => {
-                          const idx = data.evaluationRuns.findIndex((r) => r.runId === selectedRunId)
-                          if (idx >= 0 && idx < data.evaluationRuns.length - 1)
-                            setSelectedRunId(data.evaluationRuns[idx + 1].runId)
-                        }}
-                        disabled={
-                          !selectedRunId ||
-                          data.evaluationRuns.findIndex((r) => r.runId === selectedRunId) >=
-                            data.evaluationRuns.length - 1
-                        }
-                        aria-label="Next evaluation run"
-                      >
-                        <ChevronRight className="size-4" />
-                      </Button>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
-
             <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
             <Card>
               <CardHeader>
@@ -1301,17 +1275,21 @@ function SupplierDetailSheetContent({
   const [isLoading, setIsLoading] = useState(false)
   const [fetchError, setFetchError] = useState<string | null>(null)
 
-  const effectiveBreakdown = breakdown ?? fetchedBreakdown
+  const effectiveBreakdown =
+    breakdown ?? (isLoading ? null : fetchedBreakdown)
 
   useEffect(() => {
     if (breakdown || !requestId || !supplier.supplierId) {
-      setFetchedBreakdown(null)
-      setFetchError(null)
       return
     }
     let cancelled = false
-    setIsLoading(true)
-    setFetchError(null)
+    // Avoid synchronous state updates inside the effect callback.
+    // We kick off loading indicators on the next microtask.
+    Promise.resolve().then(() => {
+      if (cancelled) return
+      setIsLoading(true)
+      setFetchError(null)
+    })
     Promise.all([
       fetch(
         `/api/rule-versions/hard-rule-checks?request_id=${encodeURIComponent(requestId)}&supplier_id=${encodeURIComponent(supplier.supplierId)}`,

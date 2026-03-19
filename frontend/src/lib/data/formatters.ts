@@ -23,6 +23,15 @@ export function formatDate(date: string) {
   }).format(new Date(date))
 }
 
+/** dd.mm.yyyy for eval run dates in subheaders */
+export function formatDateDdMmYyyy(date: string) {
+  const d = new Date(date)
+  const day = String(d.getDate()).padStart(2, "0")
+  const month = String(d.getMonth() + 1).padStart(2, "0")
+  const year = d.getFullYear()
+  return `${day}.${month}.${year}`
+}
+
 export function formatDateTime(date: string) {
   return new Intl.DateTimeFormat("en-GB", {
     day: "2-digit",
