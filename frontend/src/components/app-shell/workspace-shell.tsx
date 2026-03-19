@@ -40,15 +40,20 @@ import { cn } from "@/lib/utils"
 
 interface WorkspaceShellProps {
   children: ReactNode
+  defaultSidebarOpen?: boolean
 }
 
-export function WorkspaceShell({ children }: WorkspaceShellProps) {
+export function WorkspaceShell({
+  children,
+  defaultSidebarOpen = true,
+}: WorkspaceShellProps) {
   const pathname = usePathname()
 
   const crumbs = buildBreadcrumbs(pathname)
 
   return (
     <SidebarProvider
+      defaultOpen={defaultSidebarOpen}
       style={
         {
           "--sidebar-width": "calc(var(--spacing) * 72)",
@@ -72,7 +77,6 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
               width={473}
               height={187}
               className="h-8 w-auto shrink-0 group-data-[collapsible=icon]:hidden"
-              priority
             />
             <Image
               src="/chainiq_logo.svg"
@@ -80,7 +84,6 @@ export function WorkspaceShell({ children }: WorkspaceShellProps) {
               width={473}
               height={187}
               className="hidden h-5 w-auto shrink-0 group-data-[collapsible=icon]:block"
-              priority
             />
           </div>
         </SidebarHeader>
