@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 STEP_NAME = "check_compliance"
 
-RISK_SCORE_THRESHOLD = 30
+RISK_SCORE_THRESHOLD = 70
 
 
 def _build_supplier_context(

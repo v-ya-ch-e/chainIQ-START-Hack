@@ -300,7 +300,7 @@ class TestCompliance:
                     supplier_id="SUP-RISKY",
                     supplier_name="Risky Corp",
                     preferred_supplier=False,
-                    risk_score=50,
+                    risk_score=80,
                 ),
             ],
         )
@@ -309,6 +309,35 @@ class TestCompliance:
         )
         assert len(result.excluded) == 1
         assert "risk" in result.excluded[0].reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_moderate_risk_non_preferred_not_excluded(
+        self, mock_org_client, pipeline_logger
+    ):
+        """Non-preferred supplier with risk_score=50 should NOT be excluded (threshold=70)."""
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-MODRISK",
+                category_l1="IT",
+                category_l2="Laptops",
+                currency="EUR",
+                delivery_countries=["DE"],
+            ),
+        )
+        filter_result = FilterResult(
+            enriched_suppliers=[
+                EnrichedSupplier(
+                    supplier_id="SUP-MODRISK",
+                    supplier_name="Moderate Risk Corp",
+                    preferred_supplier=False,
+                    risk_score=50,
+                ),
+            ],
+        )
+        result = await check_compliance(
+            fetch_result, filter_result, mock_org_client, pipeline_logger
+        )
+        assert len(result.compliant) == 1
 
     @pytest.mark.asyncio
     async def test_preferred_supplier_not_excluded_on_risk(
@@ -482,7 +511,7 @@ class TestRank:
 
 class TestEscalations:
     @pytest.mark.asyncio
-    async def test_budget_insufficient_escalation(
+    async def test_escalation_produces_results(
         self, sample_fetch_result, sample_validation_result,
         sample_compliance_result, sample_rank_result, pipeline_logger
     ):
@@ -490,8 +519,7 @@ class TestEscalations:
             sample_fetch_result, sample_validation_result,
             sample_compliance_result, sample_rank_result, pipeline_logger
         )
-        rules = [e.rule for e in result.escalations]
-        assert "ER-001" in rules
+        assert isinstance(result.escalations, list)
 
     @pytest.mark.asyncio
     async def test_no_escalations_for_clean_request(self, pipeline_logger):
@@ -642,7 +670,7 @@ class TestRecommendation:
             None, pipeline_logger,
         )
         assert result.status == "cannot_proceed"
-        assert result.confidence_score == 0
+        assert result.confidence_score < 100
 
     @pytest.mark.asyncio
     async def test_proceed_no_escalations(self, pipeline_logger):
@@ -716,9 +744,10 @@ class TestRecommendation:
         )
         assert result.status == "proceed_with_conditions"
 
-    def test_confidence_score_blocking_is_zero(self):
+    def test_confidence_score_blocking_applies_heavy_penalty(self):
         escalations = [MagicMock(blocking=True)]
-        assert _compute_confidence(escalations, [], []) == 0
+        score = _compute_confidence(escalations, [], [])
+        assert score == 75  # 100 - 25 for 1 blocking
 
     def test_confidence_score_no_issues(self):
         score = _compute_confidence([], [], [
@@ -738,3 +767,463 @@ class TestRecommendation:
         ]
         score = _compute_confidence([], [], suppliers)
         assert score >= 100
+
+    def test_confidence_multiple_blocking_escalations(self):
+        """Multiple blocking escalations apply 25 points each, not immediate zero."""
+        escalations = [MagicMock(blocking=True), MagicMock(blocking=True)]
+        score = _compute_confidence(escalations, [], [])
+        assert score == 50  # 100 - 2*25
+
+    def test_confidence_four_blocking_hits_zero(self):
+        escalations = [MagicMock(blocking=True)] * 4
+        score = _compute_confidence(escalations, [], [])
+        assert score == 0
+
+
+# ── Bug fix regression tests ──────────────────────────────────────
+
+
+class TestBugFixRegressions:
+    """Regression tests for all bugs identified in the code review."""
+
+    @pytest.mark.asyncio
+    async def test_er001_fires_for_missing_budget_not_insufficient(self, pipeline_logger):
+        """Bug 2: ER-001 should fire for missing info (null budget), not budget insufficiency."""
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-BUG2",
+                category_l1="IT",
+                category_l2="Laptops",
+                currency="EUR",
+                budget_amount=None,
+                quantity=100,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True,
+            issues=[],
+            request_interpretation=RequestInterpretation(category_l1="IT", category_l2="Laptops"),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[EnrichedSupplier(supplier_id="S1", supplier_name="A")],
+        )
+        rank_result = RankResult(
+            ranked_suppliers=[RankedSupplier(
+                supplier_id="S1", supplier_name="A",
+                total_price=5000, true_cost=6000,
+            )],
+        )
+        result = await compute_escalations(
+            fetch_result, val_result, compliance_result, rank_result, pipeline_logger
+        )
+        er001 = [e for e in result.escalations if e.rule == "ER-001"]
+        assert len(er001) == 1
+        assert "missing" in er001[0].trigger.lower() or "Missing" in er001[0].trigger
+
+    @pytest.mark.asyncio
+    async def test_er001_does_not_fire_when_budget_present(self, pipeline_logger):
+        """Bug 2: ER-001 should NOT fire when budget is present, even if insufficient."""
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-BUG2B",
+                category_l1="IT",
+                category_l2="Laptops",
+                currency="EUR",
+                budget_amount=100,
+                quantity=100,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True,
+            issues=[ValidationIssue(type="budget_insufficient", severity="critical")],
+            request_interpretation=RequestInterpretation(),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[EnrichedSupplier(supplier_id="S1", supplier_name="A")],
+        )
+        rank_result = RankResult(
+            ranked_suppliers=[RankedSupplier(
+                supplier_id="S1", supplier_name="A",
+                total_price=5000, true_cost=6000,
+            )],
+        )
+        result = await compute_escalations(
+            fetch_result, val_result, compliance_result, rank_result, pipeline_logger
+        )
+        er001 = [e for e in result.escalations if e.rule == "ER-001"]
+        assert len(er001) == 0
+
+    @pytest.mark.asyncio
+    async def test_er009_is_non_blocking(self, pipeline_logger):
+        """Bug 1: ER-009 must be non-blocking to avoid 100% cannot_proceed rate."""
+        from app.pipeline.rule_engine import RuleEngine
+
+        engine = RuleEngine()
+        er009_rule = {
+            "rule_id": "ER-009",
+            "rule_name": "Contradictory request content",
+            "eval_type": "compare",
+            "eval_config": {
+                "left_field": "has_contradictions",
+                "operator": "==",
+                "right_constant": False,
+                "condition": None,
+            },
+            "action_on_fail": "escalate",
+            "severity": "medium",
+            "is_blocking": False,
+            "escalation_target": "Procurement Manager",
+            "fail_message_template": "Request contains contradictions",
+            "is_active": True,
+            "priority": 80,
+            "version": 1,
+        }
+        ctx = {"has_contradictions": True}
+        results = await engine.evaluate_rules([er009_rule], ctx)
+        assert results[0].result == "failed"
+        assert results[0].is_blocking is False
+
+    @pytest.mark.asyncio
+    async def test_er010_is_non_blocking(self, pipeline_logger):
+        """Bug 7: ER-010 must be non-blocking."""
+        from app.pipeline.rule_engine import RuleEngine
+
+        engine = RuleEngine()
+        er010_rule = {
+            "rule_id": "ER-010",
+            "rule_name": "Lead time infeasible",
+            "eval_type": "compare",
+            "eval_config": {
+                "left_field": "has_lead_time_issue",
+                "operator": "==",
+                "right_constant": False,
+                "condition": None,
+            },
+            "action_on_fail": "escalate",
+            "severity": "high",
+            "is_blocking": False,
+            "escalation_target": "Head of Category",
+            "is_active": True,
+            "priority": 85,
+            "version": 1,
+        }
+        ctx = {"has_lead_time_issue": True}
+        results = await engine.evaluate_rules([er010_rule], ctx)
+        assert results[0].result == "failed"
+        assert results[0].is_blocking is False
+
+    @pytest.mark.asyncio
+    async def test_er004_only_for_no_compliant_suppliers(self, pipeline_logger):
+        """Bug 9: ER-004 must only fire for no compliant suppliers, not lead time."""
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-BUG9",
+                category_l1="IT",
+                category_l2="Laptops",
+                currency="EUR",
+                budget_amount=100000,
+                quantity=100,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True,
+            issues=[ValidationIssue(type="lead_time_infeasible", severity="high",
+                                    description="Lead time infeasible")],
+            request_interpretation=RequestInterpretation(
+                required_by_date="2026-03-20", days_until_required=1,
+            ),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[EnrichedSupplier(supplier_id="S1", supplier_name="A")],
+        )
+        rank_result = RankResult(
+            ranked_suppliers=[RankedSupplier(
+                supplier_id="S1", supplier_name="A",
+                total_price=50000, true_cost=60000,
+                expedited_lead_time_days=20,
+            )],
+        )
+        result = await compute_escalations(
+            fetch_result, val_result, compliance_result, rank_result, pipeline_logger
+        )
+        er004 = [e for e in result.escalations if e.rule == "ER-004"]
+        assert len(er004) == 0, "ER-004 should NOT fire for lead time issues"
+        er010 = [e for e in result.escalations if e.rule == "ER-010"]
+        assert len(er010) == 1, "ER-010 should fire for lead time issues"
+        assert er010[0].blocking is False
+
+    @pytest.mark.asyncio
+    async def test_has_contradictions_excludes_policy_conflict(self, pipeline_logger):
+        """Bug 12: has_contradictions should only flag 'contradictory', not 'policy_conflict'."""
+        from app.pipeline.steps.escalate import _build_escalation_context
+
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-BUG12",
+                category_l1="IT",
+                category_l2="Laptops",
+                currency="EUR",
+                budget_amount=50000,
+                quantity=100,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True,
+            issues=[
+                ValidationIssue(type="policy_conflict", severity="high",
+                                description="Policy conflict"),
+            ],
+            request_interpretation=RequestInterpretation(),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[EnrichedSupplier(supplier_id="S1", supplier_name="A")],
+        )
+        rank_result = RankResult(
+            ranked_suppliers=[RankedSupplier(
+                supplier_id="S1", supplier_name="A",
+                total_price=40000, true_cost=50000,
+            )],
+        )
+        ctx = _build_escalation_context(
+            fetch_result, val_result, compliance_result, rank_result,
+            budget=50000.0, quantity=100, currency="EUR",
+        )
+        assert ctx["has_contradictions"] is False, \
+            "policy_conflict should NOT set has_contradictions"
+
+    def test_single_supplier_capacity_risk_computed(self):
+        """Bug 6: single_supplier_capacity_risk should be True when only 1 supplier meets qty."""
+        from app.pipeline.steps.escalate import _build_escalation_context
+
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-CAP-RISK",
+                category_l1="IT",
+                category_l2="Servers",
+                currency="EUR",
+                budget_amount=100000,
+                quantity=500,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True, issues=[],
+            request_interpretation=RequestInterpretation(),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[
+                EnrichedSupplier(supplier_id="S1", supplier_name="A", capacity_per_month=600),
+                EnrichedSupplier(supplier_id="S2", supplier_name="B", capacity_per_month=200),
+            ],
+        )
+        rank_result = RankResult(ranked_suppliers=[])
+
+        ctx = _build_escalation_context(
+            fetch_result, val_result, compliance_result, rank_result,
+            budget=100000.0, quantity=500, currency="EUR",
+        )
+        assert ctx["single_supplier_capacity_risk"] is True
+
+    def test_no_single_supplier_capacity_risk_when_multiple(self):
+        from app.pipeline.steps.escalate import _build_escalation_context
+
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-NOCAPRISK",
+                category_l1="IT",
+                category_l2="Servers",
+                currency="EUR",
+                budget_amount=100000,
+                quantity=500,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True, issues=[],
+            request_interpretation=RequestInterpretation(),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[
+                EnrichedSupplier(supplier_id="S1", supplier_name="A", capacity_per_month=600),
+                EnrichedSupplier(supplier_id="S2", supplier_name="B", capacity_per_month=800),
+            ],
+        )
+        rank_result = RankResult(ranked_suppliers=[])
+
+        ctx = _build_escalation_context(
+            fetch_result, val_result, compliance_result, rank_result,
+            budget=100000.0, quantity=500, currency="EUR",
+        )
+        assert ctx["single_supplier_capacity_risk"] is False
+
+    @pytest.mark.asyncio
+    async def test_er007_fires_only_for_influencer_campaigns(self):
+        """Bug 5: ER-007 should only escalate when category IS Influencer Campaign Management."""
+        from app.pipeline.rule_engine import RuleEngine
+
+        engine = RuleEngine()
+        er007_rule = {
+            "rule_id": "ER-007",
+            "rule_name": "Brand safety concern",
+            "eval_type": "compare",
+            "eval_config": {
+                "left_field": "category_l2",
+                "operator": "!=",
+                "right_constant": "Influencer Campaign Management",
+                "condition": None,
+            },
+            "action_on_fail": "escalate",
+            "severity": "high",
+            "is_blocking": False,
+            "escalation_target": "Marketing Governance Lead",
+            "is_active": True,
+            "priority": 60,
+            "version": 1,
+        }
+
+        influencer_ctx = {"category_l2": "Influencer Campaign Management"}
+        results = await engine.evaluate_rules([er007_rule], influencer_ctx)
+        assert results[0].result == "failed", "ER-007 should fire for Influencer Campaign"
+        assert results[0].action == "escalate"
+
+        laptops_ctx = {"category_l2": "Laptops"}
+        results = await engine.evaluate_rules([er007_rule], laptops_ctx)
+        assert results[0].result == "passed", "ER-007 should NOT fire for Laptops"
+
+    @pytest.mark.asyncio
+    async def test_er005_target_is_security_compliance(self):
+        """Bug 4: ER-005 should escalate to Security/Compliance, not Data Protection Officer."""
+        from app.pipeline.rule_engine import RuleEngine
+
+        engine = RuleEngine()
+        er005_rule = {
+            "rule_id": "ER-005",
+            "rule_name": "Data residency unsatisfiable",
+            "eval_type": "compare",
+            "eval_config": {
+                "left_field": "has_residency_supplier",
+                "operator": "==",
+                "right_constant": True,
+                "condition": {"field": "data_residency_constraint", "operator": "==", "value": True},
+            },
+            "action_on_fail": "escalate",
+            "severity": "critical",
+            "is_blocking": True,
+            "escalation_target": "Security/Compliance",
+            "is_active": True,
+            "priority": 50,
+            "version": 1,
+        }
+        ctx = {
+            "data_residency_constraint": True,
+            "has_residency_supplier": False,
+        }
+        results = await engine.evaluate_rules([er005_rule], ctx)
+        assert results[0].result == "failed"
+        assert results[0].escalation_target == "Security/Compliance"
+
+    @pytest.mark.asyncio
+    async def test_er001_required_eval_type_fires_for_null_budget(self):
+        """Bug 2: ER-001 as 'required' eval_type fires for null budget_amount."""
+        from app.pipeline.rule_engine import RuleEngine
+
+        engine = RuleEngine()
+        er001_rule = {
+            "rule_id": "ER-001",
+            "rule_name": "Missing required info",
+            "eval_type": "required",
+            "eval_config": {
+                "fields": [
+                    {"name": "budget_amount", "severity": "critical"},
+                    {"name": "quantity", "severity": "critical"},
+                ]
+            },
+            "action_on_fail": "escalate",
+            "severity": "critical",
+            "is_blocking": True,
+            "escalation_target": "Requester Clarification",
+            "is_active": True,
+            "priority": 10,
+            "version": 1,
+        }
+        ctx = {"budget_amount": None, "quantity": 100}
+        results = await engine.evaluate_rules([er001_rule], ctx)
+        assert results[0].result == "failed"
+        assert "budget_amount" in results[0].actual_values.get("missing", [])
+
+        ctx_ok = {"budget_amount": 50000, "quantity": 100}
+        results = await engine.evaluate_rules([er001_rule], ctx_ok)
+        assert results[0].result == "passed"
+
+    @pytest.mark.asyncio
+    async def test_fallback_lead_time_uses_er010_not_er004(self, pipeline_logger):
+        """Bug 9: Fallback path should use ER-010 for lead time, not ER-004."""
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-FALLBACK-LT",
+                category_l1="IT",
+                category_l2="Laptops",
+                currency="EUR",
+                budget_amount=100000,
+                quantity=100,
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True,
+            issues=[ValidationIssue(
+                type="lead_time_infeasible", severity="high",
+                description="Lead time infeasible",
+            )],
+            request_interpretation=RequestInterpretation(
+                required_by_date="2026-03-20", days_until_required=1,
+            ),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[EnrichedSupplier(supplier_id="S1", supplier_name="A")],
+        )
+        rank_result = RankResult(
+            ranked_suppliers=[RankedSupplier(
+                supplier_id="S1", supplier_name="A",
+                total_price=50000, true_cost=60000,
+                expedited_lead_time_days=20,
+            )],
+        )
+        result = await compute_escalations(
+            fetch_result, val_result, compliance_result, rank_result, pipeline_logger
+        )
+        rules = [e.rule for e in result.escalations]
+        assert "ER-004" not in rules
+        assert "ER-010" in rules
+        er010 = next(e for e in result.escalations if e.rule == "ER-010")
+        assert er010.blocking is False
+
+    @pytest.mark.asyncio
+    async def test_fallback_er005_targets_security_compliance(self, pipeline_logger):
+        """Bug 4: Fallback path should escalate ER-005 to Security/Compliance."""
+        fetch_result = FetchResult(
+            request=RequestData(
+                request_id="REQ-FALLBACK-DR",
+                category_l1="IT",
+                category_l2="Cloud Storage",
+                currency="EUR",
+                data_residency_constraint=True,
+                delivery_countries=["DE"],
+            ),
+        )
+        val_result = ValidationResult(
+            completeness=True, issues=[],
+            request_interpretation=RequestInterpretation(),
+        )
+        compliance_result = ComplianceResult(
+            compliant=[
+                EnrichedSupplier(
+                    supplier_id="S1", supplier_name="A",
+                    data_residency_supported=False,
+                ),
+            ],
+        )
+        rank_result = RankResult(ranked_suppliers=[])
+        result = await compute_escalations(
+            fetch_result, val_result, compliance_result, rank_result, pipeline_logger
+        )
+        er005 = [e for e in result.escalations if e.rule == "ER-005"]
+        assert len(er005) == 1
+        assert er005[0].escalate_to == "Security/Compliance"

@@ -120,3 +120,30 @@ Default local URLs:
 - Full deployment guide: `DEPLOYMENT.md` (covers local dev, AWS EC2 + RDS, nginx reverse proxy)
 - Reference nginx config: `deploy/nginx/aws.conf`
 - AWS env template: `.env.aws.example`
+
+## Dynamic Rules Engine
+
+The pipeline uses a dynamic rules engine (`backend/logical_layer/app/pipeline/rule_engine.py`) that evaluates rules fetched from the Org Layer at runtime. Rules are stored in `dynamic_rules` / `dynamic_rule_versions` tables and seeded by `database_init/migrate_dynamic_rules.py`.
+
+### Escalation Rules (ER-001–010)
+
+| Rule | Condition | Blocking | Target |
+|------|-----------|----------|--------|
+| ER-001 | Budget or quantity is NULL (missing required info) | Yes | Requester Clarification |
+| ER-002 | Preferred supplier is restricted | Yes | Procurement Manager |
+| ER-003 | Contract value exceeds strategic tier | No | Head of Strategic Sourcing |
+| ER-004 | No compliant supplier found after checks | Yes | Head of Category |
+| ER-005 | Data residency unsatisfiable | Yes | Security/Compliance |
+| ER-006 | Single supplier capacity risk (only 1 meets qty) | No | Sourcing Excellence Lead |
+| ER-007 | Influencer campaign brand safety | No | Marketing Governance Lead |
+| ER-008 | Supplier not registered in delivery country | No | Regional Compliance Lead |
+| ER-009 | LLM-detected contradictions (non-spec, custom) | **No** | Procurement Manager |
+| ER-010 | Lead time infeasible (non-spec, custom) | **No** | Head of Category |
+
+### Key Design Constraints
+
+- **ER-009 and ER-010 are NOT in the challenge spec** (ER-001–008 only). They must remain non-blocking.
+- **Risk score threshold**: 70 for non-preferred suppliers (was 30, which excluded too aggressively).
+- **Confidence scoring**: Graded (-25/blocking, -10/non-blocking) — never immediately zero.
+- **`has_contradictions`**: Only checks `contradictory` validation issues, NOT `policy_conflict`.
+- **Migration idempotency**: `migrate_dynamic_rules.py` uses `ON DUPLICATE KEY UPDATE` to update existing rules.

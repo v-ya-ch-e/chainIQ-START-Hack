@@ -1,8 +1,11 @@
 """Rule versioning and evaluation traceability endpoints."""
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
@@ -650,9 +653,12 @@ def create_evaluation_from_pipeline(
     for j, esc in enumerate(escalations_data):
         rule = esc.get("rule", "ER-001")
         v = _get_active_version(db, rule)
-        version_id = v.version_id if v else (pc001 or "")
+        version_id = v.version_id if v else None
         if not version_id:
-            continue  # Skip if rule_versions not seeded (migrate_rules.py required)
+            logger.warning(
+                "No active rule_version for %s — skipping escalation persistence", rule,
+            )
+            continue
         escalations.append({
             "escalation_id": esc.get("escalation_id", f"ESC-{j+1:03d}"),
             "rule_id": rule,

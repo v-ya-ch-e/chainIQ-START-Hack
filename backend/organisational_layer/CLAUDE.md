@@ -197,11 +197,12 @@ pip install -r requirements.txt
 python3 -m pytest tests/ -v
 ```
 
-**136 tests** covering:
+**95+ tests** covering:
 - `tests/test_utils.py` — 30 tests for utility functions (coerce, normalize, truncate, date parsing)
 - `tests/test_models.py` — 22 tests for Pydantic model validation and edge cases
 - `tests/test_llm_client.py` — 4 tests for LLM client (success, no tool_use block, API error, invalid schema)
-- `tests/test_pipeline_steps.py` — 35 tests for all pipeline steps (fetch, validate, filter, comply, rank, escalate, recommend)
+- `tests/test_rule_engine.py` — 33 tests for dynamic rule engine (all 5 eval_types, conditions, operators)
+- `tests/test_pipeline_steps.py` — 49 tests for all pipeline steps including 13 bug fix regression tests
 - `tests/test_pipeline_runner.py` — 11 tests for full pipeline runner (success, caching, early exit, error handling, audit trail)
 - `tests/test_routers.py` — 18 tests for all API endpoints (health, process, batch, status, result, runs, audit, step endpoints)
 

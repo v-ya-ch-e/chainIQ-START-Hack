@@ -62,7 +62,7 @@ def _build_escalation_context(
                 break
 
     has_contradictions = any(
-        vi.type in ("contradictory", "policy_conflict")
+        vi.type == "contradictory"
         for vi in validation_result.issues
     )
 
@@ -84,7 +84,46 @@ def _build_escalation_context(
             for a in approvers
         )
 
-    return {
+    suppliers_meeting_qty = 0
+    if quantity is not None:
+        for s in compliance_result.compliant:
+            if s.capacity_per_month is not None and s.capacity_per_month >= quantity:
+                suppliers_meeting_qty += 1
+    single_supplier_capacity_risk = (
+        quantity is not None and suppliers_meeting_qty == 1
+    )
+
+    delivery_countries = set()
+    if req.delivery_countries:
+        if isinstance(req.delivery_countries, str):
+            for part in req.delivery_countries.replace(";", ",").split(","):
+                part = part.strip()
+                if part:
+                    delivery_countries.add(part)
+        elif isinstance(req.delivery_countries, list):
+            for c in req.delivery_countries:
+                if c:
+                    delivery_countries.add(c.strip())
+    if not delivery_countries and req.country:
+        delivery_countries.add(req.country)
+
+    has_unregistered_supplier = False
+    for s in compliance_result.compliant:
+        if hasattr(s, "service_regions") and s.service_regions:
+            regions = set()
+            raw = s.service_regions
+            if isinstance(raw, str):
+                for part in raw.split(";"):
+                    part = part.strip()
+                    if part:
+                        regions.add(part)
+            elif isinstance(raw, list):
+                regions = {r.strip() for r in raw if r}
+            if delivery_countries and not delivery_countries.issubset(regions):
+                has_unregistered_supplier = True
+                break
+
+    ctx = {
         "request_id": req.request_id,
         "category_l1": req.category_l1,
         "category_l2": req.category_l2,
@@ -102,9 +141,11 @@ def _build_escalation_context(
         "has_contradictions": has_contradictions,
         "has_lead_time_issue": has_lead_time_issue,
         "has_budget_issue": has_budget_issue,
-        "has_unregistered_supplier": False,
+        "has_unregistered_supplier": has_unregistered_supplier,
+        "single_supplier_capacity_risk": single_supplier_capacity_risk,
         "approval_tier_requires_strategic": approval_tier_requires_strategic,
     }
+    return ctx
 
 
 async def compute_escalations(
@@ -211,27 +252,22 @@ def _discover_pipeline_issues(
 
     issues: list[PipelineEscalation] = []
 
-    for vi in validation_result.issues:
-        if vi.type == "budget_insufficient" and budget is not None:
-            min_total = None
-            for s in rank_result.ranked_suppliers:
-                if s.total_price is not None:
-                    if min_total is None or s.total_price < min_total:
-                        min_total = s.total_price
+    # ER-001: Missing required info (budget or quantity is null)
+    missing_fields = []
+    if budget is None:
+        missing_fields.append("budget")
+    if quantity is None:
+        missing_fields.append("quantity")
+    if missing_fields:
+        issues.append(PipelineEscalation(
+            rule_id="ER-001",
+            trigger=f"Missing required information: {', '.join(missing_fields)}",
+            escalate_to="Requester Clarification",
+            blocking=True,
+            source="pipeline",
+        ))
 
-            if min_total is not None:
-                issues.append(PipelineEscalation(
-                    rule_id="ER-001",
-                    trigger=(
-                        "Budget is insufficient to fulfil the stated quantity at any compliant "
-                        "supplier price. Requester must confirm revised budget or reduced quantity "
-                        "before sourcing can proceed."
-                    ),
-                    escalate_to="Requester Clarification",
-                    blocking=True,
-                    source="pipeline",
-                ))
-
+    # ER-010: Lead time infeasible (non-blocking)
     for vi in validation_result.issues:
         if vi.type == "lead_time_infeasible":
             interp = validation_result.request_interpretation
@@ -242,18 +278,19 @@ def _discover_pipeline_issues(
                     max_exp = max(max_exp, s.expedited_lead_time_days) if max_exp is not None else s.expedited_lead_time_days
             range_str = f"{min_exp}–{max_exp}" if min_exp is not None and max_exp is not None and min_exp != max_exp else str(min_exp or max_exp or "?")
             issues.append(PipelineEscalation(
-                rule_id="ER-004",
+                rule_id="ER-010",
                 trigger=(
                     f"Lead time infeasible: required delivery {interp.required_by_date} "
                     f"({interp.days_until_required} days). All suppliers' expedited lead times are "
-                    f"{range_str} days. No compliant supplier can meet the stated deadline."
+                    f"{range_str} days."
                 ),
                 escalate_to="Head of Category",
-                blocking=True,
+                blocking=False,
                 source="pipeline",
             ))
             break
 
+    # ER-005: Data residency unsatisfiable (target: Security/Compliance)
     if fetch_result.request.data_residency_constraint:
         has_residency = any(
             s.data_residency_supported for s in compliance_result.compliant
@@ -263,11 +300,12 @@ def _discover_pipeline_issues(
             issues.append(PipelineEscalation(
                 rule_id="ER-005",
                 trigger=f"No compliant supplier supports data residency in {country}",
-                escalate_to="Data Protection Officer",
+                escalate_to="Security/Compliance",
                 blocking=True,
                 source="pipeline",
             ))
 
+    # ER-004: No compliant supplier found
     if not compliance_result.compliant and fetch_result.compliant_suppliers:
         issues.append(PipelineEscalation(
             rule_id="ER-004",
@@ -277,6 +315,7 @@ def _discover_pipeline_issues(
             source="pipeline",
         ))
 
+    # ER-002: Preferred supplier restricted
     preferred_name = fetch_result.request.preferred_supplier_mentioned
     if preferred_name:
         for exc in compliance_result.excluded:
@@ -293,20 +332,31 @@ def _discover_pipeline_issues(
                 ))
                 break
 
+    # Policy conflict with requester instruction — use actual approval tier
     interp = validation_result.request_interpretation
     if interp.requester_instruction:
         for vi in validation_result.issues:
-            if vi.type in ("contradictory", "policy_conflict"):
+            if vi.type == "policy_conflict":
                 instruction = interp.requester_instruction
+                tier_info = ""
+                if fetch_result.approval_tier:
+                    tier = fetch_result.approval_tier
+                    tier_id = getattr(tier, "tier_id", None) or getattr(tier, "tier", "")
+                    quotes = getattr(tier, "min_supplier_quotes", None) or getattr(tier, "quotes_required", "")
+                    approvers = tier.get_approvers() if hasattr(tier, "get_approvers") else []
+                    tier_info = (
+                        f"Approval tier {tier_id} requires {quotes} quotes"
+                        f"{' and approval from ' + ', '.join(approvers) if approvers else ''}"
+                    )
                 issues.append(PipelineEscalation(
-                    rule_id="AT-002",
+                    rule_id="ER-009",
                     trigger=(
-                        f"Policy conflict: requester instruction '{instruction}' cannot override AT-002. "
-                        "All valid contract values exceed EUR 25,000, requiring 2 quotes and "
-                        "Procurement Manager approval for any deviation."
+                        f"Policy conflict: requester instruction '{instruction}' conflicts with "
+                        f"procurement policy. {tier_info}. "
+                        "Requires Procurement Manager review for any deviation."
                     ),
                     escalate_to="Procurement Manager",
-                    blocking=True,
+                    blocking=False,
                     source="pipeline",
                 ))
                 break
