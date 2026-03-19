@@ -117,6 +117,48 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
     (entry) => entry?.status === "inferred" || entry?.status === "needs_review",
   ).length
 
+  function applyCategoryHintMapping(
+    extraction: ExtractionResult,
+    availableCategories: CategoryOption[],
+  ): ExtractionResult {
+    if (extraction.draft.categoryId || availableCategories.length === 0) {
+      return extraction
+    }
+    const draftRecord = extraction.draft as unknown as Record<string, unknown>
+    const hintedL1 = typeof draftRecord.categoryL1 === "string" ? draftRecord.categoryL1 : null
+    const hintedL2 = typeof draftRecord.categoryL2 === "string" ? draftRecord.categoryL2 : null
+    if (!hintedL1 || !hintedL2) {
+      return extraction
+    }
+    const matchedCategory = availableCategories.find(
+      (category) => category.categoryL1 === hintedL1 && category.categoryL2 === hintedL2,
+    )
+    if (!matchedCategory) {
+      return extraction
+    }
+    const updatedWarnings = extraction.warnings.filter(
+      (warning) => warning.code !== "CATEGORY_MISSING",
+    )
+    return {
+      ...extraction,
+      draft: {
+        ...extraction.draft,
+        categoryId: matchedCategory.id,
+      },
+      fieldStatus: {
+        ...extraction.fieldStatus,
+        categoryId: {
+          status: "inferred",
+          confidence: 0.8,
+          reason: "Mapped inferred category hint to known category list.",
+        },
+      },
+      missingRequired:
+        extraction.missingRequired.filter((field) => field !== "categoryId"),
+      warnings: updatedWarnings,
+    }
+  }
+
   function patchDraft(patch: Partial<CaseDraftPayload>) {
     setResult((current) => ({
       ...current,
@@ -139,10 +181,11 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
         requestChannel,
         fileNames: selectedFileNames,
       })
-      setResult(extraction)
+      const mappedExtraction = applyCategoryHintMapping(extraction, categories)
+      setResult(mappedExtraction)
       const shouldSkipCompletion =
-        extraction.extractionStrength === "strong" &&
-        computeMissingRequiredFields(extraction.draft).length === 0
+        mappedExtraction.extractionStrength === "strong" &&
+        computeMissingRequiredFields(mappedExtraction.draft).length === 0
       setStep(shouldSkipCompletion ? "review" : "complete")
     } catch (extractError) {
       const message =
@@ -155,6 +198,11 @@ export function CaseIntakeWizard({ embedded = false }: CaseIntakeWizardProps) {
       setProcessing(false)
     }
   }
+
+  useEffect(() => {
+    if (categories.length === 0) return
+    setResult((current) => applyCategoryHintMapping(current, categories))
+  }, [categories])
 
   async function handleSaveDraft() {
     setError(null)

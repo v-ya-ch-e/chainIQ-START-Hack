@@ -8,6 +8,12 @@ type IntakeRequestBody = {
   file_names?: string[]
 }
 
+type CategoryApiRow = {
+  id: number
+  category_l1: string
+  category_l2: string
+}
+
 function plusDaysIso(days: number) {
   const value = new Date()
   value.setDate(value.getDate() + days)
@@ -65,6 +71,55 @@ function inferLanguage(text: string) {
   return "en"
 }
 
+function inferCategoryPair(text: string): [string, string] | null {
+  const lowered = text.toLowerCase()
+  const rules: Array<{ keywords: string[]; pair: [string, string] }> = [
+    { keywords: ["laptop", "notebook"], pair: ["IT", "Laptops"] },
+    { keywords: ["cloud compute", "ec2", "vm"], pair: ["IT", "Cloud Compute"] },
+    { keywords: ["cloud storage", "s3", "blob storage"], pair: ["IT", "Cloud Storage"] },
+    { keywords: ["software development", "developer"], pair: ["Professional Services", "Software Development Services"] },
+    { keywords: ["project management", "pmo"], pair: ["Professional Services", "IT Project Management Services"] },
+    { keywords: ["desk", "workstation furniture"], pair: ["Facilities", "Workstations and Desks"] },
+    { keywords: ["chair", "ergonomic seating"], pair: ["Facilities", "Office Chairs"] },
+    { keywords: ["sem", "search engine marketing"], pair: ["Marketing", "Search Engine Marketing (SEM)"] },
+    { keywords: ["social media advertising"], pair: ["Marketing", "Social Media Advertising"] },
+  ]
+  for (const rule of rules) {
+    if (rule.keywords.some((keyword) => lowered.includes(keyword))) {
+      return rule.pair
+    }
+  }
+  return null
+}
+
+async function resolveCategoryId(
+  categoryPair: [string, string] | null,
+  request: Request,
+): Promise<number | null> {
+  if (!categoryPair) return null
+  const [categoryL1, categoryL2] = categoryPair
+  const origin = new URL(request.url).origin
+  const backendBase = process.env.BACKEND_INTERNAL_URL
+  const candidates = backendBase
+    ? [`${origin}/api/categories/`, `${backendBase}/api/categories/`]
+    : [`${origin}/api/categories/`]
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, { cache: "no-store" })
+      if (!response.ok) continue
+      const rows = (await response.json()) as CategoryApiRow[]
+      const match = rows.find(
+        (row) => row.category_l1 === categoryL1 && row.category_l2 === categoryL2,
+      )
+      if (match) return match.id
+    } catch {
+      // Ignore and try next candidate.
+    }
+  }
+  return null
+}
+
 function extractionStrength(missingRequiredCount: number, confidentFieldsCount: number) {
   if (missingRequiredCount === 0 && confidentFieldsCount >= 8) return "strong"
   if (confidentFieldsCount >= 4) return "partial"
@@ -81,6 +136,8 @@ export async function POST(request: Request) {
   const title = (lines[0] ?? "New sourcing case").slice(0, 120)
 
   const country = extractCountry(sourceText) ?? "CH"
+  const categoryPair = inferCategoryPair(sourceText)
+  const categoryId = await resolveCategoryId(categoryPair, request)
   const draft = {
     title,
     requestText: sourceText,
@@ -92,7 +149,9 @@ export async function POST(request: Request) {
     requesterId: "UNKNOWN",
     requesterRole: "Not specified",
     submittedForId: "SELF",
-    categoryId: null,
+    categoryId,
+    categoryL1: categoryPair?.[0] ?? null,
+    categoryL2: categoryPair?.[1] ?? null,
     quantity: extractQuantity(sourceText),
     unitOfMeasure: "unit",
     currency: extractCurrency(sourceText) ?? "CHF",
@@ -150,7 +209,7 @@ export async function POST(request: Request) {
   setStatus("requesterId", draft.requesterId, true)
   setStatus("requesterRole", draft.requesterRole, true)
   setStatus("submittedForId", draft.submittedForId, true)
-  setStatus("categoryId", draft.categoryId)
+  setStatus("categoryId", draft.categoryId, categoryId !== null)
   setStatus("quantity", draft.quantity, true)
   setStatus("unitOfMeasure", draft.unitOfMeasure, true)
   setStatus("currency", draft.currency, true)

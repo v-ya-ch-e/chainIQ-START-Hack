@@ -48,6 +48,7 @@ import { cn } from "@/lib/utils"
 
 interface InboxPageProps {
   cases: CaseListItem[]
+  dataLoadError?: string | null
 }
 
 const statusOptions = [
@@ -98,7 +99,7 @@ function toneForLivePhase(phase: PipelineLivePhase) {
   }
 }
 
-export function InboxPage({ cases }: InboxPageProps) {
+export function InboxPage({ cases, dataLoadError }: InboxPageProps) {
   const router = useRouter()
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
@@ -273,6 +274,13 @@ export function InboxPage({ cases }: InboxPageProps) {
         </DialogContent>
       </Dialog>
 
+      {dataLoadError ? (
+        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
+          <CardContent className="py-3 text-sm">
+            Backend data unavailable: {dataLoadError}. The inbox may be empty.
+          </CardContent>
+        </Card>
+      ) : null}
       {message ? (
         <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
           <CardContent className="py-3 text-sm">{message}</CardContent>
@@ -432,10 +440,16 @@ export function InboxPage({ cases }: InboxPageProps) {
                       <TableCell className="text-sm font-medium tabular-nums">
                         {formatCurrency(entry.budgetAmount, entry.currency)}
                       </TableCell>
-                      <TableCell className="text-sm tabular-nums">
+                      <TableCell
+                        className="text-sm tabular-nums"
+                        suppressHydrationWarning
+                      >
                         {formatDate(entry.requiredByDate)}
                       </TableCell>
-                      <TableCell className="text-sm tabular-nums">
+                      <TableCell
+                        className="text-sm tabular-nums"
+                        suppressHydrationWarning
+                      >
                         {formatDate(entry.lastUpdated)}
                       </TableCell>
                       <TableCell>
@@ -457,7 +471,7 @@ export function InboxPage({ cases }: InboxPageProps) {
                         />
                       </TableCell>
                       <TableCell className="max-w-[200px] text-xs text-muted-foreground">
-                        {entry.scenarioTags.slice(0, 3).join(", ") || "standard"}
+                        {(entry.scenarioTags ?? []).slice(0, 3).join(", ") || "standard"}
                       </TableCell>
                       <TableCell>
                         <StatusBadge
@@ -505,8 +519,12 @@ export function InboxPage({ cases }: InboxPageProps) {
                                 tone={toneForLivePhase(liveState.phase)}
                               />
                               {liveState.lastCheckedAt ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                  Checked {formatDateTime(liveState.lastCheckedAt)}
+                                <p
+                                  className="text-[11px] text-muted-foreground"
+                                  suppressHydrationWarning
+                                >
+                                  Checked{" "}
+                                  {formatDateTime(liveState.lastCheckedAt)}
                                 </p>
                               ) : null}
                             </div>
