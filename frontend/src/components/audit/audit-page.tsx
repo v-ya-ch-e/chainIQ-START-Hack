@@ -1,13 +1,19 @@
 "use client"
 
 import Link from "next/link"
-import { type ComponentProps, useMemo, useState } from "react"
+import {
+  useCallback,
+  memo,
+  type ComponentProps,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react"
 import {
   AlertTriangle,
   Building2,
   Cpu,
   FileText,
-  Filter,
   RefreshCcw,
   Search,
   ShieldAlert,
@@ -15,6 +21,11 @@ import {
   TerminalSquare,
 } from "lucide-react"
 
+import {
+  TopbarFilters,
+  topbarFilterControlClassName,
+} from "@/components/app-shell/topbar-filters"
+import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { Button } from "@/components/ui/button"
@@ -25,7 +36,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -46,6 +56,8 @@ import type {
   AuditFeedMeta,
   AuditSummaryMetric,
 } from "@/lib/types/case"
+import { labelForFilterValue, type FilterOption } from "@/lib/filter-options"
+import { cn } from "@/lib/utils"
 
 interface AuditPageProps {
   summary: AuditSummaryMetric[]
@@ -80,6 +92,23 @@ const kindLabel: Record<AuditFeedEvent["kind"], string> = {
   escalation: "Escalation",
   audit: "Audit",
 }
+
+const kindOptions: FilterOption[] = [
+  { value: "all", label: "All kinds" },
+  { value: "source", label: "Source" },
+  { value: "interpretation", label: "Interpretation" },
+  { value: "policy", label: "Policy" },
+  { value: "supplier", label: "Supplier" },
+  { value: "escalation", label: "Escalation" },
+  { value: "audit", label: "Audit" },
+]
+
+const levelOptions: FilterOption[] = [
+  { value: "all", label: "All levels" },
+  { value: "info", label: "Info" },
+  { value: "warn", label: "Warning" },
+  { value: "error", label: "Error" },
+]
 
 function getIconForKind(kind: AuditFeedEvent["kind"]) {
   switch (kind) {
@@ -180,11 +209,145 @@ function AuditTimeline({
   )
 }
 
+const AuditWorkspaceToolbar = memo(function AuditWorkspaceToolbar({
+  query,
+  kindFilter,
+  levelFilter,
+  runFilter,
+  runOptions,
+  onQueryChange,
+  onKindChange,
+  onLevelChange,
+  onRunChange,
+  onReset,
+  canReset,
+}: {
+  query: string
+  kindFilter: string
+  levelFilter: string
+  runFilter?: string
+  runOptions?: FilterOption[]
+  onQueryChange: (value: string) => void
+  onKindChange: (value: string | null) => void
+  onLevelChange: (value: string | null) => void
+  onRunChange?: (value: string | null) => void
+  onReset: () => void
+  canReset: boolean
+}) {
+  const kindTriggerLabel = labelForFilterValue(
+    kindOptions,
+    kindFilter,
+    "All kinds",
+  )
+  const levelTriggerLabel = labelForFilterValue(
+    levelOptions,
+    levelFilter,
+    "All levels",
+  )
+  const runTriggerLabel = runOptions
+    ? labelForFilterValue(runOptions, runFilter ?? "all", "All runs")
+    : undefined
+
+  return (
+    <TopbarFilters>
+      <div className="relative h-8 min-w-[14rem] grow basis-full sm:basis-auto sm:max-w-[24rem] sm:grow">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="Search request, case title, or event text…"
+          className={cn(
+            "h-8 border-input/80 pl-8 text-sm transition-colors focus-visible:border-ring",
+            topbarFilterControlClassName,
+          )}
+        />
+      </div>
+
+      <Select value={kindFilter} onValueChange={onKindChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {kindTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {kindOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select value={levelFilter} onValueChange={onLevelChange}>
+        <SelectTrigger
+          size="sm"
+          className={cn(
+            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            topbarFilterControlClassName,
+          )}
+        >
+          <span className="truncate text-left" data-slot="select-value">
+            {levelTriggerLabel}
+          </span>
+        </SelectTrigger>
+        <SelectContent>
+          {levelOptions.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {runOptions && runOptions.length > 0 && onRunChange && (
+        <Select value={runFilter ?? "all"} onValueChange={onRunChange}>
+          <SelectTrigger
+            size="sm"
+            className={cn(
+              "h-8 min-w-[12rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[14rem] sm:grow-0",
+              topbarFilterControlClassName,
+            )}
+          >
+            <span className="truncate text-left" data-slot="select-value">
+              {runTriggerLabel}
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {runOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onReset}
+        disabled={!canReset}
+        className={cn("h-8 shrink-0", topbarFilterControlClassName)}
+      >
+        <RefreshCcw className="mr-1.5 size-3.5" />
+        Reset
+      </Button>
+    </TopbarFilters>
+  )
+})
+
 export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
   const [query, setQuery] = useState("")
   const [kindFilter, setKindFilter] = useState("all")
   const [levelFilter, setLevelFilter] = useState("all")
   const [runFilter, setRunFilter] = useState("all")
+  const setHeaderActions = useSetWorkspaceHeaderActions()
 
   const availableRuns = useMemo(() => {
     const runMap = new Map<string, { runId: string; latestTimestamp: string; caseIds: Set<string> }>()
@@ -282,12 +445,69 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
     Number(query.trim().length > 0)
   const hasActiveFilters = activeFiltersCount > 0
 
-  const resetFilters = () => {
+  const resetFilters = useCallback(() => {
     setQuery("")
     setKindFilter("all")
     setLevelFilter("all")
     setRunFilter("all")
-  }
+  }, [])
+
+  const handleKindFilterChange = useCallback((value: string | null) => {
+    setKindFilter(value ?? "all")
+  }, [])
+
+  const handleLevelFilterChange = useCallback((value: string | null) => {
+    setLevelFilter(value ?? "all")
+  }, [])
+
+  const handleRunFilterChange = useCallback((value: string | null) => {
+    setRunFilter(value ?? "all")
+  }, [])
+
+  const runOptions: FilterOption[] = useMemo(() => {
+    if (availableRuns.length === 0) return []
+    return [
+      { value: "all", label: "All runs (latest per case)" },
+      ...availableRuns.map((run, index) => ({
+        value: run.runId,
+        label: `Run ${index + 1} · ${Array.from(run.caseIds).join(", ")}`,
+      })),
+    ]
+  }, [availableRuns])
+
+  useLayoutEffect(
+    () => {
+      setHeaderActions(
+        <AuditWorkspaceToolbar
+          query={query}
+          kindFilter={kindFilter}
+          levelFilter={levelFilter}
+          runFilter={runFilter}
+          runOptions={runOptions.length > 0 ? runOptions : undefined}
+          onQueryChange={setQuery}
+          onKindChange={handleKindFilterChange}
+          onLevelChange={handleLevelFilterChange}
+          onRunChange={handleRunFilterChange}
+          onReset={resetFilters}
+          canReset={hasActiveFilters}
+        />,
+      )
+      return () => setHeaderActions(null)
+    },
+    [
+      setHeaderActions,
+      query,
+      kindFilter,
+      levelFilter,
+      runFilter,
+      runOptions,
+      hasActiveFilters,
+      handleKindFilterChange,
+      handleLevelFilterChange,
+      handleRunFilterChange,
+      resetFilters,
+    ],
+  )
 
   return (
     <div className="space-y-8">
@@ -339,83 +559,7 @@ export function AuditPage({ summary, feed, feedMeta }: AuditPageProps) {
 
       <Card className="animate-fade-in-up" style={{ animationDelay: "120ms" }}>
         <CardHeader className="border-b pb-4">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Filter className="size-4 text-muted-foreground" />
-            Filters
-          </CardTitle>
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search request ID, case title, or event text..."
-                className="h-9 pl-9"
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Select
-                value={kindFilter}
-                onValueChange={(val) => setKindFilter(val || "all")}
-              >
-                <SelectTrigger className="w-[160px] h-9">
-                  <SelectValue placeholder="All kinds" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All kinds</SelectItem>
-                  <SelectItem value="source">Source</SelectItem>
-                  <SelectItem value="interpretation">Interpretation</SelectItem>
-                  <SelectItem value="policy">Policy</SelectItem>
-                  <SelectItem value="supplier">Supplier</SelectItem>
-                  <SelectItem value="escalation">Escalation</SelectItem>
-                  <SelectItem value="audit">Audit</SelectItem>
-                </SelectContent>
-              </Select>
-
-              <Select
-                value={levelFilter}
-                onValueChange={(val) => setLevelFilter(val || "all")}
-              >
-                <SelectTrigger className="w-[160px] h-9">
-                  <SelectValue placeholder="All levels" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All levels</SelectItem>
-                  <SelectItem value="info">Info</SelectItem>
-                  <SelectItem value="warn">Warning</SelectItem>
-                  <SelectItem value="error">Error</SelectItem>
-                </SelectContent>
-              </Select>
-
-              {availableRuns.length > 0 && (
-                <Select
-                  value={runFilter}
-                  onValueChange={(val) => setRunFilter(val || "all")}
-                >
-                  <SelectTrigger className="w-[200px] h-9">
-                    <SelectValue placeholder="All runs" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All runs (latest per case)</SelectItem>
-                    {availableRuns.map((run, index) => (
-                      <SelectItem key={run.runId} value={run.runId}>
-                        Run {index + 1} · {Array.from(run.caseIds).join(", ")}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={resetFilters}
-                disabled={!hasActiveFilters}
-              >
-                <RefreshCcw className="mr-1.5 size-3.5" />
-                Reset
-              </Button>
-            </div>
-          </div>
+          <CardTitle className="text-base">Feed scope</CardTitle>
           <div className="flex flex-nowrap items-center gap-2 overflow-x-auto text-xs text-muted-foreground [scrollbar-width:thin]">
             <span>
               Showing {filteredFeed.length} of {feedMeta.totalKnown} entries

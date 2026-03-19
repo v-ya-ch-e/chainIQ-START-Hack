@@ -102,7 +102,7 @@ export function WorkspaceShell({
           <SidebarTrigger className="shrink-0" />
           <nav
             aria-label="Breadcrumb"
-            className="min-w-0 max-w-[min(100%,14rem)] shrink basis-0 overflow-hidden sm:max-w-[min(100%,24rem)] md:max-w-none md:flex-1"
+            className="min-w-0 max-w-[min(100%,12rem)] shrink-0 overflow-hidden sm:max-w-[min(100%,16rem)] lg:max-w-[min(100%,20rem)] xl:max-w-[min(100%,24rem)]"
           >
             <ol className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:text-sm">
               {crumbs.map((crumb, index) => {
