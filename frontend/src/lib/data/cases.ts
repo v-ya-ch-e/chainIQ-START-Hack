@@ -1337,29 +1337,46 @@ const INTAKE_REQUIRED_FIELDS: Array<keyof CaseDraftPayload> = [
   "contractTypeRequested",
 ]
 
-function getApiBaseForRuntime() {
-  if (typeof window === "undefined") {
-    return process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000"
+function getApiUrlCandidates(path: string): string[] {
+  const normalized = path.startsWith("/") ? path : `/${path}`
+  // Browser runtime must only use same-origin paths.
+  if (typeof window !== "undefined") {
+    return [normalized]
   }
-  return ""
-}
-
-function getApiUrl(path: string) {
-  return `${getApiBaseForRuntime()}${path}`
+  const internalBase = process.env.BACKEND_INTERNAL_URL
+  if (internalBase) {
+    return [normalized, `${internalBase}${normalized}`]
+  }
+  return [normalized]
 }
 
 async function fetchMutation<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(getApiUrl(path), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init.headers ?? {}),
-    },
-  })
-  if (!response.ok) {
-    throw new Error(`Request failed (${response.status}) for ${path}`)
+  const candidates = getApiUrlCandidates(path)
+  let lastError: unknown = null
+
+  for (const url of candidates) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...(init.headers ?? {}),
+        },
+      })
+      if (!response.ok) {
+        lastError = new Error(`Request failed (${response.status}) for ${path}`)
+        continue
+      }
+      return response.json() as Promise<T>
+    } catch (error) {
+      lastError = error
+    }
   }
-  return response.json() as Promise<T>
+
+  if (lastError instanceof Error && lastError.message.trim()) {
+    throw lastError
+  }
+  throw new Error(`Request failed for ${path}`)
 }
 
 function createRequestId() {
@@ -1431,11 +1448,7 @@ type CategoryApiRow = {
 }
 
 export async function getCategoryOptions(): Promise<CategoryOption[]> {
-  const requestUrls =
-    typeof window === "undefined"
-      ? [getApiUrl("/api/categories/"), "/api/categories/"]
-      : ["/api/categories/"]
-
+  const requestUrls = getApiUrlCandidates("/api/categories/")
   let response: Response | null = null
   let lastError: unknown = null
 

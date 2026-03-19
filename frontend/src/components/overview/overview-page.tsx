@@ -127,7 +127,9 @@ export function OverviewPage({
           description="Quick operational snapshot with filters and focused queues for action."
         />
         <div className="text-xs text-muted-foreground">
-          <p>Snapshot as of {formatDateTime(dataState.asOf)}</p>
+          <p suppressHydrationWarning>
+            Snapshot as of {formatDateTime(dataState.asOf)}
+          </p>
           <p className="mt-1">
             Showing {filteredCases.length} of {cases.length} cases
           </p>
@@ -144,7 +146,7 @@ export function OverviewPage({
               <AlertTriangle className="size-4" />
               Backend temporarily unavailable. Showing last successful snapshot.
             </p>
-            <p className="text-xs text-amber-800">
+            <p className="text-xs text-amber-800" suppressHydrationWarning>
               Snapshot as of {formatDateTime(dataState.asOf)}.
               {dataState.reason ? ` ${dataState.reason}` : ""}
             </p>
@@ -377,6 +379,7 @@ export function OverviewPage({
                         "mt-1 truncate text-[11px] text-muted-foreground",
                         entry.needsAttention && "text-amber-700",
                       )}
+                      suppressHydrationWarning
                     >
                       {entry.businessUnit} · {entry.countryLabel} · updated{" "}
                       {formatDateTime(entry.lastUpdated)}
@@ -428,9 +431,13 @@ export function OverviewPage({
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
                       {entry.title}
                     </p>
-                    <p className="mt-1 truncate text-[11px] text-muted-foreground">
-                      {entry.scenarioTags.slice(0, 3).join(", ") || "standard"} ·{" "}
-                      updated {formatDateTime(entry.lastUpdated)}
+                    <p
+                      className="mt-1 truncate text-[11px] text-muted-foreground"
+                      suppressHydrationWarning
+                    >
+                      {(entry.scenarioTags ?? []).slice(0, 3).join(", ") ||
+                        "standard"}{" "}
+                      · updated {formatDateTime(entry.lastUpdated)}
                     </p>
                   </div>
                   <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
