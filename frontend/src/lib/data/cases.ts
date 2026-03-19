@@ -279,6 +279,9 @@ const AUDIT_FEED_LIMIT = 500
 const STATUS_MAP: Record<string, CaseStatus> = {
   new: "received",
   submitted: "parsed",
+  in_review: "pending_review",
+  error: "pending_review",
+  invalid: "pending_review",
   pending_review: "pending_review",
   evaluated: "evaluated",
   recommended: "recommended",
@@ -1832,59 +1835,330 @@ type ExtractionResponse = {
   extraction_strength: "strong" | "partial" | "low"
 }
 
+type ParseFileResponse = {
+  complete: boolean
+  request: Record<string, unknown>
+}
+
+function extractionStrength(
+  missingRequiredCount: number,
+  confidentFieldsCount: number,
+): "strong" | "partial" | "low" {
+  if (missingRequiredCount === 0 && confidentFieldsCount >= 8) return "strong"
+  if (confidentFieldsCount >= 4) return "partial"
+  return "low"
+}
+
+function normalizeRequiredByDate(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) {
+    const trimmed = value.trim()
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+      return trimmed.slice(0, 10)
+    }
+    const parsed = new Date(trimmed)
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString().slice(0, 10)
+    }
+  }
+  return fallback
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter(Boolean)
+}
+
+function toNumberFromUnknown(value: unknown): number | null {
+  if (typeof value === "number" || typeof value === "string") {
+    return toNumber(value)
+  }
+  return null
+}
+
+function normalizeIntakeResponse(
+  response: ExtractionResponse,
+  fallbackDraft: CaseDraftPayload,
+  fallbackUsed: boolean,
+): ExtractionResult {
+  const mergedDraft: CaseDraftPayload = {
+    ...fallbackDraft,
+    ...(response.draft as Partial<CaseDraftPayload>),
+    scenarioTags: Array.isArray(response.draft.scenarioTags)
+      ? (response.draft.scenarioTags as ScenarioTag[])
+      : fallbackDraft.scenarioTags,
+    deliveryCountries: Array.isArray(response.draft.deliveryCountries)
+      ? (response.draft.deliveryCountries as string[])
+      : fallbackDraft.deliveryCountries,
+  }
+
+  const fieldStatus: ExtractionResult["fieldStatus"] = {}
+  for (const [key, value] of Object.entries(response.field_status)) {
+    fieldStatus[key as keyof CaseDraftPayload] = {
+      status:
+        value.status === "confident" ||
+        value.status === "inferred" ||
+        value.status === "missing" ||
+        value.status === "needs_review"
+          ? value.status
+          : "needs_review",
+      confidence: value.confidence,
+      reason: value.reason,
+    }
+  }
+
+  return {
+    draft: mergedDraft,
+    fieldStatus,
+    missingRequired:
+      response.missing_required.length > 0
+        ? (response.missing_required as Array<keyof CaseDraftPayload>)
+        : computeMissingRequiredFields(mergedDraft),
+    warnings: response.warnings,
+    extractionStrength: response.extraction_strength,
+    fallbackUsed,
+  }
+}
+
+async function extractViaIntakeApi(
+  payload: CaseIntakeInput,
+  fallbackDraft: CaseDraftPayload,
+  fallbackUsed: boolean,
+): Promise<ExtractionResult> {
+  const response = await fetchMutation<ExtractionResponse>("/api/intake/extract", {
+    method: "POST",
+    body: JSON.stringify({
+      source_type: payload.sourceType,
+      source_text: payload.sourceText,
+      note: payload.note ?? null,
+      request_channel: payload.requestChannel ?? null,
+      file_names: payload.files?.map((file) => file.name) ?? [],
+    }),
+  })
+
+  return normalizeIntakeResponse(response, fallbackDraft, fallbackUsed)
+}
+
+function mapParsedUploadDraft(
+  payload: CaseIntakeInput,
+  fallbackDraft: CaseDraftPayload,
+  parseResponse: ParseFileResponse,
+): ExtractionResult {
+  const parsed = parseResponse.request ?? {}
+  const categoryL1 =
+    typeof parsed.category_l1 === "string" && parsed.category_l1.trim()
+      ? parsed.category_l1.trim()
+      : null
+  const categoryL2 =
+    typeof parsed.category_l2 === "string" && parsed.category_l2.trim()
+      ? parsed.category_l2.trim()
+      : null
+
+  const mappedDraft = {
+    ...fallbackDraft,
+    title:
+      typeof parsed.title === "string" && parsed.title.trim()
+        ? parsed.title.trim()
+        : fallbackDraft.title,
+    requestText:
+      typeof parsed.request_text === "string"
+        ? parsed.request_text
+        : fallbackDraft.requestText,
+    requestChannel:
+      typeof parsed.request_channel === "string" &&
+      (parsed.request_channel === "portal" ||
+        parsed.request_channel === "email" ||
+        parsed.request_channel === "teams")
+        ? parsed.request_channel
+        : fallbackDraft.requestChannel,
+    requestLanguage:
+      typeof parsed.request_language === "string" && parsed.request_language.trim()
+        ? parsed.request_language.trim()
+        : fallbackDraft.requestLanguage,
+    businessUnit:
+      typeof parsed.business_unit === "string" && parsed.business_unit.trim()
+        ? parsed.business_unit.trim()
+        : fallbackDraft.businessUnit,
+    country:
+      typeof parsed.country === "string" && parsed.country.trim()
+        ? parsed.country.trim().toUpperCase()
+        : fallbackDraft.country,
+    site:
+      typeof parsed.site === "string" && parsed.site.trim()
+        ? parsed.site.trim()
+        : fallbackDraft.site,
+    requesterId:
+      typeof parsed.requester_id === "string" && parsed.requester_id.trim()
+        ? parsed.requester_id.trim()
+        : fallbackDraft.requesterId,
+    requesterRole:
+      typeof parsed.requester_role === "string" && parsed.requester_role.trim()
+        ? parsed.requester_role.trim()
+        : fallbackDraft.requesterRole,
+    submittedForId:
+      typeof parsed.submitted_for_id === "string" && parsed.submitted_for_id.trim()
+        ? parsed.submitted_for_id.trim()
+        : fallbackDraft.submittedForId,
+    categoryId: toNumberFromUnknown(parsed.category_id),
+    quantity: toNumberFromUnknown(parsed.quantity),
+    unitOfMeasure:
+      typeof parsed.unit_of_measure === "string" && parsed.unit_of_measure.trim()
+        ? parsed.unit_of_measure.trim()
+        : fallbackDraft.unitOfMeasure,
+    currency:
+      typeof parsed.currency === "string" && parsed.currency.trim()
+        ? parsed.currency.trim().toUpperCase()
+        : fallbackDraft.currency,
+    budgetAmount: toNumberFromUnknown(parsed.budget_amount),
+    requiredByDate: normalizeRequiredByDate(
+      parsed.required_by_date,
+      fallbackDraft.requiredByDate,
+    ),
+    deliveryCountries:
+      normalizeStringArray(parsed.delivery_countries).length > 0
+        ? normalizeStringArray(parsed.delivery_countries)
+        : fallbackDraft.deliveryCountries,
+    preferredSupplierMentioned:
+      typeof parsed.preferred_supplier_mentioned === "string" &&
+      parsed.preferred_supplier_mentioned.trim()
+        ? parsed.preferred_supplier_mentioned.trim()
+        : fallbackDraft.preferredSupplierMentioned,
+    incumbentSupplier:
+      typeof parsed.incumbent_supplier === "string" && parsed.incumbent_supplier.trim()
+        ? parsed.incumbent_supplier.trim()
+        : fallbackDraft.incumbentSupplier,
+    contractTypeRequested:
+      typeof parsed.contract_type_requested === "string" &&
+      parsed.contract_type_requested.trim()
+        ? parsed.contract_type_requested.trim()
+        : fallbackDraft.contractTypeRequested,
+    dataResidencyConstraint:
+      typeof parsed.data_residency_constraint === "boolean"
+        ? parsed.data_residency_constraint
+        : fallbackDraft.dataResidencyConstraint,
+    esgRequirement:
+      typeof parsed.esg_requirement === "boolean"
+        ? parsed.esg_requirement
+        : fallbackDraft.esgRequirement,
+    requesterInstruction: payload.note?.trim() || fallbackDraft.requesterInstruction,
+    scenarioTags:
+      normalizeStringArray(parsed.scenario_tags).length > 0
+        ? normalizeStringArray(parsed.scenario_tags)
+        : fallbackDraft.scenarioTags,
+    status:
+      typeof parsed.status === "string" && parsed.status.trim()
+        ? parsed.status.trim()
+        : fallbackDraft.status,
+    categoryL1,
+    categoryL2,
+  } as CaseDraftPayload & { categoryL1: string | null; categoryL2: string | null }
+
+  const parserKeyByField: Partial<Record<keyof CaseDraftPayload, string>> = {
+    title: "title",
+    requestText: "request_text",
+    requestChannel: "request_channel",
+    requestLanguage: "request_language",
+    businessUnit: "business_unit",
+    country: "country",
+    site: "site",
+    requesterId: "requester_id",
+    submittedForId: "submitted_for_id",
+    categoryId: "category_id",
+    unitOfMeasure: "unit_of_measure",
+    currency: "currency",
+    requiredByDate: "required_by_date",
+    contractTypeRequested: "contract_type_requested",
+  }
+
+  const fieldStatus: ExtractionResult["fieldStatus"] = {}
+  for (const field of INTAKE_REQUIRED_FIELDS) {
+    const parserKey = parserKeyByField[field]
+    const hasDirectParsedValue = parserKey ? isPresentValue(parsed[parserKey]) : false
+    const hasValue = isPresentValue(mappedDraft[field])
+    fieldStatus[field] = {
+      status: hasValue ? (hasDirectParsedValue ? "confident" : "inferred") : "missing",
+      confidence: hasValue ? (hasDirectParsedValue ? 0.9 : 0.65) : 0,
+      reason: hasValue
+        ? hasDirectParsedValue
+          ? "Directly extracted from uploaded file."
+          : "Derived using defaults or intake metadata."
+        : "Value not found in uploaded content.",
+    }
+  }
+
+  const missingRequired = computeMissingRequiredFields(mappedDraft)
+  const confidentFieldsCount = Object.values(fieldStatus).filter(
+    (entry) => entry.status === "confident" || entry.status === "inferred",
+  ).length
+
+  return {
+    draft: mappedDraft,
+    fieldStatus,
+    missingRequired,
+    warnings: [],
+    extractionStrength: extractionStrength(missingRequired.length, confidentFieldsCount),
+    fallbackUsed: false,
+  }
+}
+
 export async function extractCaseInput(
   payload: CaseIntakeInput,
 ): Promise<ExtractionResult> {
   const fallbackDraft = defaultDraftFromIntake(payload)
-  try {
-    const response = await fetchMutation<ExtractionResponse>("/api/intake/extract", {
-      method: "POST",
-      body: JSON.stringify({
-        source_type: payload.sourceType,
-        source_text: payload.sourceText,
-        note: payload.note ?? null,
-        request_channel: payload.requestChannel ?? null,
-        file_names: payload.fileNames ?? [],
-      }),
-    })
-
-    const mergedDraft: CaseDraftPayload = {
-      ...fallbackDraft,
-      ...(response.draft as Partial<CaseDraftPayload>),
-      scenarioTags: Array.isArray(response.draft.scenarioTags)
-        ? (response.draft.scenarioTags as ScenarioTag[])
-        : fallbackDraft.scenarioTags,
-      deliveryCountries: Array.isArray(response.draft.deliveryCountries)
-        ? (response.draft.deliveryCountries as string[])
-        : fallbackDraft.deliveryCountries,
+  if (payload.sourceType === "upload") {
+    if (!payload.files || payload.files.length === 0) {
+      throw new Error("Please select a file before analyzing upload input.")
     }
-
-    const fieldStatus: ExtractionResult["fieldStatus"] = {}
-    for (const [key, value] of Object.entries(response.field_status)) {
-      fieldStatus[key as keyof CaseDraftPayload] = {
-        status:
-          value.status === "confident" ||
-          value.status === "inferred" ||
-          value.status === "missing" ||
-          value.status === "needs_review"
-            ? value.status
-            : "needs_review",
-        confidence: value.confidence,
-        reason: value.reason,
+    try {
+      const parsed = (await chainIqApi.parse.parseFile(
+        payload.files[0],
+        payload.files[0].name,
+      )) as ParseFileResponse
+      return mapParsedUploadDraft(payload, fallbackDraft, parsed)
+    } catch {
+      try {
+        const heuristicResult = await extractViaIntakeApi(payload, fallbackDraft, true)
+        return {
+          ...heuristicResult,
+          warnings: [
+            {
+              code: "UPLOAD_PARSE_FALLBACK",
+              severity: "medium",
+              message:
+                "File parsing failed. Applied fallback extraction from available text and metadata.",
+            },
+            ...heuristicResult.warnings,
+          ],
+        }
+      } catch {
+        return {
+          draft: fallbackDraft,
+          fieldStatus: {
+            requestText: {
+              status: payload.sourceText.trim() ? "inferred" : "missing",
+              confidence: payload.sourceText.trim() ? 0.7 : 0,
+              reason: "Fallback extraction used because parser and intake API are unavailable.",
+            },
+          },
+          missingRequired: computeMissingRequiredFields(fallbackDraft),
+          warnings: [
+            {
+              code: "INTAKE_FALLBACK",
+              severity: "medium",
+              message:
+                "Extraction service is unavailable. Continue with manual completion.",
+            },
+          ],
+          extractionStrength: "low",
+          fallbackUsed: true,
+        }
       }
     }
+  }
 
-    return {
-      draft: mergedDraft,
-      fieldStatus,
-      missingRequired:
-        response.missing_required.length > 0
-          ? (response.missing_required as Array<keyof CaseDraftPayload>)
-          : computeMissingRequiredFields(mergedDraft),
-      warnings: response.warnings,
-      extractionStrength: response.extraction_strength,
-      fallbackUsed: false,
-    }
+  try {
+    return await extractViaIntakeApi(payload, fallbackDraft, false)
   } catch {
     return {
       draft: fallbackDraft,
