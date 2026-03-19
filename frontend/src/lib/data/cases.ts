@@ -237,6 +237,7 @@ type EvaluationDetailApi = {
   status: string
   started_at: string
   finished_at: string | null
+  favorite?: boolean
   supplier_shortlist?: Array<Record<string, unknown>>
   suppliers_excluded?: Array<{ supplier_id: string; supplier_name: string; reason: string }>
   supplier_breakdowns: SupplierBreakdownApi[]
@@ -642,6 +643,7 @@ function mapEvaluationRunDetail(raw: EvaluationDetailApi): EvaluationRunDetail {
     status: raw.status,
     startedAt: raw.started_at,
     finishedAt: raw.finished_at,
+    favorite: raw.favorite ?? false,
     supplierBreakdowns: raw.supplier_breakdowns.map((entry) => ({
       supplierId: entry.supplier_id,
       supplierName: entry.supplier_name,

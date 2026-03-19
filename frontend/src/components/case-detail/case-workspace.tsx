@@ -1,6 +1,6 @@
 "use client"
 
-import { AlertTriangle, ArrowLeft, ChevronRight, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { AlertTriangle, ArrowLeft, ChevronRight, Download, Loader2, Play, RefreshCw, ShieldCheck, ShoppingCart, TimerReset } from "lucide-react"
 import { toast } from "sonner"
 import Link from "next/link"
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
@@ -300,6 +300,70 @@ function CaseWorkspaceHeaderActions({
       </Button>
       </div>
     </div>
+  )
+}
+
+function FavoriteToggle({
+  runId,
+  favorite,
+  onToggled,
+  variant = "icon",
+}: {
+  runId: string
+  favorite: boolean
+  onToggled: () => void
+  variant?: "icon" | "button"
+}) {
+  const [loading, setLoading] = useState(false)
+  const handleClick = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (loading) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/rule-versions/evaluations/${runId}/favorite`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ favorite: !favorite }),
+      })
+      if (res.ok) onToggled()
+    } finally {
+      setLoading(false)
+    }
+  }
+  const title = favorite ? "Remove from favorites" : "Add to favorites"
+  const icon = (
+    <ShoppingCart
+      className={cn(variant === "button" ? "size-3.5" : "size-4", favorite && "fill-primary text-primary")}
+    />
+  )
+  if (variant === "button") {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={handleClick}
+        disabled={loading}
+        title={title}
+        aria-label={title}
+      >
+        {icon}
+        Buying Decision
+      </Button>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={loading}
+      className="shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+      title={title}
+      aria-label={title}
+    >
+      {icon}
+    </button>
   )
 }
 
@@ -793,6 +857,51 @@ export function CaseWorkspace({
               : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
           }
         />
+
+        <div className="flex flex-nowrap items-center gap-2">
+          {showReturnToLatest ? (
+            <Link
+              href={`/cases/${data.id}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+            >
+              <ArrowLeft className="size-3.5" />
+              Return to latest evaluation
+            </Link>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRerun}
+            disabled={isRerunning}
+          >
+            {isRerunning ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            Re-run
+          </Button>
+          <Button variant="outline" size="sm">
+            <Download className="size-3.5" />
+            Export
+          </Button>
+          <Button variant="outline" size="sm">
+            <ShieldCheck className="size-3.5" />
+            Audit
+          </Button>
+          {selectedRun ? (
+            <FavoriteToggle
+              runId={selectedRun.runId}
+              favorite={selectedRun.favorite}
+              onToggled={() => router.refresh()}
+              variant="button"
+            />
+          ) : null}
+          <Button size="sm">
+            <TimerReset className="size-3.5" />
+            Escalate
+          </Button>
+        </div>
       </div>
 
       {requestLive && (requestLive.phase === "queued" || requestLive.phase === "running") ? (
@@ -826,7 +935,7 @@ export function CaseWorkspace({
                 tone="info"
               />
               <StatusBadge
-                label={`${data.recommendation.quotesRequired} quotes`}
+                label={`${data.recommendation.quotesRequired} Quotes`}
                 tone="neutral"
               />
             </div>
@@ -1667,41 +1776,66 @@ export function CaseWorkspace({
                 <CardTitle>Decision timeline</CardTitle>
               </CardHeader>
               <CardContent className="space-y-5">
-                {data.auditTrail.timeline.map((event, index) => (
-                  <div key={event.id} className="relative pl-7">
-                    {index !== data.auditTrail.timeline.length - 1 ? (
-                      <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
-                    ) : null}
-                    <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {formatDateTime(event.timestamp)}
-                    </p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={titleCase(event.kind)} tone="info" />
-                      {event.level ? (
-                        <StatusBadge
-                          label={titleCase(event.level)}
-                          tone={
-                            event.level === "error"
-                              ? "destructive"
-                              : event.level === "warn"
-                                ? "warning"
-                                : "neutral"
-                          }
-                        />
+                {data.auditTrail.timeline.map((event, index) => {
+                  const isRunEvent = event.kind === "evaluation_run" && event.runId
+                  const isFavorite = Boolean(isRunEvent && event.favorite)
+                  const content = (
+                    <>
+                      {index !== data.auditTrail.timeline.length - 1 ? (
+                        <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
                       ) : null}
-                      {event.stepName ? (
-                        <StatusBadge label={event.stepName} tone="neutral" />
-                      ) : null}
+                      <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
+                      <p className="text-xs font-medium text-muted-foreground">
+                        {formatDateTime(event.timestamp)}
+                      </p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <StatusBadge label={titleCase(event.kind)} tone="info" />
+                        {event.level ? (
+                          <StatusBadge
+                            label={titleCase(event.level)}
+                            tone={
+                              event.level === "error"
+                                ? "destructive"
+                                : event.level === "warn"
+                                  ? "warning"
+                                  : "neutral"
+                            }
+                          />
+                        ) : null}
+                        {event.stepName ? (
+                          <StatusBadge label={event.stepName} tone="neutral" />
+                        ) : null}
+                      </div>
+                      <h3 className="mt-1 text-sm font-semibold">
+                        {event.title}
+                      </h3>
+                      <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
+                        {event.description}
+                      </p>
+                    </>
+                  )
+                  return (
+                    <div key={event.id} className="relative pl-7">
+                      {isRunEvent ? (
+                        <div className="flex items-start justify-between gap-2">
+                          <Link
+                            href={`/cases/eval/${event.runId}`}
+                            className="min-w-0 flex-1 block"
+                          >
+                            {content}
+                          </Link>
+                          <FavoriteToggle
+                            runId={event.runId!}
+                            favorite={isFavorite}
+                            onToggled={() => router.refresh()}
+                          />
+                        </div>
+                      ) : (
+                        content
+                      )}
                     </div>
-                    <h3 className="mt-1 text-sm font-semibold">
-                      {event.title}
-                    </h3>
-                    <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
-                      {event.description}
-                    </p>
-                  </div>
-                ))}
+                  )
+                })}
               </CardContent>
             </Card>
 
