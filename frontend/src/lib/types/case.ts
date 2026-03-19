@@ -151,7 +151,6 @@ export interface EvaluationRunDetail {
   status: string
   startedAt: string
   finishedAt: string | null
-  favorite: boolean
   supplierBreakdowns: SupplierRuleBreakdown[]
   supplierShortlist?: SupplierRow[]
   excludedSuppliersFromRun?: ExcludedSupplier[]
@@ -199,14 +198,13 @@ export interface AuditTimelineEvent {
   timestamp: string
   title: string
   description: string
-  kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit" | "evaluation_run"
+  kind: "source" | "interpretation" | "policy" | "supplier" | "escalation" | "audit"
   level?: string
   category?: string
   stepName?: string | null
   source?: string
   details?: Record<string, unknown> | null
   runId?: string | null
-  favorite?: boolean
 }
 
 export interface AuditFeedEvent extends AuditTimelineEvent {

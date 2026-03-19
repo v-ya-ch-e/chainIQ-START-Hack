@@ -60,7 +60,6 @@ class EvaluationRun(Base):
     output_snapshot = Column(JSON, nullable=True)
     parent_run_id = Column(String(36), nullable=True)
     trigger_reason = Column(String(100), nullable=True)
-    favorite = Column(Boolean, nullable=False, default=False)
 
     hard_rule_checks = relationship(
         "HardRuleCheck",
