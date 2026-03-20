@@ -699,11 +699,11 @@ export function CaseWorkspace({
                   <p className="flex flex-wrap items-baseline gap-2.5">
                     <span className={cn(
                       "text-sm font-semibold",
-                      isBestMatchPerfect ? "text-emerald-600" : "text-rose-600",
+                      isBestMatchPerfect ? "text-emerald-600" : "",
                     )}>
                       {isBestMatchPerfect
                         ? "Match found:"
-                        : "No match found— Her's the best match:"}
+                        : "No match found — here's the best match:"}
                     </span>
                     <span className="text-xl font-bold tracking-tight">
                       {bestMatch.supplier.supplierName}
@@ -711,41 +711,45 @@ export function CaseWorkspace({
                   </p>
                 </div>
 
-                <div className="grid lg:grid-cols-[35fr_45fr_20fr]">
-                  {/* Left 35% — rule tiles */}
-                  <div className="flex flex-col justify-center space-y-2 px-6 py-2.5">
-                    <RuleBox
-                      label="Price"
-                      value={formatCurrency(bestMatch.supplier.totalPrice, data.recommendation.currency)}
-                      limit={data.rawRequest.budgetAmount != null
-                        ? `Budget: ${formatCurrency(data.rawRequest.budgetAmount, data.rawRequest.currency)}`
-                        : "No budget specified"}
-                      status={
-                        data.rawRequest.budgetAmount != null
-                          ? bestMatch.supplier.totalPrice <= data.rawRequest.budgetAmount
+                <div className="grid lg:grid-cols-[30fr_55fr_15fr]">
+                  {/* Left 30% — rule tiles */}
+                  <div className="flex flex-col justify-center px-6 py-2.5">
+                    <div className="space-y-2">
+                      <RuleBox
+                        label="Price"
+                        value={formatCurrency(bestMatch.supplier.totalPrice, data.recommendation.currency)}
+                        limit={data.rawRequest.budgetAmount != null
+                          ? `Budget: ${formatCurrency(data.rawRequest.budgetAmount, data.rawRequest.currency)}`
+                          : "No budget specified"}
+                        status={
+                          data.rawRequest.budgetAmount != null
+                            ? bestMatch.supplier.totalPrice <= data.rawRequest.budgetAmount
+                              ? "met"
+                              : "not-met"
+                            : "partial"
+                        }
+                      />
+                      <RuleBox
+                        label="Lead Time"
+                        value={`${bestMatch.supplier.standardLeadTimeDays}d std · ${bestMatch.supplier.expeditedLeadTimeDays}d exp`}
+                        limit={`Required by ${formatDate(data.rawRequest.requiredByDate)}`}
+                        status={
+                          bestMatch.supplier.standardLeadTimeDays <= 30
                             ? "met"
-                            : "not-met"
-                          : "partial"
-                      }
-                    />
-                    <RuleBox
-                      label="Lead Time"
-                      value={`${bestMatch.supplier.standardLeadTimeDays}d std · ${bestMatch.supplier.expeditedLeadTimeDays}d exp`}
-                      limit={`Required by ${formatDate(data.rawRequest.requiredByDate)}`}
-                      status={
-                        bestMatch.supplier.standardLeadTimeDays <= 30
-                          ? "met"
-                          : bestMatch.supplier.expeditedLeadTimeDays <= 30
-                            ? "partial"
-                            : "not-met"
-                      }
-                    />
-                    <ScoreLine label="ESG" value={bestMatch.supplier.esgScore} met={bestMatch.supplier.esgScore >= 50} />
-                    <ScoreLine label="Quality" value={bestMatch.supplier.qualityScore} met={bestMatch.supplier.qualityScore >= 70} />
-                    <ScoreLine label="Risk" value={bestMatch.supplier.riskScore} met={bestMatch.supplier.riskScore <= 50} />
+                            : bestMatch.supplier.expeditedLeadTimeDays <= 30
+                              ? "partial"
+                              : "not-met"
+                        }
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-sm text-muted-foreground px-3">
+                      <span>ESG <span className="font-bold text-foreground">{bestMatch.supplier.esgScore}</span></span>
+                      <span>Quality <span className="font-bold text-foreground">{bestMatch.supplier.qualityScore}</span></span>
+                      <span>Risk <span className="font-bold text-foreground">{bestMatch.supplier.riskScore}</span></span>
+                    </div>
                   </div>
 
-                  {/* Middle 45% — rationale */}
+                  {/* Middle 55% — rationale */}
                   <div className="flex flex-col border-t border-border/50 px-6 py-2.5 lg:border-t-0 lg:border-l">
                     <p className="shrink-0 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                       Rationale
@@ -755,8 +759,8 @@ export function CaseWorkspace({
                     </p>
                   </div>
 
-                  {/* Right 20% — stats + action */}
-                  <div className="flex flex-col justify-between border-t border-border/50 px-6 py-2.5 lg:border-t-0 lg:border-l">
+                  {/* Right 15% — stats + action */}
+                  <div className="flex flex-col justify-between border-t border-border/50 px-5 py-2.5 lg:border-t-0 lg:border-l">
                     <div className="space-y-2.5">
                       <div className="rounded-lg bg-muted/40 px-4 py-3">
                         <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -807,7 +811,7 @@ export function CaseWorkspace({
         <section className="animate-fade-in-up min-w-0 space-y-4 pt-6" style={{ animationDelay: "120ms" }}>
           <Card className="h-fit w-full max-w-full overflow-hidden">
             <CardHeader>
-              <CardTitle>Supplier comparison</CardTitle>
+              <CardTitle>Other Suppliers</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="overflow-x-auto rounded-lg border">
@@ -855,7 +859,7 @@ export function CaseWorkspace({
                       return (
                         <TableRow
                           key={supplier.supplierId}
-                          className="cursor-pointer"
+                          className="cursor-pointer [&>td]:align-middle"
                           onClick={() =>
                             setSelectedSupplierDetail({ supplier, breakdown })
                           }
@@ -874,7 +878,7 @@ export function CaseWorkspace({
                               #{supplier.rank}
                             </p>
                           </TableCell>
-                          <TableCell className="align-top">
+                          <TableCell className="align-middle">
                             <div className="space-y-1">
                               <p className="font-medium">
                                 {supplier.supplierName}
@@ -2129,28 +2133,6 @@ function RuleBox({
         <p className="mt-1 text-sm font-semibold">{value}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">{limit}</p>
       </div>
-    </div>
-  )
-}
-
-function ScoreLine({
-  label,
-  value,
-  met,
-}: {
-  label: string
-  value: number
-  met: boolean
-}) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={cn(
-        "text-xs font-bold tabular-nums",
-        met ? "text-emerald-600" : "text-rose-600",
-      )}>
-        {value}
-      </span>
     </div>
   )
 }
