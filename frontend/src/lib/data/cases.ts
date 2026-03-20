@@ -1300,7 +1300,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     throw error
   }
 
-  const [overview, awards, escalationRows, auditLogs, auditSummary, evaluationRunsRaw, pipelineResult] = await Promise.all([
+  const [overview, awards, escalationRows, auditLogs, auditSummary, evaluationRunsRaw, pipelineResult, allPipelineResults] = await Promise.all([
     chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
     chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
     fetchEscalationRowsByRequest(caseId),
@@ -1308,6 +1308,7 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     fetchCaseAuditSummary(caseId),
     fetchEvaluationRunsByRequest(caseId),
     chainIqApi.pipelineResults.latest(caseId).catch((): PipelineResultOut | null => null),
+    chainIqApi.pipelineResults.byRequest(caseId).catch((): PipelineResultOut[] => []),
   ])
 
   const pipelineOutput = pipelineResult?.output as Record<string, unknown> | null | undefined
@@ -1550,8 +1551,9 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
       stepName: entry.step_name,
       source: entry.source,
       details: asRecord(entry.details),
+      runId: entry.run_id ?? null,
     }))
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
 
   const scenarioTags = detail.scenario_tags
     .map((entry) =>
@@ -1559,7 +1561,33 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     )
     .filter(Boolean)
 
-  const evaluationRuns = evaluationRunsRaw.map(mapEvaluationRunDetail)
+  const formalEvaluationRuns = evaluationRunsRaw.map(mapEvaluationRunDetail)
+  // #region agent log
+  console.log(`[DEBUG-2c0c6f] getCaseDetail: formalEvaluationRuns=${formalEvaluationRuns.length}, allPipelineResults=${allPipelineResults.length}, auditLogs.total=${auditLogs.total}, auditLogRunIds=${[...new Set(auditLogs.items.map(e => e.run_id).filter(Boolean))].join(",")}`)
+  // #endregion
+
+  const formalRunIds = new Set(formalEvaluationRuns.map((r) => r.runId))
+  const syntheticRuns: EvaluationRunDetail[] = allPipelineResults
+    .filter((pr) => !formalRunIds.has(pr.run_id))
+    .map((pr) => {
+      const prOutput = pr.output as Record<string, unknown> | null | undefined
+      const prShortlist = Array.isArray(prOutput?.supplier_shortlist)
+        ? (prOutput.supplier_shortlist as Record<string, unknown>[]).map((entry, i) => mapSupplierShortlistEntry(entry, i))
+        : []
+      return {
+        runId: pr.run_id,
+        requestId: pr.request_id,
+        status: pr.status === "completed" || pr.status === "success" ? "completed" : pr.status,
+        startedAt: pr.processed_at,
+        finishedAt: pr.processed_at,
+        supplierBreakdowns: [],
+        supplierShortlist: prShortlist,
+        excludedSuppliersFromRun: [],
+      }
+    })
+
+  const evaluationRuns = [...formalEvaluationRuns, ...syntheticRuns]
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
 
   return {
     id: caseId,

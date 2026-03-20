@@ -7,10 +7,6 @@ if (!apiBase) {
 const logicalApiBase =
   process.env.LOGICAL_BACKEND_INTERNAL_URL || apiBase.replace(":8000", ":8080");
 
-// #region agent log
-console.log(`[DEBUG-105a7f] next.config.ts loaded: apiBase=${apiBase}, logicalApiBase=${logicalApiBase}, LOGICAL_BACKEND_INTERNAL_URL=${process.env.LOGICAL_BACKEND_INTERNAL_URL ?? "(unset)"}`);
-// #endregion
-
 const nextConfig: NextConfig = {
   transpilePackages: ["@assistant-ui/react", "@assistant-ui/react-markdown", "@assistant-ui/react-ai-sdk"],
   // Keep trailing-slash API paths untouched so rewrites don't trigger

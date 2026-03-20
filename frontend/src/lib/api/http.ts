@@ -154,14 +154,6 @@ export async function requestJson<T>(
   let attempt = 0
   for (;;) {
     try {
-      // #region agent log
-      if (normalizedPath.includes("/pipeline/runs")) {
-        const logUrl = isServerSide() ? null : "http://127.0.0.1:7522/ingest/b358b993-5ce8-4fce-81d0-995c53b4cac9";
-        const logData = {sessionId:'105a7f',location:'http.ts:requestJson',message:'pipeline/runs fetch attempt',data:{url,kind,path:normalizedPath,attempt,isServer:isServerSide()},timestamp:Date.now()};
-        if (!isServerSide() && logUrl) { fetch(logUrl,{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'105a7f'},body:JSON.stringify(logData)}).catch(()=>{}); }
-        console.log(`[DEBUG-105a7f] requestJson: url=${url}, kind=${kind}, path=${normalizedPath}, attempt=${attempt}, isServer=${isServerSide()}`);
-      }
-      // #endregion
       const response = await fetch(url, {
         cache: "no-store",
         ...init,
@@ -170,11 +162,6 @@ export async function requestJson<T>(
       const payload = await parseResponseBody(response)
 
       if (!response.ok) {
-        // #region agent log
-        if (normalizedPath.includes("/pipeline/runs")) {
-          console.log(`[DEBUG-105a7f] requestJson ERROR: status=${response.status}, url=${url}, payload=${JSON.stringify(payload)}`);
-        }
-        // #endregion
         throw new ApiError(
           normalizedPath,
           response.status,

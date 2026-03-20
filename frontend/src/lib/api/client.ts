@@ -583,6 +583,12 @@ export const chainIqApi = {
         `/api/pipeline-results/latest/${requestId}`,
       )
     },
+    byRequest(requestId: string) {
+      return requestJson<PipelineResultOut[]>(
+        "org",
+        `/api/pipeline-results/by-request/${requestId}`,
+      )
+    },
   },
 
   dynamicRules: {

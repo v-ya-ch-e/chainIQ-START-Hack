@@ -1612,41 +1612,74 @@ export function CaseWorkspace({
                 <CardTitle>Decision timeline</CardTitle>
               </CardHeader>
               <CardContent className="space-y-5">
-                {data.auditTrail.timeline.map((event, index) => (
-                  <div key={event.id} className="relative pl-7">
-                    {index !== data.auditTrail.timeline.length - 1 ? (
-                      <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
-                    ) : null}
-                    <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
-                    <p className="text-xs font-medium text-muted-foreground">
-                      {formatDateTime(event.timestamp)}
-                    </p>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={event.kind} tone="info" />
-                      {event.level ? (
-                        <StatusBadge
-                          label={event.level}
-                          tone={
-                            event.level === "error"
-                              ? "destructive"
-                              : event.level === "warn"
-                                ? "warning"
-                                : "neutral"
-                          }
-                        />
+                {(() => {
+                  const groups: { runId: string | null; events: typeof data.auditTrail.timeline }[] = []
+                  for (const event of data.auditTrail.timeline) {
+                    const rid = event.runId ?? null
+                    const last = groups[groups.length - 1]
+                    if (last && last.runId === rid) {
+                      last.events.push(event)
+                    } else {
+                      groups.push({ runId: rid, events: [event] })
+                    }
+                  }
+                  const allRunIds = [...new Set(data.auditTrail.timeline.map((e) => e.runId).filter(Boolean))]
+                  const runOrdinalMap = new Map(
+                    [...allRunIds]
+                      .sort((a, b) => {
+                        const aTime = data.auditTrail.timeline.find((e) => e.runId === a)?.timestamp ?? ""
+                        const bTime = data.auditTrail.timeline.find((e) => e.runId === b)?.timestamp ?? ""
+                        return aTime.localeCompare(bTime)
+                      })
+                      .map((id, i) => [id, i + 1]),
+                  )
+                  return groups.map((group) => (
+                    <div key={group.runId ?? "ungrouped"} className="space-y-5">
+                      {group.runId ? (
+                        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          <div className="h-px flex-1 bg-border" />
+                          Run {runOrdinalMap.get(group.runId) ?? "?"} — {group.runId.slice(0, 8)}
+                          <div className="h-px flex-1 bg-border" />
+                        </div>
                       ) : null}
-                      {event.stepName ? (
-                        <StatusBadge label={event.stepName} tone="neutral" />
-                      ) : null}
+                      {group.events.map((event, index) => (
+                        <div key={event.id} className="relative pl-7">
+                          {index !== group.events.length - 1 ? (
+                            <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
+                          ) : null}
+                          <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {formatDateTime(event.timestamp)}
+                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <StatusBadge label={event.kind} tone="info" />
+                            {event.level ? (
+                              <StatusBadge
+                                label={event.level}
+                                tone={
+                                  event.level === "error"
+                                    ? "destructive"
+                                    : event.level === "warn"
+                                      ? "warning"
+                                      : "neutral"
+                                }
+                              />
+                            ) : null}
+                            {event.stepName ? (
+                              <StatusBadge label={event.stepName} tone="neutral" />
+                            ) : null}
+                          </div>
+                          <h3 className="mt-1 text-sm font-semibold">
+                            {event.title}
+                          </h3>
+                          <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
+                            {event.description}
+                          </p>
+                        </div>
+                      ))}
                     </div>
-                    <h3 className="mt-1 text-sm font-semibold">
-                      {event.title}
-                    </h3>
-                    <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
-                      {event.description}
-                    </p>
-                  </div>
-                ))}
+                  ))
+                })()}
               </CardContent>
             </Card>
 
@@ -1658,8 +1691,12 @@ export function CaseWorkspace({
                   </CardHeader>
                   <CardContent className="space-y-2">
                     {[...data.evaluationRuns]
-                      .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
-                      .map((run, index) => (
+                      .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+                      .map((run) => {
+                        const chronologicalIndex = [...data.evaluationRuns]
+                          .sort((a2, b2) => new Date(a2.startedAt).getTime() - new Date(b2.startedAt).getTime())
+                          .findIndex((r) => r.runId === run.runId)
+                        return (
                       <button
                         key={run.runId}
                         type="button"
@@ -1674,7 +1711,7 @@ export function CaseWorkspace({
                       >
                         <div>
                           <p className="text-sm font-medium">
-                            Evaluation {index + 1}
+                            Evaluation {chronologicalIndex + 1}
                           </p>
                           <p className="text-xs text-muted-foreground">
                             {formatDateTime(run.startedAt)}
@@ -1691,7 +1728,8 @@ export function CaseWorkspace({
                           }
                         />
                       </button>
-                    ))}
+                        )
+                      })}
                   </CardContent>
                 </Card>
               ) : null}
