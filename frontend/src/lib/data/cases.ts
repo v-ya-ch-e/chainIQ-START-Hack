@@ -1857,6 +1857,42 @@ function getApiUrlCandidates(path: string): string[] {
   return [normalized]
 }
 
+async function parseMutationErrorDetail(response: Response): Promise<string | null> {
+  const contentType = response.headers.get("content-type") ?? ""
+
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = (await response.json()) as unknown
+      if (payload && typeof payload === "object") {
+        const record = payload as Record<string, unknown>
+        if (typeof record.detail === "string" && record.detail.trim()) {
+          return record.detail
+        }
+        if (typeof record.error === "string" && record.error.trim()) {
+          return record.error
+        }
+        if (typeof record.message === "string" && record.message.trim()) {
+          return record.message
+        }
+      }
+    } catch {
+      // Ignore JSON parse errors and continue with text fallback.
+    }
+  }
+
+  try {
+    const text = await response.text()
+    const trimmed = text.trim()
+    if (trimmed) {
+      return trimmed.slice(0, 400)
+    }
+  } catch {
+    // Ignore text read failures.
+  }
+
+  return null
+}
+
 async function fetchMutation<T>(path: string, init: RequestInit): Promise<T> {
   const candidates = getApiUrlCandidates(path)
   let lastError: unknown = null
@@ -1871,12 +1907,20 @@ async function fetchMutation<T>(path: string, init: RequestInit): Promise<T> {
         },
       })
       if (!response.ok) {
-        lastError = new Error(`Request failed (${response.status}) for ${path}`)
+        const detail = await parseMutationErrorDetail(response)
+        lastError = new Error(
+          detail
+            ? `Request failed (${response.status}) for ${path}: ${detail}`
+            : `Request failed (${response.status}) for ${path}`,
+        )
         continue
       }
       return response.json() as Promise<T>
     } catch (error) {
-      lastError = error
+      lastError =
+        error instanceof Error
+          ? error
+          : new Error(`Request failed for ${path}: ${String(error)}`)
     }
   }
 
@@ -2489,7 +2533,7 @@ export async function createCase(
     createdAt: payload.createdAt ?? new Date().toISOString(),
   }
 
-  const response = await fetchMutation<RequestMutationOut>("/api/requests/", {
+  const response = await fetchMutation<RequestMutationOut>("/api/requests", {
     method: "POST",
     body: JSON.stringify(toRequestMutationPayload(draft)),
   })

@@ -352,8 +352,10 @@ export function CaseWorkspace({
     runAction,
   } = usePipelineActionRunner()
   const [message, setMessage] = useState<string | null>(null)
-  const { startPolling, patchRequestState } =
+  const [warningMessage, setWarningMessage] = useState<string | null>(null)
+  const { startPolling, stopPolling, patchRequestState } =
     useRequestStatusPoller()
+  const intakeAutoTriggerAttemptedRef = useRef(false)
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
   const activeEscalation =
@@ -423,10 +425,83 @@ export function CaseWorkspace({
   }, [activeTab, data.id])
 
   useEffect(() => {
-    if (createdFromIntake) {
-      setMessage(`Case ${data.id} created successfully.`)
+    if (!createdFromIntake || intakeAutoTriggerAttemptedRef.current) return
+    intakeAutoTriggerAttemptedRef.current = true
+
+    const stripCreatedFlagFromUrl = () => {
+      if (typeof window === "undefined") return
+      const current = new URL(window.location.href)
+      if (current.searchParams.get("created") !== "1") return
+      current.searchParams.delete("created")
+      const nextSearch = current.searchParams.toString()
+      const nextUrl = `${current.pathname}${nextSearch ? `?${nextSearch}` : ""}${current.hash}`
+      window.history.replaceState(window.history.state, "", nextUrl)
     }
-  }, [createdFromIntake, data.id, setMessage])
+
+    setWarningMessage(null)
+    if (data.evaluationRuns.length > 0) {
+      setMessage(`Case ${data.id} created successfully.`)
+      stripCreatedFlagFromUrl()
+      return
+    }
+
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+
+    setMessage(`Case ${data.id} created. Starting pipeline...`)
+    void startPolling(data.id, {
+      initialPhase: "queued",
+      intervalMs: 2000,
+      timeoutMs: 45_000,
+    })
+      .then(() => router.refresh())
+      .catch(() => {
+        // Polling failure is reflected in live state; no extra handling needed here.
+      })
+
+    void chainIqApi.pipeline
+      .process({
+        request_id: data.id,
+      })
+      .then(() => {
+        setMessage(`Case ${data.id} created successfully. Pipeline started.`)
+      })
+      .catch((triggerError) => {
+        stopPolling(data.id)
+        const triggerMessage =
+          triggerError instanceof Error && triggerError.message.trim()
+            ? triggerError.message
+            : "Pipeline trigger failed."
+        setMessage(`Case ${data.id} created successfully.`)
+        const finishedAt = new Date().toISOString()
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: finishedAt,
+          finishedAt,
+          error: triggerMessage,
+        })
+        setWarningMessage(
+          `Case ${data.id} was created, but automatic pipeline start failed: ${triggerMessage}. Use "Re-run pipeline" to start it manually.`,
+        )
+      })
+      .finally(() => {
+        stripCreatedFlagFromUrl()
+      })
+  }, [
+    createdFromIntake,
+    data.id,
+    data.evaluationRuns.length,
+    patchRequestState,
+    router,
+    startPolling,
+    stopPolling,
+  ])
 
   const { setActions, setTitleExtra, setBreadcrumbOverride } = useHeaderActions()
 
@@ -689,6 +764,11 @@ export function CaseWorkspace({
       {message ? (
         <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
           <CardContent className="py-3 text-sm">{message}</CardContent>
+        </Card>
+      ) : null}
+      {warningMessage ? (
+        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
+          <CardContent className="py-3 text-sm">{warningMessage}</CardContent>
         </Card>
       ) : null}
       {fallback ? (
