@@ -1,0 +1,2236 @@
+"use client"
+
+import { AlertTriangle, ArrowRight, Download, FileDown, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useRouter } from "next/navigation"
+
+import { useHeaderActions } from "@/components/app-shell/header-actions-context"
+import { JsonViewer } from "@/components/shared/json-viewer"
+import { StatusBadge } from "@/components/shared/status-badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+  scoreTone,
+  severityTone,
+} from "@/lib/data/formatters"
+import type {
+  CaseDetail,
+  EvaluationRunDetail,
+  RuleCheckResult,
+  SupplierRuleBreakdown,
+  SupplierRuleCheck,
+  SupplierRow,
+} from "@/lib/types/case"
+import { cn } from "@/lib/utils"
+import { chainIqApi } from "@/lib/api/client"
+import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
+import {
+  useRequestStatusPoller,
+} from "@/lib/pipeline/request-status-poller"
+
+type CaseTab = "other-info" | "escalations" | "audit"
+
+type CaseTabInput = CaseTab | "overview" | "suppliers"
+
+interface CaseWorkspaceProps {
+  data: CaseDetail
+  initialTab?: CaseTabInput
+  createdFromIntake?: boolean
+  initialRunId?: string
+  showReturnToLatest?: boolean
+}
+
+
+function toRuleCheckResult(value: string | null | undefined): RuleCheckResult {
+  if (value === "passed" || value === "failed" || value === "warned" || value === "skipped") {
+    return value
+  }
+  return "skipped"
+}
+
+function getSupplierBreakdown(
+  supplierId: string,
+  runs: EvaluationRunDetail[],
+  preferredRun: EvaluationRunDetail | null,
+): SupplierRuleBreakdown | null {
+  if (preferredRun) {
+    const preferredMatch = preferredRun.supplierBreakdowns.find(
+      (entry) => entry.supplierId === supplierId,
+    )
+    if (preferredMatch) return preferredMatch
+  }
+
+  const fallbackRuns = runs
+    .filter((run) => (preferredRun ? run.runId !== preferredRun.runId : true))
+    .slice()
+    .sort(
+      (a, b) =>
+        new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    )
+
+  for (const run of fallbackRuns) {
+    const match = run.supplierBreakdowns.find(
+      (entry) => entry.supplierId === supplierId,
+    )
+    if (match) return match
+  }
+
+  return null
+}
+
+function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
+  if (!breakdown || breakdown.excluded) return false
+  const failedHard = breakdown.hardRuleChecks.some((check) => check.result === "failed")
+  const failedPolicy = breakdown.policyChecks.some((check) => check.result === "failed")
+  return !failedHard && !failedPolicy
+}
+
+function getRuleCounts(breakdown: SupplierRuleBreakdown | null): {
+  hardPassed: number
+  hardTotal: number
+  policyPassed: number
+  policyTotal: number
+} {
+  const hard = breakdown?.hardRuleChecks ?? []
+  const policy = breakdown?.policyChecks ?? []
+  return {
+    hardPassed: hard.filter((c) => c.result === "passed").length,
+    hardTotal: hard.length,
+    policyPassed: policy.filter((c) => c.result === "passed").length,
+    policyTotal: policy.length,
+  }
+}
+
+function hasNoFailedChecks(checks: SupplierRuleCheck[] | undefined): boolean {
+  if (!checks || checks.length === 0) return false
+  return !checks.some((c) => c.result === "failed")
+}
+
+function toneForCheckResult(result: SupplierRuleCheck["result"]) {
+  if (result === "passed") return "success"
+  if (result === "warned") return "warning"
+  if (result === "skipped") return "neutral"
+  return "destructive"
+}
+
+function getEvalConfigCondition(
+  snap: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!snap || typeof snap !== "object") return null
+  const ec = snap.eval_config
+  if (!ec || typeof ec !== "object" || ec === null) return null
+  const condition = (ec as { condition?: unknown }).condition
+  return condition !== undefined ? condition : null
+}
+
+/** Prefer `eval_config.condition` from dynamic (then static) snapshot, per rule engine shape. */
+function formatConditionHoverContent(check: SupplierRuleCheck): string {
+  const dyn = check.dynamicSnapshot
+  const ver = check.versionSnapshot
+  const cond = getEvalConfigCondition(dyn) ?? getEvalConfigCondition(ver)
+  if (cond != null) {
+    return JSON.stringify(cond, null, 2)
+  }
+  if (dyn && typeof dyn === "object") {
+    const ec = (dyn as { eval_config?: unknown }).eval_config
+    if (ec != null) return JSON.stringify(ec, null, 2)
+    return JSON.stringify(dyn, null, 2)
+  }
+  if (ver && typeof ver === "object") {
+    return JSON.stringify(ver, null, 2)
+  }
+  return "No snapshot available."
+}
+
+function coerceDynamicRuleVersionFromRow(c: Record<string, unknown>): number | null {
+  const v = c.dynamic_rule_version ?? c.dynamicRuleVersion
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return Number(v)
+  }
+  return null
+}
+
+function coerceJsonObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
+let ruleDefinitionNamesCache: Promise<Record<string, string>> | null = null
+
+function loadRuleDefinitionNames(): Promise<Record<string, string>> {
+  if (!ruleDefinitionNamesCache) {
+    ruleDefinitionNamesCache = fetch("/api/rule-versions/definitions")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((defs: Array<{ rule_id?: string; rule_name?: string }>) => {
+        const m: Record<string, string> = {}
+        for (const d of Array.isArray(defs) ? defs : []) {
+          const id = d?.rule_id
+          const name = d?.rule_name
+          if (id && typeof name === "string" && name.trim()) {
+            m[id] = name.trim()
+          }
+        }
+        return m
+      })
+      .catch(() => ({}))
+  }
+  return ruleDefinitionNamesCache
+}
+
+function ruleLabelForCheck(
+  check: SupplierRuleCheck,
+  nameByRuleId: Record<string, string>,
+): string {
+  const fromCheck = check.ruleName?.trim()
+  if (fromCheck) return fromCheck
+  const fromDefs = nameByRuleId[check.ruleId]?.trim()
+  if (fromDefs) return fromDefs
+  return check.ruleId
+}
+
+function pickRuleNameFromApiRow(c: Record<string, unknown>): string | null {
+  const a = c.rule_name
+  const b = c.ruleName
+  if (typeof a === "string" && a.trim()) return a.trim()
+  if (typeof b === "string" && b.trim()) return b.trim()
+  return null
+}
+
+function EnrichedRuleChecksTable({ checks }: { checks: SupplierRuleCheck[] }) {
+  const [nameByRuleId, setNameByRuleId] = useState<Record<string, string>>({})
+  const checkKey = checks.map((c) => c.checkId).join("|")
+
+  useEffect(() => {
+    if (checks.length === 0) return
+    let cancelled = false
+    void loadRuleDefinitionNames().then((m) => {
+      if (!cancelled) setNameByRuleId(m)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [checkKey])
+
+  if (checks.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">No checks in this category.</p>
+    )
+  }
+  return (
+    <TooltipProvider delay={200}>
+      <div className="overflow-x-auto rounded-lg border p-4">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="px-3 py-3">Rule</TableHead>
+              <TableHead className="py-3">Result</TableHead>
+              <TableHead className="py-3">Checked</TableHead>
+              <TableHead className="py-3 text-right font-mono text-xs">Version</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {checks.map((check) => (
+              <TableRow key={check.checkId}>
+                <TableCell className="max-w-[min(280px,40vw)] px-3 py-3">
+                  <Tooltip>
+                    <TooltipTrigger className="block w-full cursor-help text-left font-medium">
+                      {ruleLabelForCheck(check, nameByRuleId)}
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="right"
+                      className="max-h-96 max-w-lg overflow-auto border bg-popover p-3 text-left text-popover-foreground shadow-md"
+                    >
+                      <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {getEvalConfigCondition(check.dynamicSnapshot) != null ||
+                        getEvalConfigCondition(check.versionSnapshot) != null
+                          ? "Condition (eval_config.condition)"
+                          : check.dynamicSnapshot
+                            ? "Rule config (snapshot)"
+                            : ""}
+                      </p>
+                      <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-snug">
+                        {formatConditionHoverContent(check)}
+                      </pre>
+                    </TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="py-3">
+                  <StatusBadge
+                    label={check.result}
+                    tone={toneForCheckResult(check.result)}
+                  />
+                </TableCell>
+                <TableCell className="py-3 text-xs text-muted-foreground">
+                  {formatDateTime(check.checkedAt)}
+                </TableCell>
+                <TableCell className="py-3 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                  {check.dynamicRuleVersion != null &&
+                  check.dynamicRuleVersion !== undefined
+                    ? check.dynamicRuleVersion
+                    : "—"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </TooltipProvider>
+  )
+}
+
+function normalizeTab(tab: CaseTabInput | undefined): CaseTab {
+  if (tab === "overview" || tab === "suppliers" || !tab) return "other-info"
+  return tab
+}
+
+export function CaseWorkspace({
+  data,
+  initialTab,
+  createdFromIntake = false,
+  initialRunId,
+  showReturnToLatest = false,
+}: CaseWorkspaceProps) {
+  const router = useRouter()
+  const [activeTab, setActiveTab] = useState<CaseTab>(normalizeTab(initialTab))
+  const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
+  const [runId, setRunId] = useState("")
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(
+    initialRunId ?? data.evaluationRuns[0]?.runId ?? null,
+  )
+  const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<{
+    supplier: SupplierRow
+    breakdown: SupplierRuleBreakdown | null
+  } | null>(null)
+  const [runsResult, setRunsResult] = useState<unknown>(null)
+  const [runDetailResult, setRunDetailResult] = useState<unknown>(null)
+  const [auditResult, setAuditResult] = useState<unknown>(null)
+  const [summaryResult, setSummaryResult] = useState<unknown>(null)
+  const [stepResult, setStepResult] = useState<unknown>(null)
+  const {
+    loadingAction,
+    error,
+    fallback,
+    runAction,
+  } = usePipelineActionRunner()
+  const [message, setMessage] = useState<string | null>(null)
+  const { startPolling, patchRequestState } =
+    useRequestStatusPoller()
+  const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
+  const recommendedSupplier = data.recommendation.recommendedSupplier
+  const activeEscalation =
+    data.escalations.find((entry) => entry.status !== "resolved") ??
+    data.escalations[0] ??
+    null
+  const selectedRun =
+    data.evaluationRuns.find((run) => run.runId === selectedRunId) ??
+    data.evaluationRuns[0] ??
+    null
+  const selectedRunOrdinal = selectedRun
+    ? data.evaluationRuns.findIndex((run) => run.runId === selectedRun.runId) + 1
+    : null
+  const effectiveShortlist =
+    selectedRun?.supplierShortlist && selectedRun.supplierShortlist.length > 0
+      ? selectedRun.supplierShortlist
+      : data.supplierShortlist
+  const effectiveExcluded =
+    selectedRun?.excludedSuppliersFromRun &&
+    selectedRun.excludedSuppliersFromRun.length > 0
+      ? selectedRun.excludedSuppliersFromRun
+      : data.excludedSuppliers
+  const evaluatedSuppliers = effectiveShortlist.length + effectiveExcluded.length
+  const hasShortlist = effectiveShortlist.length > 0
+  const lowestPrice = hasShortlist
+    ? Math.min(...effectiveShortlist.map((entry) => entry.totalPrice))
+    : null
+  const fastestExpeditedLeadTime = hasShortlist
+    ? Math.min(...effectiveShortlist.map((entry) => entry.expeditedLeadTimeDays))
+    : null
+  const otherInfoRef = useRef<HTMLDivElement>(null)
+  const escalationsRef = useRef<HTMLDivElement>(null)
+  const auditRef = useRef<HTMLDivElement>(null)
+
+  const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
+    supplier: s,
+    breakdown: getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
+    meetsAll: meetsAllCriteria(
+      getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
+    ),
+  }))
+  const compliantFirst = [...shortlistWithBreakdown].sort((a, b) =>
+    a.meetsAll === b.meetsAll ? 0 : a.meetsAll ? -1 : 1,
+  )
+  const visibleSuppliers = compliantFirst
+
+  useEffect(() => {
+    const tabPanelMap: Record<CaseTab, HTMLDivElement | null> = {
+      "other-info": otherInfoRef.current,
+      escalations: escalationsRef.current,
+      audit: auditRef.current,
+    }
+
+    const updateHeight = () => {
+      const activePanel = tabPanelMap[activeTab]
+      if (!activePanel) return
+      setContentMinHeight(activePanel.offsetHeight)
+    }
+
+    const frame = window.requestAnimationFrame(updateHeight)
+    window.addEventListener("resize", updateHeight)
+
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.removeEventListener("resize", updateHeight)
+    }
+  }, [activeTab, data.id])
+
+  useEffect(() => {
+    if (createdFromIntake) {
+      setMessage(`Case ${data.id} created successfully.`)
+    }
+  }, [createdFromIntake, data.id, setMessage])
+
+  const { setActions, setTitleExtra, setBreadcrumbOverride } = useHeaderActions()
+
+  useEffect(() => {
+    const titleLabel = showReturnToLatest && selectedRunOrdinal
+      ? `${data.title} - Evaluation ${selectedRunOrdinal}`
+      : data.title
+    setBreadcrumbOverride(titleLabel)
+    return () => setBreadcrumbOverride(null)
+  }, [data.title, showReturnToLatest, selectedRunOrdinal, setBreadcrumbOverride])
+
+  useEffect(() => {
+    setTitleExtra(
+      <>
+        <StatusBadge
+          label={data.rawRequest.status.replaceAll("_", " ")}
+          tone="neutral"
+        />
+        <StatusBadge
+          label={data.recommendation.status.replaceAll("_", " ")}
+          tone={
+            data.recommendation.status === "proceed"
+              ? "success"
+              : data.recommendation.status === "proceed_with_conditions"
+                ? "warning"
+                : "destructive"
+          }
+        />
+      </>,
+    )
+    return () => setTitleExtra(null)
+  }, [data.rawRequest.status, data.recommendation.status, setTitleExtra])
+
+  function handleRerun() {
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "queued",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+    void runAction({
+      label: "rerun",
+      request: () =>
+        chainIqApi.pipeline.process({
+          request_id: data.id,
+        }),
+      successMessage: `Pipeline re-run started for ${data.id}.`,
+    })
+      .then(async () => {
+        const finalPhase = await startPolling(data.id, {
+          initialPhase: "queued",
+          intervalMs: 2000,
+          timeoutMs: 45_000,
+        })
+        if (finalPhase === "completed" || finalPhase === "failed" || finalPhase === "timed_out") {
+          await new Promise((r) => setTimeout(r, 500))
+        }
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
+  }
+
+  function handleRunDiagnostics() {
+    void runAction({
+      label: "runs",
+      request: () => chainIqApi.pipeline.runs({ limit: 25, skip: 0 }),
+      onSuccess: setRunsResult,
+      successMessage: "Fetched recent pipeline runs.",
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleRunDetail() {
+    if (!runId.trim()) return
+    void runAction({
+      label: "run",
+      request: () => chainIqApi.pipeline.run(runId.trim()),
+      onSuccess: setRunDetailResult,
+      successMessage: `Fetched run details for ${runId.trim()}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditTrail() {
+    void runAction({
+      label: "audit",
+      request: () => chainIqApi.pipeline.audit(data.id, { limit: 100, skip: 0 }),
+      onSuccess: setAuditResult,
+      successMessage: `Fetched audit trail for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleAuditSummary() {
+    void runAction({
+      label: "summary",
+      request: () => chainIqApi.pipeline.auditSummary(data.id),
+      onSuccess: setSummaryResult,
+      successMessage: `Fetched audit summary for ${data.id}.`,
+    }).catch(() => {
+      // Error state is handled by shared action runner.
+    })
+  }
+
+  function handleStep(step: "fetch" | "validate" | "filter" | "comply" | "rank" | "escalate") {
+    const startedAt = new Date().toISOString()
+    patchRequestState(data.id, {
+      phase: "running",
+      startedAt,
+      lastCheckedAt: startedAt,
+      finishedAt: undefined,
+      error: undefined,
+    })
+    void runAction({
+      label: `step:${step}`,
+      request: () => chainIqApi.pipeline.steps[step]({ request_id: data.id }),
+      onSuccess: setStepResult,
+      successMessage: `Executed ${step} step for ${data.id}.`,
+    })
+      .then(async () => {
+        await startPolling(data.id, {
+          initialPhase: "running",
+          intervalMs: 2000,
+          timeoutMs: 30_000,
+        })
+        router.refresh()
+      })
+      .catch(() => {
+        patchRequestState(data.id, {
+          phase: "failed",
+          lastCheckedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+        })
+      })
+  }
+
+  function handleExport() {
+    const payload = JSON.stringify(data, null, 2)
+    const blob = new Blob([payload], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${data.id}-audit-export.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setMessage(`Exported ${data.id} payload as JSON.`)
+  }
+
+  function handleEscalate() {
+    router.push(`/escalations?caseId=${data.id}`)
+  }
+
+  function handleGenerateReport() {
+    void runAction({
+      label: "report",
+      request: () => chainIqApi.pipeline.report(data.id),
+      successMessage: `Audit report generated for ${data.id}.`,
+    })
+      .then((result) => {
+        const blobData = result as { blob: Blob; contentDisposition: string | null } | undefined
+        if (blobData?.blob) {
+          const url = URL.createObjectURL(blobData.blob)
+          const link = document.createElement("a")
+          link.href = url
+          const disposition = blobData.contentDisposition
+          const filenameMatch = disposition?.match(/filename="?([^";\s]+)"?/)
+          link.download = filenameMatch?.[1] ?? `${data.id}-audit-report.pdf`
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+          URL.revokeObjectURL(url)
+        }
+      })
+      .catch(() => {})
+  }
+
+  const bestMatch = compliantFirst[0] ?? null
+  const isBestMatchPerfect = bestMatch ? bestMatch.meetsAll : false
+  const remainingSuppliers = compliantFirst.slice(1)
+  const fullyCompatibleCount = compliantFirst.filter((s) => s.meetsAll).length
+
+  useEffect(() => {
+    setActions(
+      <>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRerun}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "rerun" ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Play className="size-3.5" />
+          )}
+          {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExport}>
+          <Download className="size-3.5" />
+          Export
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleGenerateReport}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "report" ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <FileDown className="size-3.5" />
+          )}
+          {loadingAction === "report" ? "Generating..." : "Audit"}
+        </Button>
+        <Button size="sm" onClick={handleEscalate}>
+          <TimerReset className="size-3.5" />
+          Escalate
+        </Button>
+      </>,
+    )
+    return () => setActions(null)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingAction])
+
+  return (
+    <div className="space-y-0">
+      {/* Side info bar */}
+      <div className="animate-fade-in-up flex flex-wrap items-center gap-1.5 pb-2">
+        <StatusBadge
+          label={`${data.rawRequest.categoryL1} / ${data.rawRequest.categoryL2}`}
+          tone="info"
+        />
+        <span className="text-sm text-muted-foreground">
+          {data.rawRequest.country} · {data.rawRequest.businessUnit} · created {formatDateTime(data.rawRequest.createdAt)} · required by {formatDate(data.rawRequest.requiredByDate)}
+          {showReturnToLatest && selectedRun
+            ? ` · run ${formatDateTime(selectedRun.startedAt)}`
+            : ""}
+        </span>
+      </div>
+
+      {error ? (
+        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
+          <CardContent className="py-3 text-sm">{error}</CardContent>
+        </Card>
+      ) : null}
+
+      {message ? (
+        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
+          <CardContent className="py-3 text-sm">{message}</CardContent>
+        </Card>
+      ) : null}
+      {fallback ? (
+        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
+          <CardContent className="py-3 text-sm">
+            Runs endpoint degraded. Other pipeline actions remain usable. {fallback}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {blockingIssues.length > 0 ? (
+        <Card className="animate-fade-in-up mt-2 border-rose-200 bg-rose-50/70">
+          <CardContent className="py-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-rose-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-rose-900">
+                  {blockingIssues.length} blocking issue{blockingIssues.length > 1 ? "s" : ""} detected
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {blockingIssues.map((issue) => (
+                    <li key={issue.issueId} className="flex items-baseline gap-2 text-sm text-rose-800">
+                      <span className="shrink-0 rounded bg-rose-200/60 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-rose-700">
+                        {issue.issueId}
+                      </span>
+                      <span>{issue.description}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {/* Best Match hero box */}
+      <section className="animate-fade-in-up pt-4" style={{ animationDelay: "80ms" }}>
+        <Card
+          className="cursor-pointer border-2 border-foreground/80 transition-colors hover:bg-accent/20"
+          onClick={() => {
+            if (bestMatch) {
+              setSelectedSupplierDetail({
+                supplier: bestMatch.supplier,
+                breakdown: bestMatch.breakdown,
+              })
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if ((e.key === "Enter" || e.key === " ") && bestMatch) {
+              e.preventDefault()
+              setSelectedSupplierDetail({
+                supplier: bestMatch.supplier,
+                breakdown: bestMatch.breakdown,
+              })
+            }
+          }}
+        >
+          <CardContent className="p-0">
+            {bestMatch ? (
+              <>
+                <div className="px-6 pt-3 pb-0">
+                  <p className="flex flex-wrap items-baseline gap-2.5">
+                    <span className={cn(
+                      "text-sm font-semibold",
+                      isBestMatchPerfect ? "text-emerald-600" : "",
+                    )}>
+                      {isBestMatchPerfect
+                        ? "Recommendation:"
+                        : "No match found — here's the best match:"}
+                    </span>
+                    <span className="text-xl font-bold tracking-tight">
+                      {bestMatch.supplier.supplierName}
+                    </span>
+                  </p>
+                </div>
+
+                <div className="grid lg:grid-cols-[30fr_55fr_15fr]">
+                  {/* Left 30% — rule tiles */}
+                  <div className="flex flex-col justify-center px-6 py-2.5">
+                    <div className="space-y-2">
+                      <RuleBox
+                        label="Price"
+                        value={formatCurrency(bestMatch.supplier.totalPrice, data.recommendation.currency)}
+                        limit={data.rawRequest.budgetAmount != null
+                          ? `Budget: ${formatCurrency(data.rawRequest.budgetAmount, data.rawRequest.currency)}`
+                          : "No budget specified"}
+                        status={
+                          data.rawRequest.budgetAmount != null
+                            ? bestMatch.supplier.totalPrice <= data.rawRequest.budgetAmount
+                              ? "met"
+                              : "not-met"
+                            : "partial"
+                        }
+                      />
+                      <RuleBox
+                        label="Lead Time"
+                        value={`${bestMatch.supplier.standardLeadTimeDays}d std · ${bestMatch.supplier.expeditedLeadTimeDays}d exp`}
+                        limit={`Required by ${formatDate(data.rawRequest.requiredByDate)}`}
+                        status={
+                          bestMatch.supplier.standardLeadTimeDays <= 30
+                            ? "met"
+                            : bestMatch.supplier.expeditedLeadTimeDays <= 30
+                              ? "partial"
+                              : "not-met"
+                        }
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-sm text-muted-foreground px-3">
+                      <span>ESG <span className="font-bold text-foreground">{bestMatch.supplier.esgScore}</span></span>
+                      <span>Quality <span className="font-bold text-foreground">{bestMatch.supplier.qualityScore}</span></span>
+                      <span>Risk <span className="font-bold text-foreground">{bestMatch.supplier.riskScore}</span></span>
+                    </div>
+                  </div>
+
+                  {/* Middle 55% — rationale */}
+                  <div className="flex flex-col border-t border-border/50 px-6 py-2.5 lg:border-t-0 lg:border-l">
+                    <p className="shrink-0 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Rationale
+                    </p>
+                    <p className="mt-1.5 overflow-hidden text-sm leading-relaxed text-foreground" style={{ display: "-webkit-box", WebkitLineClamp: 9, WebkitBoxOrient: "vertical" }}>
+                      {bestMatch.supplier.recommendationNote}
+                    </p>
+                  </div>
+
+                  {/* Right 15% — stats + action */}
+                  <div className="flex flex-col justify-between border-t border-border/50 px-5 py-2.5 lg:border-t-0 lg:border-l">
+                    <div className="space-y-2.5">
+                      <div className="rounded-lg bg-muted/40 px-4 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Considered
+                        </p>
+                        <p className="mt-0.5 text-2xl font-bold tabular-nums tracking-tight">
+                          {evaluatedSuppliers}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-muted/40 px-4 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Fully compatible
+                        </p>
+                        <p className="mt-0.5 text-2xl font-bold tabular-nums tracking-tight">
+                          {fullyCompatibleCount}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      className="mt-5 w-full"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setSelectedSupplierDetail({
+                          supplier: bestMatch.supplier,
+                          breakdown: bestMatch.breakdown,
+                        })
+                      }}
+                    >
+                      Take Action
+                      <ArrowRight className="ml-1.5 size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="px-6 py-0">
+                <p className="text-sm text-muted-foreground">
+                  No suppliers on the shortlist for this case.
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* Supplier comparison (full width, without best match) */}
+      {remainingSuppliers.length > 0 ? (
+        <section className="animate-fade-in-up min-w-0 space-y-4 pt-6" style={{ animationDelay: "120ms" }}>
+          <Card className="h-fit w-full max-w-full overflow-hidden">
+            <CardHeader>
+              <CardTitle>Other Suppliers</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="overflow-x-auto rounded-lg border">
+                <Table className="min-w-[720px] table-fixed">
+                  <colgroup>
+                    <col className="w-[4%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[13%]" />
+                  </colgroup>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="px-3">Rank</TableHead>
+                      <TableHead>Supplier</TableHead>
+                      <TableHead>Pricing Tier</TableHead>
+                      <TableHead>Total</TableHead>
+                      <TableHead>Lead Time</TableHead>
+                      <TableHead>Rules</TableHead>
+                      <TableHead>Policy</TableHead>
+                      <TableHead>Quality</TableHead>
+                      <TableHead>Risk</TableHead>
+                      <TableHead>ESG</TableHead>
+                      <TableHead>Flags</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {remainingSuppliers.map(({ supplier, breakdown }) => {
+                      const { hardPassed, hardTotal, policyPassed, policyTotal } =
+                        getRuleCounts(breakdown)
+                      const rulesLabel =
+                        data.evaluationRuns.length > 0
+                          ? `${hardPassed}/${hardTotal}`
+                          : "—"
+                      const policyLabel =
+                        data.evaluationRuns.length > 0
+                          ? `${policyPassed}/${policyTotal}`
+                          : "—"
+                      return (
+                        <TableRow
+                          key={supplier.supplierId}
+                          className="cursor-pointer [&>td]:align-middle"
+                          onClick={() =>
+                            setSelectedSupplierDetail({ supplier, breakdown })
+                          }
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`View details for ${supplier.supplierName}`}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault()
+                              setSelectedSupplierDetail({ supplier, breakdown })
+                            }
+                          }}
+                        >
+                          <TableCell className="px-3">
+                            <p className="text-base font-semibold tabular-nums">
+                              #{supplier.rank}
+                            </p>
+                          </TableCell>
+                          <TableCell className="align-middle">
+                            <div className="space-y-1">
+                              <p className="font-medium">
+                                {supplier.supplierName}
+                              </p>
+                              <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                                {supplier.supplierId}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {supplier.countryHq ?? "N/A"} ·{" "}
+                                {supplier.currency ?? data.recommendation.currency}
+                              </p>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <p>{supplier.pricingTierApplied}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {supplier.region ?? "N/A"} · qty{" "}
+                              {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              MOQ {supplier.moq ?? "N/A"}
+                            </p>
+                          </TableCell>
+                          <TableCell className="font-medium tabular-nums">
+                            <div>
+                              {formatCurrency(
+                                supplier.totalPrice,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Unit{" "}
+                              {formatCurrency(
+                                supplier.unitPrice,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Exp.{" "}
+                              {formatCurrency(
+                                supplier.expeditedTotal,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Exp unit{" "}
+                              {formatCurrency(
+                                supplier.expeditedUnitPrice,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            <div>{supplier.standardLeadTimeDays}d std</div>
+                            <div className="text-xs text-muted-foreground">
+                              {supplier.expeditedLeadTimeDays}d exp
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "tabular-nums text-sm",
+                              data.evaluationRuns.length > 0 &&
+                                breakdown &&
+                                hasNoFailedChecks(breakdown.hardRuleChecks) &&
+                                "font-semibold text-emerald-600",
+                            )}
+                          >
+                            {rulesLabel}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "tabular-nums text-sm",
+                              data.evaluationRuns.length > 0 &&
+                                breakdown &&
+                                hasNoFailedChecks(breakdown.policyChecks) &&
+                                "font-semibold text-emerald-600",
+                            )}
+                          >
+                            {policyLabel}
+                          </TableCell>
+                          <TableCell
+                            className={scoreTone(supplier.qualityScore)}
+                          >
+                            {supplier.qualityScore}
+                          </TableCell>
+                          <TableCell
+                            className={scoreTone(supplier.riskScore, true)}
+                          >
+                            {supplier.riskScore}
+                          </TableCell>
+                          <TableCell className={scoreTone(supplier.esgScore)}>
+                            {supplier.esgScore}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex max-w-[180px] flex-wrap gap-1">
+                              {supplier.preferred ? (
+                                <StatusBadge label="Preferred" tone="info" />
+                              ) : null}
+                              {supplier.incumbent ? (
+                                <StatusBadge label="Incumbent" tone="neutral" />
+                              ) : null}
+                              {supplier.policyCompliant ? (
+                                <StatusBadge label="Compliant" tone="success" />
+                              ) : (
+                                <StatusBadge label="Conflict" tone="destructive" />
+                              )}
+                              {supplier.dataResidencySupported ? (
+                                <StatusBadge label="Data residency" tone="info" />
+                              ) : null}
+                              {supplier.coversDeliveryCountry ? (
+                                <StatusBadge label="Covers country" tone="neutral" />
+                              ) : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
+
+      {/* Supplier detail sheet (shared across hero box and table clicks) */}
+      <Sheet
+        open={!!selectedSupplierDetail}
+        onOpenChange={(open) => !open && setSelectedSupplierDetail(null)}
+      >
+        <SheetContent
+          side="right"
+          className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl overflow-y-auto px-6"
+        >
+          <SheetHeader>
+            <SheetTitle>
+              {selectedSupplierDetail?.supplier.supplierName ?? "Supplier"}
+            </SheetTitle>
+            <SheetDescription>
+              Rule and policy check results for this supplier.
+            </SheetDescription>
+          </SheetHeader>
+          {selectedSupplierDetail ? (
+            <SupplierDetailSheetContent
+              key={`${data.id}-${selectedSupplierDetail.supplier.supplierId}`}
+              requestId={data.id}
+              supplier={selectedSupplierDetail.supplier}
+              breakdown={selectedSupplierDetail.breakdown}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
+
+      {/* Tabs */}
+      <Tabs
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as CaseTab)}
+        className="animate-fade-in-up space-y-6 pt-6"
+        style={{ animationDelay: "160ms" }}
+      >
+        <TabsList
+          variant="line"
+          className="w-full justify-start rounded-none border-b border-border/70 p-0"
+        >
+          <TabsTrigger value="other-info" className="px-5 py-3">
+            Other Info
+          </TabsTrigger>
+          <TabsTrigger value="escalations" className="px-5 py-3">
+            Escalations
+          </TabsTrigger>
+          <TabsTrigger value="audit" className="px-5 py-3">
+            Auditing
+          </TabsTrigger>
+        </TabsList>
+
+        <div
+          className="transition-[min-height] duration-300 ease-out"
+          style={contentMinHeight ? { minHeight: `${contentMinHeight}px` } : undefined}
+        >
+          {/* Other Info tab (was Overview + Suppliers metrics + Outcome summary + Excluded + Historical precedent) */}
+          <TabsContent
+            ref={otherInfoRef}
+            value="other-info"
+            className="space-y-6 transition-all duration-200 ease-out"
+          >
+            {/* Supplier metrics row */}
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <MiniMetric
+                label="Suppliers evaluated"
+                value={evaluatedSuppliers}
+                helper="Shortlist plus excluded rows"
+              />
+              <MiniMetric
+                label="Compliant suppliers"
+                value={effectiveShortlist.length}
+                helper="Suppliers still eligible after policy filters"
+              />
+              <MiniMetric
+                label="Lowest compliant price"
+                value={formatCurrency(lowestPrice, data.recommendation.currency)}
+                helper="Best commercial baseline"
+              />
+              <MiniMetric
+                label="Fastest expedited lead time"
+                value={
+                  fastestExpeditedLeadTime === null
+                    ? "Not available"
+                    : `${fastestExpeditedLeadTime} days`
+                }
+                helper="Closest feasible delivery option"
+              />
+            </section>
+
+            {/* Outcome summary */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Outcome summary</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <FieldCell
+                  label="Recommended Supplier"
+                  value={
+                    recommendedSupplier ??
+                    data.recommendation.preferredSupplierIfResolved ??
+                    "Pending human resolution"
+                  }
+                  variant="emphasis"
+                />
+                <FieldCell
+                  label="Approval Tier"
+                  value={data.recommendation.approvalTier}
+                />
+                <FieldCell
+                  label="Quotes Required"
+                  value={`${data.recommendation.quotesRequired}`}
+                />
+                <FieldCell
+                  label="Managers"
+                  value={
+                    data.recommendation.managers?.length
+                      ? data.recommendation.managers.join(", ")
+                      : "Not specified"
+                  }
+                />
+                <FieldCell
+                  label="Deviation Approvers"
+                  value={
+                    data.recommendation.deviationApprovers?.length
+                      ? data.recommendation.deviationApprovers.join(", ")
+                      : "Not specified"
+                  }
+                />
+                <FieldCell
+                  label="Country Scope"
+                  value={data.rawRequest.deliveryCountries.join(", ")}
+                />
+                <FieldCell
+                  label="Scenario Tags"
+                  value={data.rawRequest.scenarioTags.join(", ") || "standard"}
+                />
+                <FieldCell
+                  label="Budget"
+                  value={formatCurrency(
+                    data.rawRequest.budgetAmount,
+                    data.rawRequest.currency,
+                  )}
+                  variant="default"
+                />
+                <FieldCell
+                  label="Tier Range"
+                  value={`${formatCurrency(data.recommendation.minAmount ?? null, data.recommendation.currency)} - ${formatCurrency(data.recommendation.maxAmount ?? null, data.recommendation.currency)}`}
+                  variant="default"
+                />
+                <FieldCell
+                  label="Compliance"
+                  value={data.recommendation.complianceStatus}
+                />
+                <FieldCell
+                  label="Blocking Issues"
+                  value={`${blockingIssues.length}`}
+                />
+                <FieldCell
+                  label="Last Updated"
+                  value={formatDateTime(data.lastUpdated)}
+                />
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Original request</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-5">
+                  <div className="rounded-lg border bg-muted/30 p-4">
+                    <p className="text-sm leading-relaxed">
+                      {data.rawRequest.requestText}
+                    </p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <FieldCell
+                      label="Request channel"
+                      value={data.rawRequest.requestChannel}
+                    />
+                    <FieldCell
+                      label="Request ID"
+                      value={data.rawRequest.requestId}
+                    />
+                    <FieldCell
+                      label="Request language"
+                      value={data.rawRequest.requestLanguage}
+                    />
+                    <FieldCell
+                      label="Business unit"
+                      value={data.rawRequest.businessUnit}
+                    />
+                    <FieldCell
+                      label="Requester ID"
+                      value={data.rawRequest.requesterId ?? "Not specified"}
+                    />
+                    <FieldCell label="Site" value={data.rawRequest.site} />
+                    <FieldCell
+                      label="Requester role"
+                      value={data.rawRequest.requesterRole}
+                    />
+                    <FieldCell
+                      label="Submitted for"
+                      value={data.rawRequest.submittedForId}
+                    />
+                    <FieldCell
+                      label="Preferred supplier"
+                      value={
+                        data.rawRequest.preferredSupplierMentioned ?? "Not stated"
+                      }
+                    />
+                    <FieldCell
+                      label="Incumbent supplier"
+                      value={data.rawRequest.incumbentSupplier ?? "Not stated"}
+                    />
+                    <FieldCell
+                      label="Contract type"
+                      value={data.rawRequest.contractTypeRequested}
+                    />
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Interpreted requirements</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-3">
+                  {data.interpretedRequirements.map((item) => (
+                    <div
+                      key={item.label}
+                      className={cn(
+                        "rounded-lg border p-3.5",
+                        item.emphasis
+                          ? "border-primary/30 bg-primary/[0.05]"
+                          : "bg-muted/20",
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                          {item.label}
+                        </p>
+                        {item.inferred ? (
+                          <StatusBadge label="Inferred" tone="info" />
+                        ) : null}
+                      </div>
+                      <p
+                        className={cn(
+                          "mt-1 text-sm leading-relaxed",
+                          item.emphasis ? "font-medium" : "text-muted-foreground",
+                        )}
+                      >
+                        {item.value}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Validation & issues</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {data.validationIssues.map((issue) => (
+                    <div
+                      key={issue.issueId}
+                      className="rounded-lg border bg-background/80 p-3.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StatusBadge label={issue.issueId} tone="neutral" />
+                        <StatusBadge
+                          label={issue.severity}
+                          tone={severityTone(issue.severity)}
+                        />
+                        <StatusBadge
+                          label={issue.type.replaceAll("_", " ")}
+                          tone="info"
+                        />
+                        {issue.blocking ? (
+                          <StatusBadge label="blocking" tone="destructive" />
+                        ) : null}
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed">
+                        {issue.description}
+                      </p>
+                      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                        {issue.actionRequired}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Policy evaluation</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {data.policyCards.map((policy) => (
+                    <div
+                      key={policy.ruleId}
+                      className="rounded-lg border bg-background/80 p-3.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StatusBadge label={policy.ruleId} tone="info" />
+                        <StatusBadge
+                          label={policy.status}
+                          tone={
+                            policy.status === "satisfied"
+                              ? "success"
+                              : policy.status === "conflict"
+                                ? "destructive"
+                                : "neutral"
+                          }
+                        />
+                      </div>
+                      <h3 className="mt-2 text-sm font-semibold">
+                        {policy.title}
+                      </h3>
+                      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                        {policy.summary}
+                      </p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        {policy.detail.map((detail) => (
+                          <FieldCell
+                            key={detail.label}
+                            label={detail.label}
+                            value={detail.value}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Excluded suppliers */}
+            <div
+              className={cn(
+                "grid gap-4",
+                data.historicalPrecedent ? "xl:grid-cols-2" : "xl:grid-cols-1",
+              )}
+            >
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Excluded suppliers</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {effectiveExcluded.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No supplier was excluded.
+                    </p>
+                  ) : (
+                    effectiveExcluded.map((supplier) => (
+                      <div
+                        key={supplier.supplierId}
+                        className="rounded-lg border bg-background/80 p-3.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StatusBadge
+                            label={supplier.supplierId}
+                            tone="neutral"
+                          />
+                          <StatusBadge
+                            label={
+                              supplier.hardExclusion
+                                ? "hard exclusion"
+                                : "not shortlisted"
+                            }
+                            tone={
+                              supplier.hardExclusion ? "destructive" : "warning"
+                            }
+                          />
+                        </div>
+                        <p className="mt-2 text-sm font-medium">
+                          {supplier.supplierName}
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                          {supplier.reason}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+
+              {data.historicalPrecedent ? (
+                <Card className="border-blue-200 bg-blue-50/50">
+                  <CardHeader>
+                    <CardTitle>{data.historicalPrecedent.title}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      {data.historicalPrecedent.description}
+                    </p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      {data.historicalPrecedent.metrics.map((metric) => (
+                        <FieldCell
+                          key={metric.label}
+                          label={metric.label}
+                          value={metric.value}
+                          variant="default"
+                        />
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : null}
+            </div>
+
+            {/* Supplier notes */}
+            {visibleSuppliers.length > 0 ? (
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Supplier notes</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {visibleSuppliers.map(({ supplier }) => (
+                    <div
+                      key={supplier.supplierId}
+                      className="rounded-lg border bg-background/80 p-3.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge label={`#${supplier.rank}`} tone="neutral" />
+                        <span className="font-medium">{supplier.supplierName}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {supplier.supplierId}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                        {supplier.recommendationNote}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : null}
+          </TabsContent>
+
+          {/* Escalations tab */}
+          <TabsContent
+            ref={escalationsRef}
+            value="escalations"
+            className="space-y-5 transition-all duration-200 ease-out"
+          >
+            <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <MiniMetric
+                label="Escalations total"
+                value={data.escalations.length}
+                helper="All escalation objects on this case"
+              />
+              <MiniMetric
+                label="Open escalations"
+                value={data.escalations.filter((entry) => entry.status === "open").length}
+                helper="Awaiting first human action"
+              />
+              <MiniMetric
+                label="Blocking escalations"
+                value={data.escalations.filter((entry) => entry.blocking).length}
+                helper="Prevent autonomous progression"
+              />
+              <MiniMetric
+                label="Resolved escalations"
+                value={data.escalations.filter((entry) => entry.status === "resolved").length}
+                helper="Closed and no longer actionable"
+              />
+            </section>
+
+            {data.escalations.some((entry) => entry.blocking) ? (
+              <Card className="border-rose-200 bg-rose-50/60">
+                <CardContent className="px-5 py-4">
+                  <p className="text-xs font-medium uppercase tracking-wider text-rose-700">
+                    Blocking escalation state
+                  </p>
+                  <h3 className="mt-1 text-base font-semibold text-rose-900">
+                    Autonomous progression is paused
+                  </h3>
+                  <p className="mt-1 text-sm leading-relaxed text-rose-800/70">
+                    One or more escalation objects require human review before the
+                    sourcing case can proceed to award.
+                  </p>
+                </CardContent>
+              </Card>
+            ) : null}
+
+            {activeEscalation ? (
+              <Card className="border-primary/20 bg-primary/[0.04]">
+                <CardHeader>
+                  <CardTitle>Current escalation focus</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <StatusBadge label={activeEscalation.escalationId} tone="neutral" />
+                      <StatusBadge label={activeEscalation.rule} tone="info" />
+                      <StatusBadge
+                        label={activeEscalation.status}
+                        tone={
+                          activeEscalation.status === "resolved"
+                            ? "success"
+                            : "destructive"
+                        }
+                      />
+                      <StatusBadge
+                        label={activeEscalation.blocking ? "blocking" : "advisory"}
+                        tone={activeEscalation.blocking ? "destructive" : "warning"}
+                      />
+                    </div>
+                    <h3 className="text-base font-semibold">
+                      Escalate to {activeEscalation.escalateTo}
+                    </h3>
+                    {activeEscalation.ruleLabel ? (
+                      <p className="text-sm leading-relaxed text-muted-foreground">
+                        {activeEscalation.ruleLabel}
+                      </p>
+                    ) : null}
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      {activeEscalation.trigger}
+                    </p>
+                  </div>
+                  <FieldCell
+                    label="Next action"
+                    value={activeEscalation.nextAction}
+                    variant="default"
+                  />
+                </CardContent>
+              </Card>
+            ) : null}
+
+            <Card className="bg-muted/15">
+              <CardHeader>
+                <CardTitle>Escalation queue</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="overflow-x-auto rounded-lg border bg-background">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="px-3">Escalation</TableHead>
+                        <TableHead>Rule</TableHead>
+                        <TableHead>Target</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Next action</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {data.escalations.map((entry) => (
+                        <TableRow key={entry.escalationId}>
+                          <TableCell className="px-3 align-top">
+                            <p className="font-medium">{entry.escalationId}</p>
+                            <p className="mt-1 max-w-[320px] text-xs leading-relaxed text-muted-foreground">
+                              {entry.trigger}
+                            </p>
+                          </TableCell>
+                          <TableCell className="align-top text-sm">
+                            <p className="font-medium">{entry.rule}</p>
+                            {entry.ruleLabel ? (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {entry.ruleLabel}
+                              </p>
+                            ) : null}
+                          </TableCell>
+                          <TableCell className="align-top text-sm">
+                            {entry.escalateTo}
+                          </TableCell>
+                          <TableCell className="align-top">
+                            <StatusBadge
+                              label={entry.status}
+                              tone={
+                                entry.status === "resolved"
+                                  ? "success"
+                                  : "destructive"
+                              }
+                            />
+                          </TableCell>
+                          <TableCell className="align-top">
+                            <StatusBadge
+                              label={entry.blocking ? "blocking" : "advisory"}
+                              tone={entry.blocking ? "destructive" : "warning"}
+                            />
+                          </TableCell>
+                          <TableCell className="align-top text-sm">
+                            {entry.nextAction}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Audit tab */}
+          <TabsContent
+            ref={auditRef}
+            value="audit"
+            className="space-y-5 transition-all duration-200 ease-out"
+          >
+          <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+            <Card>
+              <CardHeader>
+                <CardTitle>Decision timeline</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                {(() => {
+                  const groups: { runId: string | null; events: typeof data.auditTrail.timeline }[] = []
+                  for (const event of data.auditTrail.timeline) {
+                    const rid = event.runId ?? null
+                    const last = groups[groups.length - 1]
+                    if (last && last.runId === rid) {
+                      last.events.push(event)
+                    } else {
+                      groups.push({ runId: rid, events: [event] })
+                    }
+                  }
+                  const allRunIds = [...new Set(data.auditTrail.timeline.map((e) => e.runId).filter(Boolean))]
+                  const runOrdinalMap = new Map(
+                    [...allRunIds]
+                      .sort((a, b) => {
+                        const aTime = data.auditTrail.timeline.find((e) => e.runId === a)?.timestamp ?? ""
+                        const bTime = data.auditTrail.timeline.find((e) => e.runId === b)?.timestamp ?? ""
+                        return aTime.localeCompare(bTime)
+                      })
+                      .map((id, i) => [id, i + 1]),
+                  )
+                  return groups.map((group) => (
+                    <div key={group.runId ?? "ungrouped"} className="space-y-5">
+                      {group.runId ? (
+                        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                          <div className="h-px flex-1 bg-border" />
+                          Run {runOrdinalMap.get(group.runId) ?? "?"} — {group.runId.slice(0, 8)}
+                          <div className="h-px flex-1 bg-border" />
+                        </div>
+                      ) : null}
+                      {group.events.map((event, index) => (
+                        <div key={event.id} className="relative pl-7">
+                          {index !== group.events.length - 1 ? (
+                            <div className="absolute left-[9px] top-6 h-[calc(100%+0.45rem)] w-px bg-border" />
+                          ) : null}
+                          <div className="absolute left-0 top-1 size-5 rounded-full border bg-card" />
+                          <p className="text-xs font-medium text-muted-foreground">
+                            {formatDateTime(event.timestamp)}
+                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <StatusBadge label={event.kind} tone="info" />
+                            {event.level ? (
+                              <StatusBadge
+                                label={event.level}
+                                tone={
+                                  event.level === "error"
+                                    ? "destructive"
+                                    : event.level === "warn"
+                                      ? "warning"
+                                      : "neutral"
+                                }
+                              />
+                            ) : null}
+                            {event.stepName ? (
+                              <StatusBadge label={event.stepName} tone="neutral" />
+                            ) : null}
+                          </div>
+                          <h3 className="mt-1 text-sm font-semibold">
+                            {event.title}
+                          </h3>
+                          <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
+                            {event.description}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  ))
+                })()}
+              </CardContent>
+            </Card>
+
+            <div className="space-y-4">
+              {data.evaluationRuns.length > 0 ? (
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Evaluation runs</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {[...data.evaluationRuns]
+                      .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
+                      .map((run) => {
+                        const chronologicalIndex = [...data.evaluationRuns]
+                          .sort((a2, b2) => new Date(a2.startedAt).getTime() - new Date(b2.startedAt).getTime())
+                          .findIndex((r) => r.runId === run.runId)
+                        return (
+                      <button
+                        key={run.runId}
+                        type="button"
+                        onClick={() => {
+                          setSelectedRunId(run.runId)
+                          setActiveTab("other-info")
+                        }}
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors hover:bg-accent/60",
+                          run.runId === selectedRunId && "border-primary bg-primary/5",
+                        )}
+                      >
+                        <div>
+                          <p className="text-sm font-medium">
+                            Evaluation {chronologicalIndex + 1}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDateTime(run.startedAt)}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          label={run.status}
+                          tone={
+                            run.status === "completed"
+                              ? "success"
+                              : run.status === "failed"
+                                ? "destructive"
+                                : "neutral"
+                          }
+                        />
+                      </button>
+                        )
+                      })}
+                  </CardContent>
+                </Card>
+              ) : null}
+
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Audit facts</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-3 sm:grid-cols-2">
+                  <FieldCell
+                    label="Policies checked"
+                    value={data.auditTrail.policiesChecked.join(", ")}
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Suppliers evaluated"
+                    value={data.auditTrail.supplierIdsEvaluated.join(", ")}
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Pricing tiers applied"
+                    value={data.auditTrail.pricingTiersApplied}
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Data sources used"
+                    value={data.auditTrail.dataSourcesUsed.join(", ")}
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Historical awards consulted"
+                    value={
+                      data.auditTrail.historicalAwardsConsulted ? "Yes" : "No"
+                    }
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Historical award note"
+                    value={data.auditTrail.historicalAwardNote}
+                    variant="default"
+                  />
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Reasoning trace</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {data.auditTrail.reasoningTrace.map((step, index) => (
+                    <div key={step} className="rounded-lg border bg-background/80 p-3.5">
+                      <div className="flex items-center gap-1.5">
+                        <StatusBadge
+                          label={`Step ${index + 1}`}
+                          tone="info"
+                        />
+                        <StatusBadge
+                          label={
+                            index === 0
+                              ? "LLM-assisted interpretation"
+                              : "Deterministic policy logic"
+                          }
+                          tone={index === 0 ? "info" : "neutral"}
+                        />
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                        {step}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+
+          <Card className="bg-muted/15">
+            <CardHeader>
+              <CardTitle>Advanced pipeline diagnostics</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Access run diagnostics and step-level controls moved from Pipeline Ops.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={runId}
+                  onChange={(event) => setRunId(event.target.value)}
+                  placeholder="Run ID (optional for run detail)"
+                  className="w-full sm:w-[340px]"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDiagnostics}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "runs" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  List runs
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDetail}
+                  disabled={loadingAction !== null || !runId.trim()}
+                >
+                  {loadingAction === "run" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  Get run
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditTrail}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "audit" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit trail
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditSummary}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "summary" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit summary
+                </Button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map(
+                  (step) => (
+                    <Button
+                      key={step}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleStep(step)}
+                      disabled={loadingAction !== null}
+                    >
+                      {loadingAction === `step:${step}` ? (
+                        <RefreshCw className="size-3.5 animate-spin" />
+                      ) : (
+                        <Play className="size-3.5" />
+                      )}
+                      {step}
+                    </Button>
+                  ),
+                )}
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
+                {runDetailResult ? (
+                  <JsonViewer title="Run Detail" value={runDetailResult} />
+                ) : null}
+                {auditResult ? (
+                  <JsonViewer title="Audit Trail" value={auditResult} />
+                ) : null}
+                {summaryResult ? (
+                  <JsonViewer title="Audit Summary" value={summaryResult} />
+                ) : null}
+                {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
+              </div>
+            </CardContent>
+          </Card>
+          </TabsContent>
+        </div>
+      </Tabs>
+    </div>
+  )
+}
+
+function SupplierDetailSheetContent({
+  requestId,
+  supplier,
+  breakdown,
+}: {
+  requestId: string
+  supplier: SupplierRow
+  breakdown: SupplierRuleBreakdown | null
+}) {
+  const [fetchedBreakdown, setFetchedBreakdown] =
+    useState<SupplierRuleBreakdown | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  const effectiveBreakdown = breakdown ?? fetchedBreakdown
+
+  useEffect(() => {
+    if (breakdown || !requestId || !supplier.supplierId) {
+      return
+    }
+    let cancelled = false
+    setIsLoading(true)
+    setFetchError(null)
+    Promise.all([
+      fetch(
+        `/api/rule-versions/hard-rule-checks?request_id=${encodeURIComponent(requestId)}&supplier_id=${encodeURIComponent(supplier.supplierId)}`,
+      ).then((r) => (r.ok ? r.json() : [])),
+      fetch(
+        `/api/rule-versions/policy-checks?request_id=${encodeURIComponent(requestId)}&supplier_id=${encodeURIComponent(supplier.supplierId)}`,
+      ).then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([hardChecks, policyChecks]) => {
+        if (cancelled) return
+        const h = Array.isArray(hardChecks) ? hardChecks : []
+        const p = Array.isArray(policyChecks) ? policyChecks : []
+        if (h.length === 0 && p.length === 0) {
+          setFetchedBreakdown(null)
+          return
+        }
+        setFetchedBreakdown({
+          supplierId: supplier.supplierId,
+          supplierName: supplier.supplierName,
+          excluded: false,
+          exclusionRuleId: null,
+          exclusionReason: null,
+          hardRuleChecks: h.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: c.skipped ? "skipped" : toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
+            dynamicSnapshot:
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
+          })),
+          policyChecks: p.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
+            dynamicSnapshot:
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
+          })),
+        })
+      })
+      .catch((err) => {
+        if (!cancelled) setFetchError(err instanceof Error ? err.message : "Failed to load checks")
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [requestId, supplier.supplierId, supplier.supplierName, breakdown])
+
+  if (isLoading && !effectiveBreakdown) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading rule checks…
+      </div>
+    )
+  }
+
+  if (fetchError && !effectiveBreakdown) {
+    return (
+      <p className="text-sm text-destructive">
+        Could not load checks: {fetchError}
+      </p>
+    )
+  }
+
+  if (!effectiveBreakdown) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No evaluation run data found for this supplier.
+      </p>
+    )
+  }
+
+  const hardFailed = effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
+  const policyFailed = effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
+  const policyWarned = effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
+  const hardOk =
+    effectiveBreakdown.hardRuleChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.hardRuleChecks)
+  const policyOk =
+    effectiveBreakdown.policyChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.policyChecks)
+
+  return (
+    <div className="space-y-6 pt-4 pb-6">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <StatusBadge label={supplier.supplierId} tone="neutral" />
+        <StatusBadge
+          label={`Rules: ${effectiveBreakdown.hardRuleChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.hardRuleChecks.length}`}
+          tone={hardFailed ? "destructive" : hardOk ? "success" : "neutral"}
+        />
+        <StatusBadge
+          label={`Policy: ${effectiveBreakdown.policyChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.policyChecks.length}`}
+          tone={
+            policyFailed ? "destructive" : policyOk ? "success" : policyWarned ? "warning" : "neutral"
+          }
+        />
+      </div>
+
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Hard checks
+          </p>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.hardRuleChecks} />
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Policy checks
+          </p>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.policyChecks} />
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-muted/20 p-4">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Rationale
+        </p>
+        <p className="mt-2 text-sm leading-relaxed">{supplier.recommendationNote}</p>
+      </div>
+    </div>
+  )
+}
+
+
+function FieldCell({
+  label,
+  value,
+  variant = "muted",
+  className,
+  valueClassName,
+}: {
+  label: string
+  value: ReactNode
+  variant?: "muted" | "default" | "emphasis"
+  className?: string
+  valueClassName?: string
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3",
+        variant === "default" && "bg-background/80",
+        variant === "muted" && "bg-muted/20",
+        variant === "emphasis" && "border-primary/30 bg-primary/[0.05]",
+        className,
+      )}
+    >
+      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+      <p className={cn("mt-1 text-sm leading-relaxed", valueClassName)}>{value}</p>
+    </div>
+  )
+}
+
+function MiniMetric({
+  label,
+  value,
+  helper,
+}: {
+  label: string
+  value: string | number
+  helper: string
+}) {
+  return (
+    <Card className="bg-card/70">
+      <CardContent className="space-y-1.5 px-4 py-3.5">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p className="text-xl font-semibold tabular-nums tracking-tight">
+          {value}
+        </p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {helper}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RuleBox({
+  label,
+  value,
+  limit,
+  status,
+}: {
+  label: string
+  value: string
+  limit: string
+  status: "met" | "partial" | "not-met"
+}) {
+  return (
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-lg border bg-card pl-3",
+      )}
+    >
+      <div
+        className={cn(
+          "absolute inset-y-0 left-0 w-1",
+          status === "met" && "bg-emerald-500",
+          status === "partial" && "bg-amber-500",
+          status === "not-met" && "bg-rose-500",
+        )}
+      />
+      <div className="p-3">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p className="mt-1 text-sm font-semibold">{value}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{limit}</p>
+      </div>
+    </div>
+  )
+}

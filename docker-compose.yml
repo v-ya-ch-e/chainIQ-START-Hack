@@ -1,0 +1,76 @@
+services:
+  mysql:
+    image: mysql:8.4
+    profiles: ["localdb", "tools"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chainiq}
+      MYSQL_USER: ${MYSQL_USER:-chainiq}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-chainiq}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h localhost -uroot -p${MYSQL_ROOT_PASSWORD:-root}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 25
+      start_period: 15s
+    networks:
+      - chainiq
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runner
+      args:
+        BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://organisational-layer:8000}
+        LOGICAL_BACKEND_INTERNAL_URL: ${LOGICAL_BACKEND_INTERNAL_URL:-http://logical-layer:8080}
+    environment:
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://organisational-layer:8000}
+      LOGICAL_BACKEND_INTERNAL_URL: ${LOGICAL_BACKEND_INTERNAL_URL:-http://logical-layer:8080}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-3-7-sonnet-20250219}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+      NODE_ENV: production
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    networks:
+      - chainiq
+    restart: unless-stopped
+
+  migrator:
+    image: python:3.14-slim
+    working_dir: /workspace/database_init
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_USER: ${MYSQL_USER:-chainiq}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-chainiq}
+      DB_NAME: ${MYSQL_DATABASE:-chainiq}
+    volumes:
+      - .:/workspace
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && python migrate.py && python migrate_rules.py && python migrate_dynamic_rules.py"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - chainiq
+    profiles: ["tools"]
+    restart: "no"
+
+volumes:
+  mysql_data:
+
+networks:
+  chainiq:
+    name: chainiq-network
+    external: true

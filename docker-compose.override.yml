@@ -1,0 +1,3 @@
+# Intentionally left minimal so `docker compose up` remains production-safe.
+# Use `docker-compose.dev.yml` for local hot-reload development.
+services: {}

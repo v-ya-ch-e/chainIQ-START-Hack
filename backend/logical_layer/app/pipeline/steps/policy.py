@@ -1,0 +1,372 @@
+"""Step 6: Evaluate procurement policy constraints using dynamic rules."""
+
+from __future__ import annotations
+
+import logging
+
+from app.models.pipeline_io import (
+    ApprovalThresholdEval,
+    ComplianceResult,
+    FetchResult,
+    PolicyResult,
+    PreferredSupplierEval,
+    RankResult,
+    RestrictionEval,
+    RuleRef,
+)
+from app.pipeline.logger import PipelineLogger
+from app.pipeline.rule_engine import RuleEngine
+from app.utils import coerce_budget, primary_delivery_country, country_to_region
+
+logger = logging.getLogger(__name__)
+
+STEP_NAME = "evaluate_policy"
+
+
+async def evaluate_policy(
+    fetch_result: FetchResult,
+    rank_result: RankResult,
+    compliance_result: ComplianceResult,
+    pipeline_logger: PipelineLogger,
+    *,
+    rule_engine: RuleEngine | None = None,
+    dynamic_rules: list[dict] | None = None,
+) -> PolicyResult:
+    """Determine which procurement policies apply and how they constrain the decision."""
+
+    req = fetch_result.request
+    budget = coerce_budget(req.budget_amount)
+    currency = req.currency or "EUR"
+    delivery_country = primary_delivery_country(req.model_dump())
+    region = country_to_region(delivery_country)
+
+    async with pipeline_logger.step(STEP_NAME, {"request_id": req.request_id}) as ctx:
+
+        # ── 6a: Approval threshold ────────────────────────────
+
+        approval_eval = _evaluate_approval_threshold(
+            fetch_result, rank_result, budget, currency, pipeline_logger
+        )
+
+        # ── 6b: Preferred supplier analysis ───────────────────
+
+        preferred_eval = _evaluate_preferred_supplier(
+            fetch_result, rank_result, compliance_result,
+            delivery_country, region, pipeline_logger
+        )
+
+        # ── 6c: Restricted supplier analysis ──────────────────
+
+        restricted_evals = _evaluate_restricted_suppliers(
+            fetch_result, compliance_result, pipeline_logger
+        )
+
+        # ── 6d: Category and geography rules ──────────────────
+
+        category_rules = [
+            RuleRef(
+                rule_id=r.rule_id,
+                rule_type=r.rule_type,
+                rule_text=r.rule_text,
+            )
+            for r in fetch_result.applicable_rules.category_rules
+        ]
+
+        geography_rules = [
+            RuleRef(
+                rule_id=r.rule_id,
+                rule_type=r.rule_type,
+                rule_text=r.rule_text,
+            )
+            for r in fetch_result.applicable_rules.geography_rules
+        ]
+
+        for rule in category_rules:
+            pipeline_logger.audit(
+                "policy", "info", STEP_NAME,
+                f"Category rule {rule.rule_id}: {rule.rule_text}",
+                {"policy_id": rule.rule_id, "rule_type": rule.rule_type},
+            )
+
+        for rule in geography_rules:
+            pipeline_logger.audit(
+                "policy", "info", STEP_NAME,
+                f"Geography rule {rule.rule_id}: {rule.rule_text}",
+                {"policy_id": rule.rule_id, "rule_type": rule.rule_type},
+            )
+
+        # ── 6e: Dynamic rule evaluation ───────────────────────
+
+        dynamic_rule_refs: list[RuleRef] = []
+        if rule_engine and dynamic_rules:
+            preferred_in_compliant = any(
+                req.preferred_supplier_mentioned
+                and req.preferred_supplier_mentioned.lower() in s.supplier_name.lower()
+                for s in compliance_result.compliant
+            ) if req.preferred_supplier_mentioned else False
+
+            context = {
+                "request_id": req.request_id,
+                "category_l1": req.category_l1,
+                "category_l2": req.category_l2,
+                "budget_amount": budget,
+                "currency": currency,
+                "country": delivery_country,
+                "compliant_supplier_count": len(compliance_result.compliant),
+                "quotes_required": approval_eval.quotes_required,
+                "preferred_supplier_mentioned": req.preferred_supplier_mentioned,
+                "preferred_in_compliant": preferred_in_compliant,
+                "category_rule_categories": [
+                    r.rule_id for r in fetch_result.applicable_rules.category_rules
+                ],
+                "geography_rule_countries": [
+                    r.rule_id for r in fetch_result.applicable_rules.geography_rules
+                ],
+            }
+
+            rule_results = await rule_engine.evaluate_rules(dynamic_rules, context)
+            for rr in rule_results:
+                status = "passed" if rr.result == "passed" else rr.result
+                dynamic_rule_refs.append(RuleRef(
+                    rule_id=rr.rule_id,
+                    rule_type=rr.eval_type,
+                    rule_text=rr.message or rr.rule_name,
+                ))
+                pipeline_logger.audit(
+                    "policy", "info" if rr.result == "passed" else "warn", STEP_NAME,
+                    f"Dynamic rule {rr.rule_id} ({rr.rule_name}): {status} — {rr.message}",
+                    {"rule_id": rr.rule_id, "result": rr.result},
+                )
+
+        result = PolicyResult(
+            approval_threshold=approval_eval,
+            preferred_supplier=preferred_eval,
+            restricted_suppliers=restricted_evals,
+            category_rules_applied=category_rules + dynamic_rule_refs,
+            geography_rules_applied=geography_rules,
+        )
+
+        ctx.output_summary = {
+            "tier": approval_eval.rule_applied,
+            "quotes_required": approval_eval.quotes_required,
+        }
+        ctx.metadata = {
+            "tier": approval_eval.rule_applied,
+            "quotes_required": approval_eval.quotes_required,
+        }
+
+        return result
+
+
+def _evaluate_approval_threshold(
+    fetch_result: FetchResult,
+    rank_result: RankResult,
+    budget: float | None,
+    currency: str,
+    pipeline_logger: PipelineLogger,
+) -> ApprovalThresholdEval:
+    """Determine approval tier from overview data or supplier pricing."""
+
+    tier = fetch_result.approval_tier
+
+    reference_amount = budget
+    basis_note = ""
+
+    if reference_amount is None and rank_result.ranked_suppliers:
+        totals = [
+            s.total_price for s in rank_result.ranked_suppliers
+            if s.total_price is not None
+        ]
+        if totals:
+            reference_amount = min(totals)
+            basis_note = (
+                f"Budget is null; using minimum supplier total "
+                f"{currency} {reference_amount:,.2f} for tier determination."
+            )
+            pipeline_logger.audit(
+                "policy", "info", STEP_NAME, basis_note,
+                {"inferred_amount": reference_amount, "currency": currency},
+            )
+
+    if tier is None:
+        return ApprovalThresholdEval(
+            note="No approval tier could be determined (budget and pricing unavailable)."
+        )
+
+    rule_applied = tier.threshold_id
+    quotes_required = tier.get_quotes_required()
+    approvers = tier.get_approvers()
+    deviation_approvers = tier.get_deviation_approvers()
+    deviation_approval = deviation_approvers[0] if deviation_approvers else None
+
+    if rank_result.ranked_suppliers:
+        totals = [
+            s.total_price for s in rank_result.ranked_suppliers
+            if s.total_price is not None
+        ]
+        if totals:
+            min_total = min(totals)
+            max_total = max(totals)
+            basis = (
+                f"All valid pricing options place total contract value between "
+                f"{currency} {min_total:,.2f} and {currency} {max_total:,.2f} — "
+                f"above the {currency} {tier.get_min_amount():,.2f} threshold."
+            )
+        else:
+            basis = f"Approval tier {rule_applied} applies."
+    else:
+        basis = f"Approval tier {rule_applied} applies based on budget {currency} {budget:,.2f}." if budget else ""
+
+    note = tier.policy_note or ""
+    if basis_note:
+        note = f"{basis_note} {note}".strip()
+    # When stated budget falls just above lower tier but actual value exceeds it
+    if budget is not None and rank_result.ranked_suppliers:
+        totals = [s.total_price for s in rank_result.ranked_suppliers if s.total_price is not None]
+        if totals:
+            min_total = min(totals)
+            min_amt = tier.get_min_amount()
+            # AT-002 (EUR 25k+): requester may have thought 25,199 was single-quote (AT-001)
+            prev_ceiling = 24999.99 if min_amt >= 25000 else None
+            if prev_ceiling is not None and budget < min_total and budget <= min_amt + 2000:
+                extra = (
+                    f"Stated budget of {currency} {budget:,.2f} falls just above the AT-001 ceiling "
+                    f"({currency} {prev_ceiling:,.2f}), so requester may have believed this was a "
+                    "single-quote scenario. However, stated budget cannot cover the required "
+                    f"quantity. The actual procurement value falls in {tier.threshold_id} regardless."
+                )
+                note = f"{extra} {note}".strip() if note else extra
+
+    eval_result = ApprovalThresholdEval(
+        rule_applied=rule_applied,
+        basis=basis,
+        quotes_required=quotes_required,
+        approvers=approvers,
+        deviation_approval=deviation_approval,
+        note=note,
+    )
+
+    pipeline_logger.audit(
+        "policy", "info", STEP_NAME,
+        f"Applied {rule_applied}: {quotes_required} quotes required. Approvers: {approvers}",
+        {
+            "policy_id": rule_applied,
+            "quotes_required": quotes_required,
+            "threshold": tier.get_min_amount(),
+            "actual_value": reference_amount,
+        },
+    )
+
+    return eval_result
+
+
+def _evaluate_preferred_supplier(
+    fetch_result: FetchResult,
+    rank_result: RankResult,
+    compliance_result: ComplianceResult,
+    delivery_country: str,
+    region: str,
+    pipeline_logger: PipelineLogger,
+) -> PreferredSupplierEval:
+    """Analyze the requester's preferred supplier."""
+
+    preferred_name = fetch_result.request.preferred_supplier_mentioned
+    if not preferred_name:
+        return PreferredSupplierEval(status="not_stated")
+
+    all_suppliers = fetch_result.compliant_suppliers
+    matched = None
+    for s in all_suppliers:
+        if preferred_name.lower() in s.supplier_name.lower() or s.supplier_name.lower() in preferred_name.lower():
+            matched = s
+            break
+
+    if matched is None:
+        pipeline_logger.audit(
+            "policy", "info", STEP_NAME,
+            f"Preferred supplier '{preferred_name}': not found in compliant set",
+            {"preferred_supplier": preferred_name, "status": "not_found"},
+        )
+        return PreferredSupplierEval(
+            supplier=preferred_name,
+            status="not_found",
+            policy_note=f"'{preferred_name}' not found among compliant suppliers.",
+        )
+
+    is_preferred = matched.preferred_supplier
+    is_restricted = False
+
+    excluded_ids = {e.supplier_id for e in compliance_result.excluded}
+    in_ranked = any(r.supplier_id == matched.supplier_id for r in rank_result.ranked_suppliers)
+
+    if matched.supplier_id in excluded_ids:
+        for exc in compliance_result.excluded:
+            if exc.supplier_id == matched.supplier_id and "restricted" in exc.reason.lower():
+                is_restricted = True
+                break
+
+    status = "eligible"
+    if is_restricted:
+        status = "restricted"
+    elif not is_preferred:
+        status = "not_preferred"
+    elif not in_ranked:
+        status = "no_coverage"
+
+    policy_note = (
+        f"{matched.supplier_name} is "
+        f"{'a preferred' if is_preferred else 'not a preferred'} supplier for "
+        f"{fetch_result.request.category_l2} in {delivery_country}."
+    )
+    if is_preferred and status == "eligible":
+        quotes_req = 0
+        if fetch_result.approval_tier:
+            quotes_req = fetch_result.approval_tier.get_quotes_required()
+        if quotes_req >= 2:
+            policy_note += (
+                f" Preferred status means {matched.supplier_name} should be included in the "
+                f"comparison — it does not mandate single-source selection, particularly where "
+                f"{fetch_result.approval_tier.threshold_id} requires {quotes_req} quotes."
+            )
+        else:
+            policy_note += (
+                " Preferred status means this supplier should be included in the comparison."
+            )
+
+    eval_result = PreferredSupplierEval(
+        supplier=matched.supplier_name,
+        status=status,
+        is_preferred=is_preferred,
+        covers_delivery_country=True,
+        is_restricted=is_restricted,
+        policy_note=policy_note,
+    )
+
+    pipeline_logger.audit(
+        "policy", "info", STEP_NAME,
+        f"Preferred supplier {matched.supplier_name}: {status}, "
+        f"is_preferred={is_preferred}, covers {delivery_country}",
+        {"preferred_supplier": matched.supplier_name, "status": status},
+    )
+
+    return eval_result
+
+
+def _evaluate_restricted_suppliers(
+    fetch_result: FetchResult,
+    compliance_result: ComplianceResult,
+    pipeline_logger: PipelineLogger,
+) -> dict[str, RestrictionEval]:
+    """Document restriction status for excluded suppliers."""
+
+    result: dict[str, RestrictionEval] = {}
+
+    for exc in compliance_result.excluded:
+        key = f"{exc.supplier_id}_{exc.supplier_name.replace(' ', '_')}"
+        is_restricted = "restricted" in exc.reason.lower()
+        result[key] = RestrictionEval(
+            restricted=is_restricted,
+            note=exc.reason,
+        )
+
+    return result

@@ -22,7 +22,7 @@ Environment variables (stored in `database_init/.env`):
 
 ## Schema Overview
 
-22 tables across 5 groups. All tables use InnoDB engine with utf8mb4 charset.
+38 tables across 9 groups. All tables use InnoDB engine with utf8mb4 charset.
 
 | Group | Tables | Row counts |
 |-------|--------|------------|
@@ -32,6 +32,9 @@ Environment variables (stored in `database_init/.env`):
 | Approval thresholds | `approval_thresholds`, `approval_threshold_managers`, `approval_threshold_deviation_approvers` | 15 + 18 + 8 |
 | Preferred/restricted | `preferred_suppliers_policy`, `preferred_supplier_region_scopes`, `restricted_suppliers_policy`, `restricted_supplier_scopes` | 61 + 102 + 5 + 9 |
 | Rules | `category_rules`, `geography_rules`, `geography_rule_countries`, `geography_rule_applies_to_categories`, `escalation_rules`, `escalation_rule_currencies` | 10 + 8 + 12 + 9 + 8 + 1 |
+| Evaluation engine | `rule_definitions`, `rule_versions`, `evaluation_runs`, `hard_rule_checks`, `policy_checks`, `supplier_evaluations`, `escalations` | dynamic |
+| Pipeline results | `pipeline_results` | dynamic |
+| Audit / logging | `pipeline_runs`, `pipeline_log_entries`, `audit_logs`, `rule_change_logs`, `escalation_logs`, `policy_change_logs`, `evaluation_run_logs`, `policy_check_logs` | dynamic |
 
 ---
 
@@ -51,10 +54,15 @@ erDiagram
     suppliers ||--o{ historical_awards : "awarded_to"
     suppliers ||--o{ preferred_suppliers_policy : "preferred"
     suppliers ||--o{ restricted_suppliers_policy : "restricted"
+    suppliers ||--o{ hard_rule_checks : "checked_against"
+    suppliers ||--o{ supplier_evaluations : "evaluated"
 
     requests ||--o{ request_delivery_countries : "delivers_to"
     requests ||--o{ request_scenario_tags : "tagged_as"
     requests ||--o{ historical_awards : "evaluated_by"
+    requests ||--o{ evaluation_runs : "processed_by"
+    requests ||--o{ pipeline_runs : "logged_by"
+    requests ||--o{ audit_logs : "audited_by"
 
     approval_thresholds ||--o{ approval_threshold_managers : "managed_by"
     approval_thresholds ||--o{ approval_threshold_deviation_approvers : "deviation_requires"
@@ -67,6 +75,32 @@ erDiagram
     geography_rules ||--o{ geography_rule_applies_to_categories : "applies_to"
 
     escalation_rules ||--o{ escalation_rule_currencies : "applies_for"
+
+    rule_definitions ||--o{ rule_versions : "versioned_as"
+    rule_definitions ||--o{ hard_rule_checks : "defines"
+    rule_definitions ||--o{ policy_checks : "defines"
+    rule_definitions ||--o{ rule_change_logs : "tracked_by"
+
+    rule_versions ||--o{ hard_rule_checks : "used_in"
+    rule_versions ||--o{ policy_checks : "used_in"
+    rule_versions ||--o{ escalations : "triggered_by"
+    rule_versions ||--o{ rule_change_logs : "new_version"
+
+    evaluation_runs ||--o{ hard_rule_checks : "contains"
+    evaluation_runs ||--o{ policy_checks : "contains"
+    evaluation_runs ||--o{ supplier_evaluations : "produces"
+    evaluation_runs ||--o{ escalations : "triggers"
+    evaluation_runs ||--o{ evaluation_run_logs : "logged_by"
+    evaluation_runs ||--o{ policy_check_logs : "logged_by"
+
+    policy_checks ||--o{ policy_check_logs : "tracked_by"
+
+    escalations ||--o{ escalation_logs : "logged_by"
+    escalations ||--o{ policy_change_logs : "changes"
+
+    requests ||--o{ pipeline_results : "result_of"
+
+    pipeline_runs ||--o{ pipeline_log_entries : "contains"
 ```
 
 ---
@@ -97,6 +131,7 @@ The category taxonomy. 30 rows defining all valid L1/L2 combinations.
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
 | `supplier_id` | VARCHAR(20) | No | **PK**. Format: `SUP-NNNN` |
+| `uuid` | VARCHAR(36) | No | Auto-generated UUIDv4. UNIQUE |
 | `supplier_name` | VARCHAR(120) | No | |
 | `country_hq` | VARCHAR(5) | No | ISO 2-letter country code of HQ |
 | `currency` | VARCHAR(5) | No | Currency the supplier prices in (`EUR`, `CHF`, `USD`) |
@@ -212,6 +247,7 @@ WHERE pt.supplier_id = :supplier_id
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
 | `request_id` | VARCHAR(20) | No | **PK**. Format: `REQ-NNNNNN` |
+| `uuid` | VARCHAR(36) | No | Auto-generated UUIDv4. UNIQUE |
 | `created_at` | DATETIME | No | UTC timestamp |
 | `request_channel` | VARCHAR(20) | No | `portal`, `teams`, or `email` |
 | `request_language` | VARCHAR(5) | No | `en`, `fr`, `de`, `es`, `pt`, `ja` |
@@ -575,7 +611,328 @@ Junction table. Only ER-008 has an entry here (`USD`), indicating it specificall
 
 ---
 
-## 5. Common Query Patterns
+## 5. Evaluation Engine Tables
+
+Tables created and managed by the Organisational Layer API to support rule-based evaluation, supplier scoring, and escalation tracking.
+
+### 5.1 `rule_definitions`
+
+Registry of all rules (hard rules and policy checks) that the evaluation engine can execute.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `rule_id` | VARCHAR(10) | No | **PK**. Format: `HR-NNN` (hard rules), `PC-NNN` (policy checks), `CR-NNN` / `GR-NNN` / `ER-NNN` (imported) |
+| `rule_type` | VARCHAR(20) | No | `hard` or `policy` |
+| `rule_name` | VARCHAR(100) | No | Human-readable rule name |
+| `is_skippable` | BOOLEAN | No | Whether the rule can be skipped during evaluation (default `FALSE`) |
+| `source` | VARCHAR(10) | No | `seed` (bootstrapped from policies.json) or `manual` |
+| `active` | BOOLEAN | No | Soft-delete flag (default `TRUE`) |
+| `created_at` | DATETIME | No | UTC timestamp |
+
+**Populated by:** Seed endpoint `POST /api/rules/seed` (imports from policy tables) and manual `POST /api/rules/definitions`.
+
+### 5.2 `rule_versions`
+
+Version history for each rule definition. Rules are versioned so that evaluation results are reproducible.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `version_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `rule_id` | VARCHAR(10) | No | **FK** -> `rule_definitions.rule_id` |
+| `version_num` | INTEGER | No | Sequential version number per rule |
+| `rule_config` | JSON | No | Full rule configuration (thresholds, parameters, conditions) |
+| `valid_from` | DATETIME | No | When this version became active |
+| `valid_to` | DATETIME | Yes | NULL = currently active version |
+| `changed_by` | VARCHAR(100) | Yes | Who created this version |
+| `change_reason` | TEXT | Yes | Why this version was created |
+
+### 5.3 `evaluation_runs`
+
+Each row represents one complete evaluation of a purchase request through the rule engine.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `run_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `request_id` | VARCHAR(20) | No | **FK** -> `requests.request_id` |
+| `triggered_by` | VARCHAR(20) | No | Who/what triggered the evaluation |
+| `agent_version` | VARCHAR(30) | No | Version of the evaluation agent |
+| `started_at` | DATETIME | No | UTC timestamp |
+| `finished_at` | DATETIME | Yes | NULL while running |
+| `status` | VARCHAR(20) | No | `running`, `completed`, `failed` |
+| `final_outcome` | VARCHAR(20) | Yes | `approved`, `escalated`, `rejected`, etc. |
+| `output_snapshot` | JSON | Yes | Full output snapshot for audit |
+| `parent_run_id` | VARCHAR(36) | Yes | Links to previous run if re-evaluation |
+| `trigger_reason` | VARCHAR(100) | Yes | Why this evaluation was triggered |
+
+### 5.4 `hard_rule_checks`
+
+Individual hard-rule check results for each supplier within an evaluation run.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `check_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `run_id` | VARCHAR(36) | No | **FK** -> `evaluation_runs.run_id` |
+| `rule_id` | VARCHAR(10) | No | **FK** -> `rule_definitions.rule_id` |
+| `version_id` | VARCHAR(36) | No | **FK** -> `rule_versions.version_id` |
+| `supplier_id` | VARCHAR(10) | Yes | **FK** -> `suppliers.supplier_id`. NULL for request-level checks |
+| `skipped` | BOOLEAN | No | Whether this check was skipped (default `FALSE`) |
+| `skip_reason` | VARCHAR(200) | Yes | Reason for skipping |
+| `result` | VARCHAR(10) | Yes | `pass`, `fail`, or NULL if skipped |
+| `actual_value` | JSON | Yes | The value that was checked |
+| `threshold` | JSON | Yes | The threshold/criteria it was checked against |
+| `checked_at` | DATETIME | No | UTC timestamp |
+
+### 5.5 `policy_checks`
+
+Policy check results. Unlike hard rules, policy checks can have overrides.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `check_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `run_id` | VARCHAR(36) | No | **FK** -> `evaluation_runs.run_id` |
+| `rule_id` | VARCHAR(10) | No | **FK** -> `rule_definitions.rule_id` |
+| `version_id` | VARCHAR(36) | No | **FK** -> `rule_versions.version_id` |
+| `supplier_id` | VARCHAR(10) | Yes | **FK** -> `suppliers.supplier_id`. NULL for request-level checks |
+| `result` | VARCHAR(10) | No | `pass`, `warn`, `fail` |
+| `evidence` | JSON | No | Supporting data for the check result |
+| `override_by` | VARCHAR(100) | Yes | Who overrode this check |
+| `override_at` | DATETIME | Yes | When it was overridden |
+| `override_reason` | TEXT | Yes | Why it was overridden |
+| `checked_at` | DATETIME | No | UTC timestamp |
+
+### 5.6 `supplier_evaluations`
+
+Aggregated evaluation results per supplier per run. Contains scoring breakdown and hard/policy check summaries.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `eval_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `run_id` | VARCHAR(36) | No | **FK** -> `evaluation_runs.run_id` |
+| `supplier_id` | VARCHAR(10) | No | **FK** -> `suppliers.supplier_id` |
+| `rank` | INTEGER | Yes | Final ranking (1 = best) |
+| `total_score` | DECIMAL(5,2) | Yes | Weighted composite score |
+| `price_score` | DECIMAL(5,2) | Yes | Price component |
+| `quality_score` | DECIMAL(5,2) | Yes | Quality component |
+| `esg_score` | DECIMAL(5,2) | Yes | ESG component |
+| `risk_score` | DECIMAL(5,2) | Yes | Risk component |
+| `hard_checks_total` | INTEGER | No | Total hard rule checks (default 0) |
+| `hard_checks_passed` | INTEGER | No | Passed hard checks (default 0) |
+| `hard_checks_skipped` | INTEGER | No | Skipped hard checks (default 0) |
+| `hard_checks_failed` | INTEGER | No | Failed hard checks (default 0) |
+| `policy_checks_total` | INTEGER | No | Total policy checks (default 0) |
+| `policy_checks_passed` | INTEGER | No | Passed policy checks (default 0) |
+| `policy_checks_warned` | INTEGER | No | Warned policy checks (default 0) |
+| `policy_checks_failed` | INTEGER | No | Failed policy checks (default 0) |
+| `excluded` | BOOLEAN | No | Whether supplier was excluded (default `FALSE`) |
+| `exclusion_rule_id` | VARCHAR(10) | Yes | **FK** -> `rule_definitions.rule_id`. Rule that caused exclusion |
+| `exclusion_reason` | TEXT | Yes | Human-readable exclusion reason |
+| `pricing_snapshot` | JSON | Yes | Pricing data at time of evaluation |
+| `evaluated_at` | DATETIME | No | UTC timestamp |
+
+### 5.7 `escalations`
+
+Escalation events triggered when the evaluation engine cannot make a compliant autonomous decision.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `escalation_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `run_id` | VARCHAR(36) | No | **FK** -> `evaluation_runs.run_id` |
+| `rule_id` | VARCHAR(10) | No | **FK** -> `rule_definitions.rule_id` |
+| `version_id` | VARCHAR(36) | No | **FK** -> `rule_versions.version_id` |
+| `trigger_table` | VARCHAR(30) | No | Source table: `hard_rule_checks` or `policy_checks` |
+| `trigger_check_id` | VARCHAR(36) | No | ID of the check that triggered escalation |
+| `escalation_target` | VARCHAR(100) | No | Role/team to escalate to |
+| `escalation_reason` | TEXT | No | Why escalation was triggered |
+| `event_type` | VARCHAR(50) | No | Type of escalation event |
+| `event_dispatched_at` | DATETIME | Yes | When the event was sent |
+| `event_payload` | JSON | Yes | Event data payload |
+| `event_status` | VARCHAR(20) | No | `pending`, `dispatched`, `failed` (default `pending`) |
+| `status` | VARCHAR(20) | No | `open`, `acknowledged`, `resolved`, `dismissed` (default `open`) |
+| `resolved_by` | VARCHAR(100) | Yes | Who resolved the escalation |
+| `resolved_at` | DATETIME | Yes | When it was resolved |
+| `resolution_note` | TEXT | Yes | Resolution details |
+| `created_at` | DATETIME | No | UTC timestamp |
+
+---
+
+## 5b. Pipeline Results Table
+
+### 5b.1 `pipeline_results`
+
+Stores the full pipeline output JSON for each processed request. Used by the frontend to display evaluated requests without re-running the pipeline.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `id` | INT AUTO_INCREMENT | No | **PK** |
+| `run_id` | VARCHAR(36) | No | UUIDv4. UNIQUE, indexed. Links to `pipeline_runs.run_id` |
+| `request_id` | VARCHAR(20) | No | **FK** -> `requests.request_id`. Indexed |
+| `status` | VARCHAR(20) | No | Pipeline status: `processed`, `error` (default `processed`) |
+| `recommendation_status` | VARCHAR(30) | Yes | Extracted from `output.recommendation.status`: `can_proceed`, `cannot_proceed`, etc. |
+| `processed_at` | DATETIME | No | When the pipeline completed processing |
+| `output` | JSON | No | Full pipeline output (matches `example_output.json` structure) |
+| `summary` | JSON | Yes | Pre-extracted lightweight summary for list views (supplier count, escalation count, top supplier, etc.) |
+| `created_at` | DATETIME | No | Row creation timestamp |
+
+**Indexes:** `idx_pr_run_id(run_id)`, `idx_pr_request_id(request_id)`
+
+**Summary JSON structure:**
+```json
+{
+  "supplier_count": 3,
+  "excluded_count": 1,
+  "escalation_count": 3,
+  "blocking_escalation_count": 3,
+  "top_supplier_id": "SUP-0007",
+  "top_supplier_name": "Bechtle Workplace Solutions",
+  "total_issues": 3,
+  "confidence_score": 0
+}
+```
+
+---
+
+## 6. Audit & Logging Tables
+
+Tables for pipeline execution tracking, audit trails, and change history. All populated by the Organisational Layer API.
+
+### 6.1 `pipeline_runs`
+
+Tracks execution of procurement processing pipelines.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `id` | INT AUTO_INCREMENT | No | **PK** |
+| `run_id` | VARCHAR(36) | No | UUIDv4. UNIQUE, indexed |
+| `request_id` | VARCHAR(20) | No | **FK** -> `requests.request_id` |
+| `status` | VARCHAR(20) | No | `running`, `completed`, `failed` (default `running`) |
+| `started_at` | DATETIME | No | UTC timestamp |
+| `completed_at` | DATETIME | Yes | NULL while running |
+| `total_duration_ms` | INTEGER | Yes | Total pipeline duration in milliseconds |
+| `steps_completed` | INTEGER | No | Count of completed steps (default 0) |
+| `steps_failed` | INTEGER | No | Count of failed steps (default 0) |
+| `error_message` | TEXT | Yes | Error details if pipeline failed |
+
+### 6.2 `pipeline_log_entries`
+
+Per-step log entries within a pipeline run.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `id` | INT AUTO_INCREMENT | No | **PK** |
+| `run_id` | VARCHAR(36) | No | **FK** -> `pipeline_runs.run_id` |
+| `step_name` | VARCHAR(60) | No | Name of the pipeline step |
+| `step_order` | INTEGER | No | Execution order (1-based) |
+| `status` | VARCHAR(20) | No | `started`, `completed`, `failed` (default `started`) |
+| `started_at` | DATETIME | No | UTC timestamp |
+| `completed_at` | DATETIME | Yes | NULL while running |
+| `duration_ms` | INTEGER | Yes | Step duration in milliseconds |
+| `input_summary` | JSON | Yes | Summary of step input |
+| `output_summary` | JSON | Yes | Summary of step output |
+| `error_message` | TEXT | Yes | Error details if step failed |
+| `metadata` | JSON | Yes | Additional step metadata |
+
+### 6.3 `audit_logs`
+
+General-purpose audit trail for all procurement operations.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `id` | INT AUTO_INCREMENT | No | **PK** |
+| `request_id` | VARCHAR(20) | No | **FK** -> `requests.request_id`. Indexed |
+| `run_id` | VARCHAR(36) | Yes | Associated pipeline/evaluation run. Indexed |
+| `timestamp` | DATETIME(3) | No | Millisecond-precision UTC timestamp |
+| `level` | VARCHAR(10) | No | `debug`, `info`, `warn`, `error` (default `info`) |
+| `category` | VARCHAR(40) | No | Log category. Indexed. Default `general` |
+| `step_name` | VARCHAR(60) | Yes | Pipeline step that generated this log |
+| `message` | TEXT | No | Human-readable log message |
+| `details` | JSON | Yes | Structured data for programmatic consumption |
+| `source` | VARCHAR(30) | No | Originating service (default `logical_layer`) |
+
+### 6.4 `rule_change_logs`
+
+Tracks changes to rule definitions and versions for audit purposes.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `log_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `rule_id` | VARCHAR(10) | No | **FK** -> `rule_definitions.rule_id` |
+| `old_version_id` | VARCHAR(36) | Yes | Previous version (NULL for initial creation) |
+| `new_version_id` | VARCHAR(36) | No | **FK** -> `rule_versions.version_id` |
+| `changed_at` | DATETIME | No | UTC timestamp |
+| `changed_by` | VARCHAR(100) | No | Who made the change |
+| `change_reason` | TEXT | Yes | Why the change was made |
+| `affected_runs` | JSON | Yes | List of evaluation runs affected by this change |
+
+### 6.5 `escalation_logs`
+
+Change history for escalation records.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `log_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `escalation_id` | VARCHAR(36) | No | **FK** -> `escalations.escalation_id` |
+| `changed_at` | DATETIME | No | UTC timestamp |
+| `changed_by` | VARCHAR(100) | No | Who made the change |
+| `change_type` | VARCHAR(30) | No | Type of change (e.g. `status_change`, `resolution`) |
+| `field_changed` | VARCHAR(50) | Yes | Which field was modified |
+| `old_value` | JSON | Yes | Previous value |
+| `new_value` | JSON | Yes | New value |
+| `note` | TEXT | Yes | Additional notes |
+
+### 6.6 `policy_change_logs`
+
+Tracks policy changes that resulted from escalation resolutions.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `log_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `escalation_id` | VARCHAR(36) | No | **FK** -> `escalations.escalation_id` |
+| `changed_at` | DATETIME | No | UTC timestamp |
+| `changed_by` | VARCHAR(100) | No | Who made the change |
+| `change_type` | VARCHAR(30) | No | Type of policy change |
+| `policy_rule_id` | VARCHAR(10) | Yes | Which policy rule was changed |
+| `old_value` | JSON | Yes | Previous policy value |
+| `new_value` | JSON | Yes | New policy value |
+| `note` | TEXT | Yes | Additional notes |
+
+### 6.7 `evaluation_run_logs`
+
+Change history for evaluation run status transitions.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `log_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `run_id` | VARCHAR(36) | No | **FK** -> `evaluation_runs.run_id` |
+| `changed_at` | DATETIME | No | UTC timestamp |
+| `changed_by` | VARCHAR(100) | No | Who made the change |
+| `change_type` | VARCHAR(30) | No | Type of change |
+| `old_status` | VARCHAR(20) | Yes | Previous status |
+| `new_status` | VARCHAR(20) | Yes | New status |
+| `old_outcome` | VARCHAR(20) | Yes | Previous outcome |
+| `new_outcome` | VARCHAR(20) | Yes | New outcome |
+| `note` | TEXT | Yes | Additional notes |
+
+### 6.8 `policy_check_logs`
+
+Change history for policy check results (e.g. overrides).
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `log_id` | VARCHAR(36) | No | **PK**. UUIDv4 |
+| `check_id` | VARCHAR(36) | No | **FK** -> `policy_checks.check_id` |
+| `run_id` | VARCHAR(36) | No | **FK** -> `evaluation_runs.run_id` |
+| `changed_at` | DATETIME | No | UTC timestamp |
+| `changed_by` | VARCHAR(100) | No | Who made the change |
+| `change_type` | VARCHAR(30) | No | Type of change (e.g. `override`, `correction`) |
+| `old_result` | VARCHAR(10) | Yes | Previous result |
+| `new_result` | VARCHAR(10) | Yes | New result |
+| `old_evidence` | JSON | Yes | Previous evidence |
+| `new_evidence` | JSON | Yes | New evidence |
+| `override_reason` | TEXT | Yes | Why the override was applied |
+
+---
+
+## 7. Common Query Patterns
 
 ### Find Compliant Suppliers for a Request
 
@@ -660,7 +1017,7 @@ WHERE grc.country_code = :delivery_country;
 
 ---
 
-## 6. Key Differences from Raw Data
+## 8. Key Differences from Raw Data
 
 This section documents what changed between the source files in `data/` and the normalised database. Refer to `DATA_STRUCTURE.md` for the original raw file schemas.
 
@@ -682,7 +1039,7 @@ This section documents what changed between the source files in `data/` and the 
 
 ---
 
-## 7. Migration Script Reference
+## 9. Migration Script Reference
 
 The database is populated by running:
 
@@ -692,4 +1049,6 @@ source .venv/bin/activate
 python migrate.py
 ```
 
-The script is **idempotent** -- it drops and recreates all 22 tables on each run. It prints a summary with row counts for verification.
+The script is **idempotent** -- it drops and recreates the original 22 data tables on each run (reference, request, historical, and policy tables). It prints a summary with row counts for verification.
+
+The additional 15 evaluation and audit tables (sections 5-6) are managed by the Organisational Layer API via SQLAlchemy ORM and are created automatically when the backend service starts.

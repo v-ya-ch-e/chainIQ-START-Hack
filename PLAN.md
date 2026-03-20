@@ -18,351 +18,357 @@ The judging weights tell us what matters:
 
 ## Architecture Overview
 
-### Recommended Stack
+### Implemented Topology
+
+The system runs as three independent services on a shared Docker network (`chainiq-network`), with an external orchestrator (n8n) driving the procurement pipeline.
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   Frontend (UI)                  │
-│         Next.js / React + Tailwind CSS           │
-│  Request viewer, comparison table, audit trail   │
-└──────────────────────┬──────────────────────────┘
-                       │ REST / WebSocket
-┌──────────────────────▼──────────────────────────┐
-│                Backend (API)                     │
-│              Python (FastAPI)                    │
-│                                                  │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │ Parser   │  │ Policy   │  │ Supplier     │  │
-│  │ (LLM)    │→ │ Engine   │→ │ Ranker       │  │
-│  │          │  │ (Rules)  │  │              │  │
-│  └──────────┘  └──────────┘  └──────────────┘  │
-│       │              │              │            │
-│       ▼              ▼              ▼            │
-│  ┌──────────────────────────────────────────┐   │
-│  │         Audit Trail Generator            │   │
-│  └──────────────────────────────────────────┘   │
-└──────────────────────┬──────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────┐
-│              Data Layer                          │
-│   Preprocessed JSON/SQLite + Policy Index        │
-│   (All 6 datasets loaded and cross-referenced)   │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Frontend (Next.js :3000)                 │
+│  5 pages: Overview, Inbox, Case Detail, Escalations, Audit  │
+│  shadcn v4 + Tailwind CSS, server components                │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ Next.js rewrites /api/* →
+┌──────────────────────────▼──────────────────────────────────┐
+│           Organisational Layer (FastAPI :8000)                │
+│  CRUD + Analytics API — 8 routers, 40+ endpoints             │
+│  Escalation engine (ER-001..ER-008 + AT conflict detection)  │
+│  SQLAlchemy ORM — 22 normalised tables                       │
+└──────────────────────────┬──────────────────────────────────┘
+                           │ pymysql
+┌──────────────────────────▼──────────────────────────────────┐
+│                    MySQL 8.4 (AWS RDS)                       │
+│  All 6 source datasets normalised into relational tables     │
+│  Bootstrap: database_init/migrate.py                         │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│             Logical Layer (FastAPI :8080)                     │
+│  Procurement decision engine — 11 active endpoints           │
+│  Calls Organisational Layer via HTTP (never touches DB)       │
+│  Uses Anthropic Claude for LLM-powered validation/reasoning  │
+└──────────┬──────────────────────┬───────────────────────────┘
+           │ HTTP                  │ Anthropic SDK
+           ▼                      ▼
+  Organisational Layer       Claude (claude-sonnet-4-6)
+
+┌─────────────────────────────────────────────────────────────┐
+│                    n8n (external)                             │
+│  Orchestrates: validate → filter → compliance → rank →       │
+│  policy → escalations → recommendation → assemble            │
+│  Calls Logical Layer endpoints with branching logic           │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### Why This Stack
 
-- **Python backend**: Best ecosystem for LLM integration, data manipulation, and rule engines
-- **FastAPI**: Async, fast, auto-generates OpenAPI docs (shows feasibility)
-- **React/Next.js frontend**: Modern, component-based, good for the comparison views judges want to see
-- **SQLite or in-memory dicts**: No database server needed — keeps it deployable on Azure in minutes
-- **LLM for parsing only**: Use the LLM to extract structure from free text, then use deterministic code for all policy logic (this is crucial for auditability)
+- **Two-layer backend**: Organisational Layer owns data + governance rules. Logical Layer owns decision logic + LLM integration. Clean separation means policy enforcement is deterministic and auditable.
+- **MySQL on RDS**: All 6 source datasets (requests, suppliers, pricing, categories, policies, historical awards) normalised into 22 relational tables at bootstrap. No flat-file loading at runtime.
+- **LLM for parsing and reasoning**: Claude is used in `validateRequest.py` (contradiction detection), `generateRecommendation.py` (human-readable reasoning), `assembleOutput.py` (enriching validation issues and supplier notes), and `formatInvalidResponse.py` (summarizing validation failures). All policy and compliance logic is deterministic Python code.
+- **n8n orchestration**: All 11 pipeline steps are exposed as independent HTTP endpoints so n8n can chain them with branching logic (validation branch + compliance branch), retries, and human-in-the-loop steps. A convenience endpoint (`processRequest`) also runs the full pipeline in a single call.
+- **Next.js frontend**: Server components fetch data from the Organisational Layer via `BACKEND_INTERNAL_URL` (container-internal). No client-side API calls for data loading.
+
+### Docker Compose Topology
+
+Two independent compose files on the shared `chainiq-network`:
+
+**Backend stack** (`backend/docker-compose.yml`):
+- `organisational-layer` — FastAPI on port 8000, reads `.env` for DB creds
+- `logical-layer` — FastAPI on port 8080, depends on organisational-layer, reads `.env` for `ORGANISATIONAL_LAYER_URL` + `ANTHROPIC_API_KEY`
+
+**Frontend stack** (`docker-compose.yml` at repo root):
+- `frontend` — Next.js on port 3000, `BACKEND_INTERNAL_URL` points to organisational-layer
+- `mysql` — MySQL 8.4 on port 3306 (local dev only, profile `localdb`)
+- `migrator` — one-shot Python script to bootstrap DB (profile `tools`)
 
 ---
 
-## Data Transformation Plan
+## Current State — What's Built
 
-### Step 1: Normalize and Index All Data at Startup
+### Frontend (status: fully functional)
 
-#### 1a. Normalize `policies.json`
+| Component | Path | Purpose |
+|-----------|------|---------|
+| Root layout | `frontend/src/app/layout.tsx` | Fonts, TooltipProvider |
+| Workspace shell | `frontend/src/components/app-shell/workspace-shell.tsx` | Sidebar, header, breadcrumbs |
+| Overview page | `frontend/src/app/(workspace)/page.tsx` | Metrics, blocked cases, recent escalations |
+| Inbox page | `frontend/src/app/(workspace)/inbox/page.tsx` | Case list with search, filter, status badges |
+| Case detail | `frontend/src/app/(workspace)/cases/[caseId]/page.tsx` | Tabbed workspace: Overview, Suppliers, Escalations, Audit Trace |
+| Escalations page | `frontend/src/app/(workspace)/escalations/page.tsx` | Escalation queue with drill-down sheet |
+| Audit page | `frontend/src/app/(workspace)/audit/page.tsx` | Audit summary + activity feed |
+| Data layer | `frontend/src/lib/data/cases.ts` | All backend calls + response mapping |
+| Type system | `frontend/src/lib/types/case.ts` | `CaseDetail`, `CaseListItem`, `SupplierRow`, `EscalationItem`, etc. |
+| UI primitives | `frontend/src/components/ui/` | shadcn v4 components (Button, Card, Table, Tabs, Badge, Sheet, etc.) |
 
-The policy file has inconsistent schemas. Normalize at load time:
+Data flow: Pages are async server components -> call loaders in `cases.ts` -> fetch from `BACKEND_INTERNAL_URL/api/*` -> map response to frontend types.
 
-```python
-# Unified threshold structure
-{
-    "threshold_id": "AT-011",
-    "currency": "USD",
-    "min_amount": 0,        # normalized from min_value
-    "max_amount": 27000,    # normalized from max_value
-    "min_supplier_quotes": 1,  # normalized from quotes_required
-    "managed_by": ["business"],  # normalized from approvers
-    "deviation_approval_required_from": []  # extracted from policy_note or empty
-}
-```
+### Organisational Layer (status: fully functional)
 
-Similarly normalize geography_rules (GR-001..GR-004 vs GR-005..GR-008) and escalation_rules (ER-008 uses different keys).
+| Component | Path | Purpose |
+|-----------|------|---------|
+| App entry | `backend/organisational_layer/app/main.py` | FastAPI app, CORS, router registration |
+| DB config | `backend/organisational_layer/app/config.py` | Pydantic Settings for MySQL connection |
+| ORM models | `backend/organisational_layer/app/models/` | 22 tables across 4 modules (reference, requests, historical, policies) |
+| CRUD routers | `backend/organisational_layer/app/routers/` | categories, suppliers, requests, awards, policies, rules |
+| Analytics router | `backend/organisational_layer/app/routers/analytics.py` | Compliant suppliers, pricing lookup, approval tier, restriction/preferred checks, request overview, spend aggregations, supplier win rates |
+| Escalation router | `backend/organisational_layer/app/routers/escalations.py` | Queue endpoint + per-request escalations |
+| Escalation engine | `backend/organisational_layer/app/services/escalations.py` | ER-001 through ER-008, AT conflict detection, conditional restriction parsing, multi-language single-supplier pattern matching |
 
-#### 1b. Build Supplier Lookup Indexes
+Key analytics endpoints the pipeline depends on:
+- `GET /api/analytics/request-overview/{id}` — comprehensive pre-assembled evaluation (compliant suppliers, pricing, rules, awards)
+- `GET /api/analytics/compliant-suppliers` — non-restricted suppliers for category+country
+- `GET /api/analytics/pricing-lookup` — pricing tier for supplier+category+region+quantity
+- `GET /api/analytics/approval-tier` — approval threshold for currency+amount
+- `GET /api/analytics/check-restricted` — restriction check with scope+conditional logic
+- `GET /api/analytics/check-preferred` — preferred status for supplier+category+region
+- `GET /api/analytics/applicable-rules` — category and geography rules for a context
+- `GET /api/escalations/by-request/{id}` — computed escalations for a request
 
-Create fast-lookup dictionaries:
+### Logical Layer (status: fully implemented)
 
-```python
-# supplier by (category_l1, category_l2, country) → list of suppliers
-suppliers_by_category_country = {}
+| Component | Path | Status | Purpose |
+|-----------|------|--------|---------|
+| App entry | `backend/logical_layer/app/main.py` | Done | FastAPI app, CORS, lifespan, router registration |
+| Config | `backend/logical_layer/app/config.py` | Done | `ORGANISATIONAL_LAYER_URL` setting |
+| Org client | `backend/logical_layer/app/clients/organisational.py` | Done | Async httpx client wrapping all Org Layer API calls + escalations |
+| Validate endpoint | `POST /api/validate-request` | Done | Deterministic checks + Claude LLM for contradictions |
+| Filter endpoint | `POST /api/filter-suppliers` | Done | Filter suppliers by category via Org Layer |
+| Rank endpoint | `POST /api/rank-suppliers` | Done | True-cost ranking (price / quality / risk / ESG) |
+| Process endpoint | `POST /api/processRequest` | Done | Full pipeline — chains all steps, returns complete output |
+| Fetch request | `POST /api/fetch-request` | Done | Proxy to fetch request from Org Layer |
+| Check compliance | `POST /api/check-compliance` | Done | Per-supplier compliance checks (restrictions, delivery, residency) |
+| Evaluate policy | `POST /api/evaluate-policy` | Done | Approval tier, preferred supplier, restriction checks, applicable rules |
+| Check escalations | `POST /api/check-escalations` | Done | Fetch computed escalations from Org Layer |
+| Gen recommendation | `POST /api/generate-recommendation` | Done | Recommendation status + LLM reasoning |
+| Assemble output | `POST /api/assemble-output` | Done | Final output assembly with LLM enrichment |
+| Format invalid | `POST /api/format-invalid-response` | Done | Structured response for invalid requests |
+| Validate script | `backend/logical_layer/scripts/validateRequest.py` | Done | Required/optional field checks + LLM contradiction detection |
+| Filter script | `backend/logical_layer/scripts/filterCompaniesByProduct.py` | Done | Category-based supplier filtering |
+| Rank script | `backend/logical_layer/scripts/rankCompanies.py` | Done | True-cost computation + ranking |
+| Compliance script | `backend/logical_layer/scripts/checkCompliance.py` | Done | Per-supplier compliance rule checks |
+| Policy script | `backend/logical_layer/scripts/evaluatePolicy.py` | Done | Procurement policy evaluation |
+| Escalation script | `backend/logical_layer/scripts/checkEscalations.py` | Done | Escalation fetching from Org Layer |
+| Recommend script | `backend/logical_layer/scripts/generateRecommendation.py` | Done | Recommendation generation with LLM |
+| Assembly script | `backend/logical_layer/scripts/assembleOutput.py` | Done | Output assembly with LLM enrichment |
+| Invalid script | `backend/logical_layer/scripts/formatInvalidResponse.py` | Done | Invalid request response formatting |
+| Pipeline schemas | `backend/logical_layer/app/schemas/pipeline.py` | Done | Pydantic models for all pipeline endpoints |
+| Pipeline router | `backend/logical_layer/app/routers/pipeline.py` | Done | Router for pipeline step endpoints |
 
-# supplier by id → supplier details (merged across categories)
-suppliers_by_id = {}
+The `OrganisationalClient` (async httpx) has methods for every Org Layer endpoint: `get_request_overview`, `get_request`, `get_compliant_suppliers`, `get_pricing_lookup`, `get_approval_tier`, `check_restricted`, `check_preferred`, `get_applicable_rules`, `get_awards_by_request`, `get_escalation_rules`, `get_escalations_by_request`, `get_supplier_win_rates`.
 
-# supplier name → supplier_id (for resolving preferred_supplier_mentioned)
-supplier_name_to_id = {}
+### Database (status: fully functional)
 
-# preferred suppliers: (supplier_id, category_l1, category_l2, region) → True
-preferred_index = set()
-
-# restricted suppliers: (supplier_id, category_l1, category_l2) → restriction details
-restricted_index = {}
-```
-
-#### 1c. Build Pricing Lookup
-
-```python
-# pricing by (supplier_id, category_l1, category_l2, region) → sorted list of tiers
-pricing_tiers = {}
-```
-
-Given a quantity, binary search or linear scan to find the matching tier.
-
-#### 1d. Country-to-Region Mapping
-
-```python
-COUNTRY_TO_REGION = {
-    "DE": "EU", "FR": "EU", "NL": "EU", "BE": "EU", "AT": "EU",
-    "IT": "EU", "ES": "EU", "PL": "EU", "UK": "EU",
-    "CH": "CH",
-    "US": "Americas", "CA": "Americas", "BR": "Americas", "MX": "Americas",
-    "SG": "APAC", "AU": "APAC", "IN": "APAC", "JP": "APAC",
-    "UAE": "MEA", "ZA": "MEA",
-}
-```
-
-#### 1e. Historical Awards Index
-
-```python
-# request_id → list of award records (sorted by rank)
-awards_by_request = {}
-
-# (category_l1, category_l2, country) → aggregated win patterns
-category_country_patterns = {}
-```
-
-### Step 2: Build the Processing Pipeline
-
-For each request, run these stages in order:
+Bootstrap via `database_init/migrate.py`. Reads all 6 source CSV/JSON files from `data/` and loads them into 22 normalised MySQL tables. Handles the inconsistent policy schemas (EUR/CHF vs USD thresholds), semicolon-delimited service regions, per-category supplier rows, etc.
 
 ---
 
-## Processing Pipeline (Per Request)
+## Gaps — Status
 
-### Stage 1: Parse & Interpret
+All critical gaps have been addressed by the pipeline implementation.
 
-**Use LLM here** to extract from `request_text`:
-- Quantities mentioned in text (may differ from `quantity` field)
-- Budget mentioned in text (may differ from `budget_amount` field)
-- Dates mentioned in text
-- Supplier preferences mentioned in text
-- Special instructions or constraints
-- Language detection + translation if needed
+| Gap | Status | Implementation |
+|-----|--------|---------------|
+| Gap 1: Full Pipeline Orchestration | **Resolved** | `POST /api/processRequest` in `app/routers/processing.py` chains all steps. Individual endpoints available for n8n orchestration. |
+| Gap 2: Policy Evaluation Assembly | **Resolved** | `scripts/evaluatePolicy.py` + `POST /api/evaluate-policy` produces the full `policy_evaluation` section (approval tier, preferred supplier, restrictions, rules). |
+| Gap 3: Output Format Matching | **Resolved** | `scripts/assembleOutput.py` + `POST /api/assemble-output` produces all 8 sections of `example_output.json`. LLM enriches validation issues and supplier notes. |
+| Gap 4: Supplier Exclusion Reasoning | **Resolved** | `scripts/checkCompliance.py` + `POST /api/check-compliance` splits suppliers into compliant/non-compliant with detailed exclusion reasons. |
+| Gap 5: Recommendation Generation | **Resolved** | `scripts/generateRecommendation.py` + `POST /api/generate-recommendation` produces status, reason, preferred supplier, minimum budget with LLM reasoning. |
+| Gap 6: Budget & Lead Time Checks | **Partially resolved** | LLM enrichment in `assembleOutput.py` adds severity and action_required to validation issues including budget/lead-time analysis. Cross-referencing with pricing data happens in the enrichment prompt. |
+| Gap 7: Historical Context | **Resolved** | `processRequest` fetches historical awards via `org_client.get_awards_by_request()` and passes them to `assembleOutput` for audit trail. |
+| Gap 8: Audit Trail Assembly | **Resolved** | `assembleOutput.py` builds the complete `audit_trail` section from all pipeline stage metadata. |
 
-**Output**: `RequestInterpretation` object with all structured fields + any text-extracted overrides.
+---
 
-### Stage 2: Validate
+## Target Processing Pipeline (Implemented)
 
-Deterministic checks (no LLM needed):
+### `POST /api/processRequest` — Full Implementation
 
-| Check | Condition | Issue Type | Severity |
-|-------|-----------|------------|----------|
-| Budget present | `budget_amount is not None` | missing_info | critical |
-| Quantity present | `quantity is not None` | missing_info | critical |
-| Budget vs. text | LLM-extracted budget ≠ `budget_amount` | contradictory | high |
-| Quantity vs. text | LLM-extracted quantity ≠ `quantity` | contradictory | high |
-| Budget sufficient | `quantity × min_available_unit_price ≤ budget_amount` | budget_insufficient | critical |
-| Lead time feasible | `required_by_date - created_at ≥ min_expedited_lead_time` | lead_time_infeasible | high |
-| Category valid | `(category_l1, category_l2)` exists in `categories.csv` | invalid_category | critical |
-| Delivery country covered | At least one supplier serves all delivery countries | no_coverage | critical |
+```
+Input: { "request_id": "REQ-000004" }
 
-### Stage 3: Apply Policy
+Step 1: FETCH REQUEST
+  Call: org_client.get_request(request_id)
+  Output: full request object with delivery countries, scenario tags, category
 
-Deterministic rule engine:
+Step 2: VALIDATE
+  Call: validate_request(request_data) via asyncio.to_thread
+  Output: completeness, issues[], request_interpretation
 
-1. **Approval threshold**: Look up tier by `currency` + `total_value` (use actual calculated value, not budget). Determine required quotes and approvers.
+Step 3: BRANCH ON VALIDITY
+  If missing_required issues → format_invalid_response() → return early
+  Otherwise → continue
 
-2. **Preferred supplier check**: If `preferred_supplier_mentioned`:
-   - Resolve name → `supplier_id`
-   - Check if supplier serves the right `category_l1`/`category_l2`
-   - Check if supplier's `service_regions` covers all `delivery_countries`
-   - Check if supplier is restricted (see next step)
-   - If any check fails, note the mismatch and discard the preference
+Step 4: FILTER SUPPLIERS
+  Call: filter_suppliers({category_l1, category_l2}) via asyncio.to_thread
+  Output: matching supplier rows
 
-3. **Restricted supplier check**: For every candidate supplier:
-   - Check `policies.json` `restricted_suppliers` for `(supplier_id, category_l1, category_l2)`
-   - If found, check `restriction_scope` against `delivery_countries`
-   - Handle value-conditional restrictions (SUP-0045: OK below EUR 75K)
+Step 5: CHECK COMPLIANCE
+  Call: check_compliance(request_data, suppliers) via asyncio.to_thread
+  Output: compliant[], non_compliant[] with exclusion reasons
 
-4. **Category rules**: Check if any `category_rules` apply to this `(category_l1, category_l2)`. Apply the rule (e.g., CR-001 requires ≥3 suppliers above 100K, CR-004 requires data residency filtering).
+Step 6: RANK SUPPLIERS
+  Call: rank_suppliers(request_data, compliant) via asyncio.to_thread
+  Output: ranked suppliers[] with pricing and true-cost scores
 
-5. **Geography rules**: Check if any `geography_rules` apply to the `delivery_countries`. Note applicable compliance requirements.
+Step 7: ENRICH SUPPLIER NAMES
+  Call: org_client.get_compliant_suppliers() for name mapping
+  Output: supplier_name added to ranked and non-compliant suppliers
 
-### Stage 4: Find & Price Compliant Suppliers
+Step 8: EVALUATE POLICY
+  Call: evaluate_policy(request_data, ranked, non_compliant) via asyncio.to_thread
+  Output: policy_evaluation (approval_threshold, preferred_supplier, restricted, rules)
 
-1. Filter `suppliers.csv` to rows matching `category_l1`, `category_l2`
-2. Filter to suppliers whose `service_regions` includes all `delivery_countries`
-3. Filter out restricted suppliers (from Stage 3)
-4. For each remaining supplier, look up pricing:
-   - Map delivery country → region
-   - Find the pricing tier matching `quantity`
-   - Calculate `total_price = unit_price × quantity`
-   - Also calculate `expedited_total = expedited_unit_price × quantity`
-   - Check `standard_lead_time_days` and `expedited_lead_time_days` vs. available time
-5. If `data_residency_constraint == true`, filter to suppliers with `data_residency_supported == true`
+Step 9: CHECK ESCALATIONS
+  Call: check_escalations(request_id) via asyncio.to_thread
+  Output: escalations[] with rule_id, trigger, escalate_to, blocking
 
-### Stage 5: Rank Suppliers
+Step 10: GENERATE RECOMMENDATION
+  Call: generate_recommendation({escalations, ranked, validation, interpretation}) via asyncio.to_thread
+  Uses Claude LLM for human-readable reason and rationale
+  Output: recommendation with status, reason, preferred supplier, minimum budget
 
-Score each compliant supplier using a weighted formula:
+Step 11: FETCH HISTORICAL AWARDS
+  Call: org_client.get_awards_by_request(request_id)
+  Output: historical awards for audit trail
 
-```python
-score = (
-    w_price * normalize(1 / total_price) +     # lower price = better
-    w_quality * normalize(quality_score) +       # higher = better
-    w_risk * normalize(100 - risk_score) +       # lower risk = better
-    w_esg * normalize(esg_score) +               # higher = better
-    w_lead * lead_time_feasibility_score +        # 1 if standard works, 0.5 if only expedited, 0 if neither
-    w_preferred * (1 if preferred else 0)         # bonus for preferred status
-)
+Step 12: ASSEMBLE OUTPUT
+  Call: assemble_output(all_step_outputs) via asyncio.to_thread
+  Uses Claude LLM to enrich validation issues and supplier notes
+  Output: complete pipeline response matching example_output.json
 ```
 
-Default weights: price 30%, quality 25%, risk 20%, ESG 10%, lead time 10%, preferred 5%.
-If `esg_requirement == true`, shift ESG weight to 25% (reduce price to 20%).
+### Individual n8n Pipeline Endpoints
 
-### Stage 6: Generate Escalations
+Each step is also available as an independent endpoint for n8n orchestration:
 
-Check each escalation rule:
+| Step | Endpoint | n8n Node |
+|------|----------|----------|
+| 1 | `POST /api/fetch-request` | HTTP Request |
+| 2 | `POST /api/validate-request` | validate-request |
+| 3 | `POST /api/format-invalid-response` | outputInvalidRequest |
+| 4 | `POST /api/filter-suppliers` | filter-suppliers |
+| 5 | `POST /api/check-compliance` | checkRules |
+| 6 | `POST /api/rank-suppliers` | rank-suppliers |
+| 8 | `POST /api/evaluate-policy` | (after Merge) |
+| 9 | `POST /api/check-escalations` | (after Merge) |
+| 10 | `POST /api/generate-recommendation` | (after Merge) |
+| 12 | `POST /api/assemble-output` | (final step) |
 
-| Rule | Check |
-|------|-------|
-| ER-001 | `budget_amount is None` or `quantity is None` or critical validation failures |
-| ER-002 | `preferred_supplier_mentioned` resolves to a restricted supplier |
-| ER-003 | Calculated total value crosses into a higher threshold tier than budget suggested |
-| ER-004 | Zero compliant suppliers after all filtering |
-| ER-005 | `data_residency_constraint == true` and no supplier supports it for this region |
-| ER-006 | `quantity > preferred_supplier.capacity_per_month` (or only viable supplier) |
-| ER-007 | `category_l2 == "Influencer Campaign Management"` (brand safety) |
-| ER-008 | Delivery country is in Americas/APAC/MEA and supplier not registered there |
+### Ranking Formula (implemented)
 
-### Stage 7: Build Recommendation & Audit Trail
+Current true-cost formula in `rankCompanies.py`:
 
-Assemble the final output matching the `example_output.json` format:
-- `request_interpretation`
-- `validation`
-- `policy_evaluation`
-- `supplier_shortlist` (top 3, ranked)
-- `suppliers_excluded` (with reasons)
-- `escalations` (with rule references, triggers, targets, blocking flag)
-- `recommendation` (status: `proceed`, `proceed_with_conditions`, or `cannot_proceed`)
-- `audit_trail` (policies checked, suppliers evaluated, data sources)
+```
+true_cost = total_price / (quality_score / 100) / ((100 - risk_score) / 100)
+```
 
----
+With ESG requirement:
 
-## Competitive Advantages — How to Win
+```
+true_cost = total_price / (quality_score / 100) / ((100 - risk_score) / 100) / (esg_score / 100)
+```
 
-### 1. Confidence Scoring (Stretch Goal, High Impact)
+Lower true_cost = better deal. The `overpayment` field shows the hidden cost of quality/risk gaps.
 
-For each recommendation, output a confidence score (0–100%) based on:
-- How many validation issues were found (fewer = higher confidence)
-- Whether the top supplier is clearly ahead of #2 (larger gap = higher confidence)
-- Whether any escalations are blocking (blocking = 0% confidence for autonomous decision)
+When quantity is null, suppliers are ranked by `quality_score` descending instead.
 
-This directly addresses the judging emphasis on "uncertainty handling."
+### Escalation Rules (implemented in Org Layer)
 
-### 2. Historical Pattern Context
+| Rule | Trigger | Blocking |
+|------|---------|----------|
+| ER-001 | Missing required info (budget, quantity, category) | Yes |
+| ER-002 | Preferred supplier is restricted | Yes |
+| ER-003 | Strategic sourcing approval tier (Head of Strategic Sourcing / CPO) | No |
+| ER-004 | No compliant supplier with valid pricing | Yes |
+| ER-005 | Data residency requirement unsatisfiable | Yes |
+| ER-006 | Single supplier capacity risk | Yes |
+| ER-007 | Influencer Campaign Management (brand safety) | Yes |
+| ER-008 | Preferred supplier unregistered for USD delivery scope | Yes |
+| AT-xxx | Single-supplier instruction conflicts with multi-quote threshold | Yes |
 
-Use `historical_awards.csv` to enhance recommendations:
-- "This category in this country has historically been awarded to Supplier X 70% of the time"
-- "Average savings in this category: 6.2%"
-- "Escalation was required in 40% of similar past requests"
-
-This adds credibility and shows the system learns from history.
-
-### 3. Multi-Language Support (addresses 18 multilingual scenarios)
-
-Use an LLM (GPT-4 / Claude) to:
-- Detect language of `request_text`
-- Translate to English for processing
-- Keep original text in audit trail
-- Flag if GR-003 (French language support) applies
-
-### 4. Interactive Clarification Flow (addresses 28 missing_info scenarios)
-
-Instead of just flagging "information missing," generate a **specific clarification request**:
-- "Budget is missing. Based on similar requests (REQ-000045, REQ-000112), typical budget for 200 laptops in DE is EUR 180,000–190,000. Please confirm or provide your budget."
-
-This shows sophistication and real-world usefulness.
-
-### 5. Visual Supplier Comparison (10% of judging)
-
-Build a clean comparison view:
-- Side-by-side cards for top 3 suppliers
-- Color-coded compliance indicators (green/amber/red)
-- Price vs. quality scatter plot
-- Timeline visualization (lead time vs. deadline)
-- Collapsible audit trail per supplier
-
-### 6. Approval Routing Simulation (Stretch Goal)
-
-Show the approval flow:
-- "This request requires Tier 3 approval (Head of Category) because the calculated value of EUR 185,000 exceeds the EUR 100,000 threshold"
-- Visual workflow diagram: Requester → Business → Procurement → Head of Category
+The AT conflict rule detects when `request_text` contains single-supplier language (in 6 languages) but the approval threshold requires multiple quotes.
 
 ---
 
-## What We Can Extract From the Data
+## Competitive Advantages
 
-### From requests.json (304 records)
-- **Scenario distribution analysis**: Know exactly how many of each edge case type to handle
-- **Business unit patterns**: Which units request what categories
-- **Country/currency clustering**: Which countries use which currencies
-- **Supplier preference patterns**: How often are preferred suppliers mentioned, and how often are they actually viable
+### 1. Deterministic Policy Engine (already built)
 
-### From suppliers.csv (40 suppliers)
-- **Coverage map**: Which suppliers cover which countries × categories
-- **Score distributions**: Quality/risk/ESG score ranges per category — useful for normalization
-- **Capacity constraints**: Which suppliers are capacity-limited (small capacity_per_month)
-- **Restriction flags**: Cross-reference with policies.json for the full picture
+The escalation engine in `backend/organisational_layer/app/services/escalations.py` handles:
+- All 8 ER rules + AT threshold conflicts
+- Value-conditional restrictions (e.g., "restricted above EUR 75K")
+- Multi-language single-supplier instruction detection (en, fr, de, es, pt, ja)
+- Country-to-region mapping for 19 countries across 5 regions
 
-### From pricing.csv (599 tiers)
-- **Price benchmarks per category**: Min/max/avg unit prices by category and region
-- **Volume discount curves**: How much prices drop across tiers (for budget feasibility checks)
-- **Lead time ranges**: Min/max lead times per category (for feasibility checks)
-- **Expedited premium**: Consistently ~8%, can be used to estimate expedited costs
+This is the core of the 25% Robustness & Escalation Logic criterion.
 
-### From historical_awards.csv (590 records)
-- **Win rate by supplier**: Which suppliers win most often in each category
-- **Average savings**: Typical savings percentage by category
-- **Escalation frequency**: How often escalations are triggered by category/country
-- **Decision patterns**: Rationale text can be used for LLM few-shot examples
+### 2. Three-Layer Separation (already built)
 
-### From policies.json
-- **Complete governance rulebook**: Every rule the system must enforce
-- **Threshold boundaries**: Exact values for approval tier determination
-- **Escalation routing table**: Who to escalate to for each trigger
+Data layer (MySQL + Org Layer) is fully separated from decision logic (Logical Layer) which is separated from presentation (Frontend). This directly demonstrates Feasibility (25%) — it's a production-grade architecture, not a hackathon script.
+
+### 3. Pre-Built Frontend (already built)
+
+Five functional pages with a modern UI. The case detail page has 4 tabs (Overview, Suppliers, Escalations, Audit Trace) that map directly to what judges want to see. Visual Design (10%) is covered.
+
+### 4. Historical Pattern Context (data available, integration pending)
+
+The `historical_awards` table has 590 records across 180 requests. Win rates and spend aggregations are available via analytics endpoints. Integration into recommendations would add credibility: "This category in DE has historically been awarded to Bechtle 60% of the time."
+
+### 5. Confidence Scoring (stretch goal, high impact)
+
+For each recommendation, output a confidence score (0-100%) based on:
+- Validation issue count and severity (fewer/lower = higher confidence)
+- Gap between top supplier and #2 (larger gap = higher confidence)
+- Blocking escalation presence (blocking = 0% confidence for autonomous decision)
+
+### 6. Multi-Language Support (partially built)
+
+The LLM validation step already processes `request_text` in any language (Claude handles multilingual input natively). The escalation engine already detects single-supplier instructions in 6 languages. Geography rule GR-003 (French language support) is enforced by the Org Layer.
+
+### 7. Interactive Clarification Flow (stretch goal)
+
+Instead of flagging "information missing," generate a specific clarification request: "Budget is missing. Based on similar requests, typical budget for 200 laptops in DE is EUR 180,000-190,000." Requires historical context integration (Gap 7).
 
 ---
 
-## Implementation Priority Order
+## Implementation Priority
 
-### Phase 1: Core Pipeline (Must Have — 60% of value)
+### Done
 
-1. Data loader with normalization (handle all schema inconsistencies)
-2. Request parser (LLM-powered text extraction)
-3. Validation engine (completeness, consistency, budget sufficiency, lead time)
-4. Policy engine (thresholds, preferred, restricted, category rules, geography rules)
-5. Supplier filtering and pricing lookup
-6. Escalation logic
-7. Output formatter (matching example_output.json structure)
+- [x] Data normalisation into MySQL (22 tables, `database_init/migrate.py`)
+- [x] CRUD + analytics API (40+ endpoints, Organisational Layer)
+- [x] Request validation with LLM contradiction detection (`validateRequest.py`)
+- [x] Supplier filtering by product category (`filterCompaniesByProduct.py`)
+- [x] Supplier ranking by true cost (`rankCompanies.py`)
+- [x] Escalation engine (ER-001 through ER-008 + AT conflict, `escalations.py`)
+- [x] Async Org Layer client with all needed methods (`organisational.py`)
+- [x] Frontend shell (5 pages, server components, shadcn v4)
+- [x] Docker deployment (two compose stacks on shared network)
+- [x] Database migration tooling (one-shot bootstrap)
+- [x] n8n integration documentation (`N8N_INSTRUCTION.md`)
+- [x] Compliance checking per supplier (`checkCompliance.py` + `POST /api/check-compliance`)
+- [x] Policy evaluation assembly (`evaluatePolicy.py` + `POST /api/evaluate-policy`)
+- [x] Escalation fetching (`checkEscalations.py` + `POST /api/check-escalations`)
+- [x] Recommendation generation with LLM (`generateRecommendation.py` + `POST /api/generate-recommendation`)
+- [x] Output assembly with LLM enrichment (`assembleOutput.py` + `POST /api/assemble-output`)
+- [x] Invalid request formatting (`formatInvalidResponse.py` + `POST /api/format-invalid-response`)
+- [x] Request fetching proxy (`POST /api/fetch-request`)
+- [x] Full pipeline endpoint (`POST /api/processRequest` — chains all 11 steps)
+- [x] Complete n8n pipeline documentation with all endpoint examples and data mapping
 
-### Phase 2: Ranking & Intelligence (Should Have — 25% of value)
+### Remaining — Phase 3: Polish & Demo Prep
 
-8. Supplier scoring and ranking algorithm
-9. Historical context integration
-10. Confidence scoring
-11. Multi-language support
+1. **Wire frontend to display full pipeline output**
+   - Case detail page already has tabs; ensure data mapping handles new fields
+   - Add "Run Pipeline" action if not triggered automatically
 
-### Phase 3: Frontend & Polish (Nice to Have — 15% of value)
+2. **Demo script rehearsal**
+   - Verify REQ-000001 (happy path) and REQ-000004 (edge case) produce correct output
+   - Prepare talking points for architecture explanation
 
-12. Request list view with scenario tags
-13. Single request detail view with supplier comparison
-14. Audit trail viewer
-15. Approval flow visualization
+3. **Confidence scoring** (stretch goal)
+   - Score based on validation issue count, supplier gap, escalation blocking status
+   - Include in recommendation output
 
 ---
 
@@ -370,19 +376,28 @@ Show the approval flow:
 
 ### Live Demo (5 min)
 
-1. **Standard request** (1 min): Show REQ-000001 (400 consulting days, Accenture, EUR 400K). Walk through parsing → policy → suppliers → ranking → recommendation. Clean, happy path.
+1. **Inbox overview** (30s): Open `/inbox`. Show the list of 304 purchase requests with status badges, filters, and search. Point out scenario tags.
 
-2. **Edge case — contradictory** (2 min): Show REQ-000004 (240 docking stations, insufficient budget, impossible lead time, "no exception" instruction). Highlight: budget detection, policy conflict, lead time analysis, three escalations triggered.
+2. **Standard request** (1.5 min): Click into a clean happy-path request (e.g., REQ-000001). Walk through:
+   - Overview tab: original request text, interpreted requirements, validation (all pass)
+   - Suppliers tab: ranked comparison table with true-cost scores
+   - Audit Trace tab: policies checked, data sources used
 
-3. **Supplier comparison view** (1 min): Show the side-by-side comparison for the contradictory case. Price/quality/risk/lead time breakdown. Color-coded compliance.
+3. **Edge case — REQ-000004** (2 min): Click into the contradictory request. Highlight:
+   - Validation issues: budget insufficient (EUR 25K vs EUR 35K+ minimum), lead time infeasible (6 days vs 17+ days)
+   - Policy conflict: "no exception" instruction vs AT-002 requiring 2 quotes
+   - Escalations tab: three blocking escalations (ER-001, AT-002, ER-004)
+   - Recommendation: `cannot_proceed` with minimum budget calculation
 
-4. **Escalation handling** (1 min): Show the escalation panel. Which rules fired, why, who gets notified, what's blocking.
+4. **Escalation queue** (1 min): Navigate to `/escalations`. Show the global queue. Filter by blocking status. Drill into an escalation to see rule details and routing target.
 
 ### Explanation (3 min)
 
-1. **Architecture** (1 min): LLM for parsing only, deterministic code for all governance logic. Why this matters for auditability.
-2. **Rule enforcement** (1 min): How policy rules are indexed and applied. Show the inconsistent schema handling.
-3. **Scale statement** (1 min): How this would work at 10,000 requests/year: batch processing, caching, human-in-the-loop queue.
+1. **Architecture** (1 min): Three-service design. LLM for parsing only, deterministic code for all governance logic. MySQL for auditable data. Why this matters: every decision is traceable, reproducible, and explainable.
+
+2. **Rule enforcement** (1 min): Show the escalation engine code. Highlight: 8 ER rules + AT conflict detection, conditional restriction parsing, multi-language instruction detection. All deterministic — no LLM involvement in policy decisions.
+
+3. **Scale statement** (1 min): Current architecture handles 304 requests. At 10,000 requests/year: the pipeline is stateless and horizontally scalable. n8n orchestration supports batch processing, retry logic, and human-in-the-loop queues. MySQL on RDS scales vertically. Frontend is server-rendered with 15-second cache TTL.
 
 ---
 
@@ -390,8 +405,10 @@ Show the approval flow:
 
 | Risk | Mitigation |
 |------|------------|
-| LLM hallucination on policy | Use LLM only for text parsing. All policy logic is deterministic code. |
-| Schema inconsistencies missed | Write comprehensive data normalization tests at load time. |
-| Not enough time for frontend | Prioritize backend correctness. A terminal demo with JSON output is better than a pretty UI with wrong answers. |
-| Azure deployment issues | Have a local demo ready. Docker container as backup. |
-| Edge cases we haven't seen | Build the escalation path as the default — when in doubt, escalate. |
+| LLM hallucination on policy | LLM is used only for text parsing in `validateRequest.py`. All policy logic (thresholds, restrictions, escalations) is deterministic Python code in the Org Layer. |
+| Pipeline orchestration complexity | The `OrganisationalClient` already wraps all needed API calls. The pipeline is a linear chain of async calls — no complex state management needed. |
+| Output format mismatch | Use `examples/example_output.json` as the schema contract. Validate pipeline output against it during development. |
+| Frontend data mapping breaks | The frontend's `cases.ts` data layer already maps backend responses to typed interfaces. New pipeline fields need to be added to both the backend response and frontend types. |
+| Anthropic API unavailable | The validate step has deterministic checks as a fallback. If Claude is down, deterministic validation still runs — only LLM-detected contradictions and `requester_instruction` extraction are lost. |
+| AWS/Docker deployment issues | Local Docker Compose setup is fully functional. Demo can run locally if cloud deployment fails. |
+| Edge cases producing wrong escalations | The escalation engine defaults to escalating when uncertain. A false escalation is always better than a false clearance for audit purposes. |

@@ -66,3 +66,114 @@ The judges value **correct uncertainty handling** over confident wrong answers. 
 
 - Azure credits available
 - Any language, framework, AI tooling, or rules engine is allowed
+
+## Current Full-Stack Wiring (Implemented)
+
+- The project uses **two independent Docker Compose stacks** on a shared network (`chainiq-network`).
+- Backend stack (`backend/docker-compose.yml`):
+  - `organisational-layer` (FastAPI, port 8000) — CRUD + analytics API
+  - `logical-layer` (FastAPI, port 8080) — Procurement decision engine
+- Frontend stack (`docker-compose.yml` at repo root):
+  - `frontend` (Next.js, port 3000)
+  - `mysql` (MySQL 8.4, port 3306) — local dev only
+  - `migrator` (one-shot data bootstrap using `database_init/migrate.py` + `migrate_rules.py` + `migrate_dynamic_rules.py`)
+- Root orchestration files:
+  - `docker-compose.yml` (frontend + MySQL + migrator)
+  - `docker-compose.override.yml` (development hot-reload for frontend)
+  - `.env.example` (frontend stack env contract)
+- Container files:
+  - `frontend/Dockerfile`, `frontend/.dockerignore`
+  - `backend/organisational_layer/Dockerfile`, `backend/organisational_layer/.dockerignore`
+  - `backend/logical_layer/Dockerfile`
+
+## Local Runbook
+
+1. Create shared network (one-time):
+   - `docker network create chainiq-network`
+2. Copy env files:
+   - `cp .env.example .env`
+   - `cp backend/organisational_layer/.env.example backend/organisational_layer/.env`
+   - `cp backend/logical_layer/.env.example backend/logical_layer/.env`
+3. Start backend stack:
+   - `cd backend && docker compose up --build -d && cd ..`
+4. Start frontend stack (dev mode):
+   - `docker compose up --build`
+5. Bootstrap database (first run / after reset):
+   - `docker compose --profile tools run --rm migrator`
+
+Default local URLs:
+
+- Frontend: `http://localhost:3000`
+- Organisational Layer: `http://localhost:8000`
+- Logical Layer: `http://localhost:8080`
+- MySQL: `localhost:3306`
+
+## Integration Notes
+
+- Frontend API calls are same-origin (`/api/*`) and proxied to backend through Next rewrites.
+- Frontend server-side data loaders use `BACKEND_INTERNAL_URL` for container-internal networking.
+- Mock fixture pass-through in `frontend/src/lib/data/cases.ts` has been replaced with backend-backed async mapping logic.
+- **`request-overview` pipeline gating:** The `GET /api/analytics/request-overview/{id}` endpoint accepts `?pipeline_mode=true|false`. The default (`false`) hides supplier and pricing data for requests that have not been processed through the pipeline, and filters the supplier list to the pipeline's evaluated shortlist for processed requests. The Logical Layer always calls with `pipeline_mode=true` to get the full raw reference data needed for processing.
+
+## Deployment
+
+- Full deployment guide: `DEPLOYMENT.md` (covers local dev, AWS EC2 + RDS, nginx reverse proxy)
+- Reference nginx config: `deploy/nginx/aws.conf`
+- AWS env template: `.env.aws.example`
+
+## Dynamic Rules Engine
+
+The pipeline uses a dynamic rules engine (`backend/logical_layer/app/pipeline/rule_engine.py`) that evaluates rules fetched from the Org Layer at runtime. Rules are stored in `dynamic_rules` / `dynamic_rule_versions` tables and seeded by `database_init/migrate_dynamic_rules.py`.
+
+### Escalation Rules (ER-001–010 + ER-BUDGET)
+
+| Rule | Condition | Blocking | Target |
+|------|-----------|----------|--------|
+| ER-001 | Budget or quantity is NULL (missing required info) | Yes | Requester Clarification |
+| ER-002 | Preferred supplier is restricted | Yes | Procurement Manager |
+| ER-003 | Contract value exceeds strategic tier | No | Head of Strategic Sourcing |
+| ER-004 | No compliant supplier found after checks | Yes | Head of Category |
+| ER-005 | Data residency unsatisfiable | Yes | Security/Compliance |
+| ER-006 | Single supplier capacity risk (only 1 meets qty) | No | Sourcing Excellence Lead |
+| ER-007 | Influencer campaign brand safety | No | Marketing Governance Lead |
+| ER-008 | Supplier not registered in delivery country | No | Regional Compliance Lead |
+| ER-009 | LLM-detected contradictions (non-spec, custom) | **No** | Procurement Manager |
+| ER-010 | Lead time infeasible (non-spec, custom) | **No** | Head of Category |
+| ER-BUDGET | Budget < minimum supplier price (pipeline-generated) | **No** | Budget Owner / Requester |
+
+### Key Design Constraints
+
+- **ER-009, ER-010, and ER-BUDGET are NOT in the challenge spec** (ER-001–008 only). They must remain non-blocking.
+- **Recommendation status considers validation issues**: Critical validation issues (like budget insufficiency) force `proceed_with_conditions` even when no escalation rules fire. Status hierarchy: blocking escalation → `cannot_proceed`, budget insufficient → `proceed_with_conditions`, non-blocking escalations or critical/high issues → `proceed_with_conditions`, else → `proceed`.
+- **Risk score threshold**: 70 for non-preferred suppliers (was 30, which excluded too aggressively).
+- **Confidence scoring**: Graded (-25/blocking, -10/non-blocking, -20/-10/-5/-2 per validation issue severity) — never immediately zero.
+- **`has_contradictions`**: Only checks `contradictory` validation issues, NOT `policy_conflict`.
+- **Validation issue type classification**: Dynamic rule results are classified into specific types (`budget_insufficient`, `lead_time_infeasible`) via `_classify_issue_type()` for proper downstream matching, instead of using the generic `validation_rule_failed`.
+- **LLM response brevity**: Recommendation prompts capped at 1-2 sentences, enrichment supplier notes at 2-3 sentences. `max_tokens` reduced to 600/1500.
+- **Migration idempotency**: `migrate_dynamic_rules.py` uses `ON DUPLICATE KEY UPDATE` to update existing rules.
+
+## LLM-Powered Rule Management
+
+The Escalations page has a "New Rule" button that opens a dialog with a single textarea. The user describes what they want in plain text (new rule or change to existing). The backend (`POST /api/dynamic-rules/parse`) fetches all active rules from the DB, passes them to the LLM alongside the user text, and the LLM decides whether to create a new rule or update an existing one. The user reviews the generated rule and approves it. Backend service: `backend/organisational_layer/app/services/rule_parser.py`.
+### LLM Contradiction Detection
+
+- **Direct LLM path only**: Contradiction detection always uses the `VALIDATION_SYSTEM_PROMPT` in `validate.py` with the `LLMValidationResult` Pydantic model. The dynamic rule `VAL-006` (custom_llm) is deprecated and inactive — its vague prompt caused false positives.
+- **temperature=0**: Validation LLM calls use `temperature=0` for deterministic results across identical pipeline runs.
+- **Each contradiction preserves its description**: Individual contradictions from the LLM are logged as separate audit entries with specific field/description, visible in the frontend decision timeline.
+- **Conservative prompt**: The system prompt explicitly lists what IS NOT a contradiction (approximations, omissions, rounding, different wording for same value) to minimize false positives.
+
+## Evaluation Traceability (added via dev merge)
+
+The Org Layer now enriches rule check responses with full traceability metadata:
+
+- **`RuleCheckOut` enrichment**: Hard rule checks and policy checks include `rule_name` (from `rule_definitions`), `version_snapshot` (frozen `rule_config` from `rule_versions`), `dynamic_snapshot` (active row from `dynamic_rule_versions`), and `dynamic_rule_version` (integer version).
+- **Dynamic rule version resolution service**: `backend/organisational_layer/app/services/dynamic_rule_versions.py` resolves snapshots with a 3-tier fallback: active version row → latest version row → live `dynamic_rules` row.
+- **New endpoints**: `GET /api/rule-versions/dynamic-rule-versions/active/{rule_id}` and `GET /api/rule-versions/dynamic-rule-versions/{rule_id}/at-version/{version_num}` for on-demand snapshot resolution.
+- **Evaluation results persistence**: `POST /api/dynamic-rules/evaluation-results` stores bulk evaluation results; `GET /api/dynamic-rules/evaluation-results/by-run/{run_id}` retrieves them.
+
+## Frontend Case Workspace Redesign (added via dev merge)
+
+- **Header actions context**: `frontend/src/components/app-shell/header-actions-context.tsx` provides `setActions`, `setTitleExtra`, and `setBreadcrumbOverride` to let child pages inject actions into the shell header.
+- **Dual provider pattern**: The shell wraps pages in both `WorkspaceHeaderActionsProvider` (for list pages with topbar filters) and `HeaderActionsProvider` (for case detail with contextual actions).
+- **Enriched rule checks table**: The case workspace displays rule checks with tooltips showing frozen `eval_config.condition` snapshots, rule names from definitions, and dynamic rule versions.
+- **Evaluation run history**: The case detail view shows all evaluation runs with per-supplier hard rule and policy check breakdowns, supplier shortlist, and excluded suppliers from each run.
