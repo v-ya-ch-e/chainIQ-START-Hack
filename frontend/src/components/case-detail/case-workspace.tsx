@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowRight, Download, FileDown, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { AlertTriangle, ArrowRight, Download, FileDown, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
@@ -695,6 +695,31 @@ export function CaseWorkspace({
         <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
           <CardContent className="py-3 text-sm">
             Runs endpoint degraded. Other pipeline actions remain usable. {fallback}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {blockingIssues.length > 0 ? (
+        <Card className="animate-fade-in-up mt-2 border-rose-200 bg-rose-50/70">
+          <CardContent className="py-3">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-rose-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-rose-900">
+                  {blockingIssues.length} blocking issue{blockingIssues.length > 1 ? "s" : ""} detected
+                </p>
+                <ul className="mt-1.5 space-y-1">
+                  {blockingIssues.map((issue) => (
+                    <li key={issue.issueId} className="flex items-baseline gap-2 text-sm text-rose-800">
+                      <span className="shrink-0 rounded bg-rose-200/60 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-rose-700">
+                        {issue.issueId}
+                      </span>
+                      <span>{issue.description}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
           </CardContent>
         </Card>
       ) : null}
