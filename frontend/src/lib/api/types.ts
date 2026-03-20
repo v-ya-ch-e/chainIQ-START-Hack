@@ -747,3 +747,73 @@ export interface PipelineResultOut {
   summary: PipelineResultSummary | null
   created_at: string
 }
+
+export interface DynamicRuleCreate {
+  rule_id: string
+  rule_name: string
+  description?: string | null
+  rule_category: string
+  eval_type: string
+  scope?: string
+  pipeline_stage: string
+  eval_config: Record<string, unknown>
+  action_on_fail?: string
+  severity?: string
+  is_blocking?: boolean
+  escalation_target?: string | null
+  fail_message_template?: string | null
+  is_active?: boolean
+  is_skippable?: boolean
+  priority?: number
+  created_by?: string | null
+}
+
+export interface DynamicRuleUpdate {
+  rule_name?: string | null
+  description?: string | null
+  rule_category?: string | null
+  eval_type?: string | null
+  scope?: string | null
+  pipeline_stage?: string | null
+  eval_config?: Record<string, unknown> | null
+  action_on_fail?: string | null
+  severity?: string | null
+  is_blocking?: boolean | null
+  escalation_target?: string | null
+  fail_message_template?: string | null
+  is_active?: boolean | null
+  is_skippable?: boolean | null
+  priority?: number | null
+  changed_by?: string | null
+  change_reason?: string | null
+}
+
+export interface DynamicRuleOut {
+  rule_id: string
+  rule_name: string
+  description: string | null
+  rule_category: string
+  eval_type: string
+  scope: string
+  pipeline_stage: string
+  eval_config: Record<string, unknown>
+  action_on_fail: string
+  severity: string
+  is_blocking: boolean
+  escalation_target: string | null
+  fail_message_template: string | null
+  is_active: boolean
+  is_skippable: boolean
+  priority: number
+  version: number
+  created_at: string
+  updated_at: string
+  created_by: string | null
+}
+
+export interface RuleParseResponse {
+  complete: boolean
+  rule: DynamicRuleCreate
+  is_update: boolean
+  target_rule_id: string | null
+}

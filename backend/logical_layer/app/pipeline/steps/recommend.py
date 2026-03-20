@@ -23,16 +23,16 @@ logger = logging.getLogger(__name__)
 
 STEP_NAME = "generate_recommendation"
 
-RECOMMENDATION_SYSTEM_PROMPT = """You are a procurement recommendation analyst. Generate concise, audit-ready text for a procurement recommendation.
+RECOMMENDATION_SYSTEM_PROMPT = """You are a procurement recommendation analyst. Generate concise, audit-ready text.
 
 RULES:
-1. Reference exact supplier names, prices (with currency), and rule IDs (e.g., AT-002, ER-001).
-2. Use professional, objective language suitable for audit documentation.
-3. Keep the reason to 1-3 sentences.
-4. Keep the preferred_supplier_rationale to 1-3 sentences, comparing the recommended supplier with alternatives using specific figures.
-5. If the status is "cannot_proceed", explain why and what must be resolved.
-6. If the status is "proceed_with_conditions", state the conditions.
-7. If the status is "proceed", explain why the recommendation is clear.
+1. Reference exact supplier names, prices (with currency), and rule IDs.
+2. Keep the reason to 1-2 sentences MAX. Be direct and specific.
+3. Keep the preferred_supplier_rationale to 1-2 sentences MAX. Compare the top supplier with the next best using key figures only.
+4. If "cannot_proceed": state blocking reason in one sentence.
+5. If "proceed_with_conditions": state conditions in one sentence.
+6. If "proceed": state recommendation in one sentence.
+7. Do NOT repeat information already visible in the structured data. No preambles or filler.
 """
 
 
@@ -56,10 +56,26 @@ async def generate_recommendation(
     ) as ctx:
 
         # ── Deterministic status ──────────────────────────────
+        has_critical_issues = any(
+            i.severity == "critical" for i in validation_result.issues
+        )
+        has_high_issues = any(
+            i.severity == "high" for i in validation_result.issues
+        )
+        has_budget_issue = any(
+            i.type in ("budget_insufficient", "validation_rule_failed")
+            and i.severity == "critical"
+            and "budget" in (i.description or "").lower()
+            for i in validation_result.issues
+        )
 
         if escalation_result.has_blocking:
             status = "cannot_proceed"
-        elif escalation_result.non_blocking_count > 0:
+        elif has_budget_issue:
+            status = "proceed_with_conditions"
+        elif escalation_result.non_blocking_count > 0 or has_critical_issues:
+            status = "proceed_with_conditions"
+        elif has_high_issues:
             status = "proceed_with_conditions"
         else:
             status = "proceed"
@@ -104,7 +120,7 @@ async def generate_recommendation(
                 system_prompt=RECOMMENDATION_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
                 response_model=LLMRecommendationText,
-                max_tokens=1500,
+                max_tokens=600,
             )
             if llm_result and not fallback:
                 reason = llm_result.reason
@@ -188,6 +204,7 @@ def _compute_confidence(
 
     Blocking escalations apply a heavy penalty (25 each) but don't immediately
     zero-out the score, so the confidence still reflects how many issues exist.
+    Budget insufficiency gets an extra penalty since it prevents procurement.
     """
 
     score = 100
@@ -198,7 +215,7 @@ def _compute_confidence(
     score -= len(blocking) * 25
     score -= len(non_blocking) * 10
 
-    severity_penalty = {"critical": 15, "high": 10, "medium": 5, "low": 2}
+    severity_penalty = {"critical": 20, "high": 10, "medium": 5, "low": 2}
     for issue in validation_issues:
         score -= severity_penalty.get(issue.severity, 5)
 

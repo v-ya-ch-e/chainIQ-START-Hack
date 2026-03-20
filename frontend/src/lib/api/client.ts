@@ -72,6 +72,10 @@ import type {
   SupplierUpdate,
   SupplierWinRateOut,
   PipelineResultOut,
+  DynamicRuleCreate,
+  DynamicRuleOut,
+  DynamicRuleUpdate,
+  RuleParseResponse,
 } from "@/lib/api/types"
 
 function jsonBody(body: unknown): RequestInit {
@@ -577,6 +581,30 @@ export const chainIqApi = {
       return requestJson<PipelineResultOut>(
         "org",
         `/api/pipeline-results/latest/${requestId}`,
+      )
+    },
+  },
+
+  dynamicRules: {
+    parse(body: { text: string }) {
+      return requestJson<RuleParseResponse>(
+        "org",
+        "/api/dynamic-rules/parse",
+        jsonBody(body),
+      )
+    },
+    create(body: DynamicRuleCreate) {
+      return requestJson<DynamicRuleOut>(
+        "org",
+        "/api/dynamic-rules/",
+        jsonBody(body),
+      )
+    },
+    update(ruleId: string, body: DynamicRuleUpdate) {
+      return requestJson<DynamicRuleOut>(
+        "org",
+        `/api/dynamic-rules/${ruleId}`,
+        jsonPut(body),
       )
     },
   },

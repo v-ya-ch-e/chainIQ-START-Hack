@@ -383,14 +383,14 @@ POLICY        ESCALATIONS
 | Step | Module | LLM? | Description |
 |------|--------|------|-------------|
 | 1 FETCH | `steps/fetch.py` | No | Parallel: `request-overview` + `escalations/by-request`. Returns `FetchResult` with all pipeline data. |
-| 2 VALIDATE | `steps/validate.py` | Yes | Phase A: deterministic null checks + budget/lead-time feasibility. Phase B: LLM contradiction detection + `requester_instruction` extraction. |
+| 2 VALIDATE | `steps/validate.py` | Yes | Phase A: deterministic rule checks (dynamic rules or fallback) for null checks + budget/lead-time feasibility. Phase B: Direct LLM contradiction detection (temperature=0, detailed prompt, `LLMValidationResult` schema) + `requester_instruction` extraction. Each contradiction preserves specific description for audit trail. |
 | 3 FILTER | `steps/filter.py` | No | Enrich `compliant_suppliers` from overview with pricing tiers, scores, preferred flag. Flag suppliers with no pricing tier. |
 | 4 COMPLY | `steps/comply.py` | Maybe | Per-supplier: global restriction, country-scoped restriction, value-conditional restriction, delivery coverage, data residency, capacity. Calls `check-restricted` for borderline cases. |
 | 5 RANK | `steps/rank.py` | No | `true_cost = total_price / (quality/100) / ((100-risk)/100)`. ESG divisor added when `esg_requirement=true`. Falls back to quality-score ranking when quantity is null. |
 | 6 POLICY | `steps/policy.py` | No | Approval threshold, preferred supplier analysis, restricted supplier analysis, category rules, geography rules — all from `FetchResult`. |
-| 7 ESCALATE | `steps/escalate.py` | No | Merge Org Layer escalations (base) + pipeline-discovered issues + LLM-detected contradictions. Deduplicates by `rule_id`, keeps more specific trigger description. |
-| 8 RECOMMEND | `steps/recommend.py` | Yes | Deterministic status (`proceed` / `proceed_with_conditions` / `cannot_proceed`). LLM generates `reason` + `preferred_supplier_rationale`. Template fallback if LLM fails. |
-| 9 ASSEMBLE | `steps/assemble.py` | Yes | LLM enriches validation issues (severity, action_required) and generates per-supplier recommendation notes. Dynamic currency-suffixed keys (`unit_price_eur`, `total_price_usd`, etc.). |
+| 7 ESCALATE | `steps/escalate.py` | No | Merge Org Layer escalations (base) + pipeline-discovered issues + LLM-detected contradictions + budget insufficiency (ER-BUDGET). Deduplicates by `rule_id`, keeps more specific trigger description. |
+| 8 RECOMMEND | `steps/recommend.py` | Yes | Deterministic status based on escalations AND validation issues. Critical issues (budget insufficient) force `proceed_with_conditions`. LLM generates concise `reason` + `preferred_supplier_rationale` (1-2 sentences). Template fallback if LLM fails. |
+| 9 ASSEMBLE | `steps/assemble.py` | Yes | LLM enriches validation issues (severity, action_required) and generates per-supplier recommendation notes (2-3 sentences). Dynamic currency-suffixed keys (`unit_price_eur`, `total_price_usd`, etc.). |
 
 ---
 
@@ -556,13 +556,13 @@ Before storing `input_summary` / `output_summary`:
 
 **Client:** One `anthropic.AsyncAnthropic` instance created at app startup via FastAPI lifespan. Never re-created per request.
 
-**Structured output pattern:** All LLM calls use Anthropic `tool_use` with `tool_choice: {type: "tool", name: "structured_output"}` and the response model's `model_json_schema()` as the tool input schema. Pydantic validates the tool block input.
+**Structured output pattern:** All LLM calls use Anthropic `tool_use` with `tool_choice: {type: "tool", name: "structured_output"}` and the response model's `model_json_schema()` as the tool input schema. Pydantic validates the tool block input. The `structured_call` method accepts an optional `temperature` parameter for deterministic calls.
 
 ### LLM Calls Per Pipeline Run
 
 | Step | Purpose | Fallback if LLM fails |
 |------|---------|----------------------|
-| Step 2 VALIDATE | Detect contradictions between `request_text` and structured fields. Extract `requester_instruction`. | Empty issues list + no instruction |
+| Step 2 VALIDATE | Detect contradictions between `request_text` and structured fields. Extract `requester_instruction`. Uses `temperature=0` for deterministic results. Direct LLM path with detailed `VALIDATION_SYSTEM_PROMPT` (VAL-006 dynamic rule is deprecated). | Empty issues list + no instruction |
 | Step 8 RECOMMEND | Generate `reason` (1-3 sentences) + `preferred_supplier_rationale`. Must cite exact names, prices, rule IDs. | Template prose using deterministic values |
 | Step 9 ASSEMBLE | Enrich validation issues with severity + `action_required`. Generate per-supplier `recommendation_note`. | Pass-through issues unchanged; empty notes |
 
@@ -584,7 +584,7 @@ if blocking_escalations:
 score -= len(non_blocking_escalations) * 10
 
 # Validation issue penalties
-severity_penalty = {"critical": 15, "high": 10, "medium": 5, "low": 2}
+severity_penalty = {"critical": 20, "high": 10, "medium": 5, "low": 2}
 for issue in validation_issues:
     score -= severity_penalty[issue.severity]
 

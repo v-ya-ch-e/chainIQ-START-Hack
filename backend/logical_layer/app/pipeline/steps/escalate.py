@@ -72,7 +72,9 @@ def _build_escalation_context(
     )
 
     has_budget_issue = any(
-        vi.type == "budget_insufficient"
+        vi.type in ("budget_insufficient", "validation_rule_failed")
+        and vi.severity == "critical"
+        and "budget" in (vi.description or "").lower()
         for vi in validation_result.issues
     )
 
@@ -195,6 +197,11 @@ async def compute_escalations(
                 rank_result, budget, quantity, currency,
             )
 
+        # ── Budget insufficiency escalation (both paths) ─────
+        _add_budget_escalation_if_needed(
+            pipeline_issues, budget, rank_result, currency,
+        )
+
         merged = _merge_escalations(
             fetch_result.org_escalations,
             pipeline_issues,
@@ -237,6 +244,45 @@ async def compute_escalations(
         }
 
         return result
+
+
+def _add_budget_escalation_if_needed(
+    pipeline_issues: list[PipelineEscalation],
+    budget: float | None,
+    rank_result: RankResult,
+    currency: str,
+) -> None:
+    """Add a non-blocking escalation if budget < minimum supplier total price."""
+    if budget is None:
+        return
+    already_has = any(
+        pi.rule_id in ("ER-001", "ER-BUDGET") for pi in pipeline_issues
+    )
+    if already_has:
+        return
+
+    min_total = None
+    min_supplier = None
+    for s in rank_result.ranked_suppliers:
+        if s.total_price is not None:
+            if min_total is None or s.total_price < min_total:
+                min_total = s.total_price
+                min_supplier = s.supplier_name
+
+    if min_total is not None and budget < min_total:
+        shortfall = min_total - budget
+        pct = (shortfall / budget) * 100 if budget > 0 else 0
+        pipeline_issues.append(PipelineEscalation(
+            rule_id="ER-BUDGET",
+            trigger=(
+                f"Budget {currency} {budget:,.2f} is insufficient. "
+                f"Cheapest supplier ({min_supplier}) costs {currency} {min_total:,.2f} "
+                f"(shortfall: {currency} {shortfall:,.2f}, {pct:.1f}% over budget)."
+            ),
+            escalate_to="Budget Owner / Requester",
+            blocking=False,
+            source="pipeline",
+        ))
 
 
 def _discover_pipeline_issues(

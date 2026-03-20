@@ -125,7 +125,7 @@ Default local URLs:
 
 The pipeline uses a dynamic rules engine (`backend/logical_layer/app/pipeline/rule_engine.py`) that evaluates rules fetched from the Org Layer at runtime. Rules are stored in `dynamic_rules` / `dynamic_rule_versions` tables and seeded by `database_init/migrate_dynamic_rules.py`.
 
-### Escalation Rules (ER-001–010)
+### Escalation Rules (ER-001–010 + ER-BUDGET)
 
 | Rule | Condition | Blocking | Target |
 |------|-----------|----------|--------|
@@ -139,11 +139,25 @@ The pipeline uses a dynamic rules engine (`backend/logical_layer/app/pipeline/ru
 | ER-008 | Supplier not registered in delivery country | No | Regional Compliance Lead |
 | ER-009 | LLM-detected contradictions (non-spec, custom) | **No** | Procurement Manager |
 | ER-010 | Lead time infeasible (non-spec, custom) | **No** | Head of Category |
+| ER-BUDGET | Budget < minimum supplier price (pipeline-generated) | **No** | Budget Owner / Requester |
 
 ### Key Design Constraints
 
-- **ER-009 and ER-010 are NOT in the challenge spec** (ER-001–008 only). They must remain non-blocking.
+- **ER-009, ER-010, and ER-BUDGET are NOT in the challenge spec** (ER-001–008 only). They must remain non-blocking.
+- **Recommendation status considers validation issues**: Critical validation issues (like budget insufficiency) force `proceed_with_conditions` even when no escalation rules fire. Status hierarchy: blocking escalation → `cannot_proceed`, budget insufficient → `proceed_with_conditions`, non-blocking escalations or critical/high issues → `proceed_with_conditions`, else → `proceed`.
 - **Risk score threshold**: 70 for non-preferred suppliers (was 30, which excluded too aggressively).
-- **Confidence scoring**: Graded (-25/blocking, -10/non-blocking) — never immediately zero.
+- **Confidence scoring**: Graded (-25/blocking, -10/non-blocking, -20/-10/-5/-2 per validation issue severity) — never immediately zero.
 - **`has_contradictions`**: Only checks `contradictory` validation issues, NOT `policy_conflict`.
+- **Validation issue type classification**: Dynamic rule results are classified into specific types (`budget_insufficient`, `lead_time_infeasible`) via `_classify_issue_type()` for proper downstream matching, instead of using the generic `validation_rule_failed`.
+- **LLM response brevity**: Recommendation prompts capped at 1-2 sentences, enrichment supplier notes at 2-3 sentences. `max_tokens` reduced to 600/1500.
 - **Migration idempotency**: `migrate_dynamic_rules.py` uses `ON DUPLICATE KEY UPDATE` to update existing rules.
+
+## LLM-Powered Rule Management
+
+The Escalations page has a "New Rule" button that opens a dialog with a single textarea. The user describes what they want in plain text (new rule or change to existing). The backend (`POST /api/dynamic-rules/parse`) fetches all active rules from the DB, passes them to the LLM alongside the user text, and the LLM decides whether to create a new rule or update an existing one. The user reviews the generated rule and approves it. Backend service: `backend/organisational_layer/app/services/rule_parser.py`.
+### LLM Contradiction Detection
+
+- **Direct LLM path only**: Contradiction detection always uses the `VALIDATION_SYSTEM_PROMPT` in `validate.py` with the `LLMValidationResult` Pydantic model. The dynamic rule `VAL-006` (custom_llm) is deprecated and inactive — its vague prompt caused false positives.
+- **temperature=0**: Validation LLM calls use `temperature=0` for deterministic results across identical pipeline runs.
+- **Each contradiction preserves its description**: Individual contradictions from the LLM are logged as separate audit entries with specific field/description, visible in the frontend decision timeline.
+- **Conservative prompt**: The system prompt explicitly lists what IS NOT a contradiction (approximations, omissions, rounding, different wording for same value) to minimize false positives.
