@@ -1,6 +1,6 @@
 "use client"
 
-import { createContext, useContext, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react"
 
 interface HeaderActionsState {
   actions: ReactNode | null
@@ -24,8 +24,12 @@ export function HeaderActionsProvider({ children }: { children: ReactNode }) {
   const [actions, setActions] = useState<ReactNode | null>(null)
   const [titleExtra, setTitleExtra] = useState<ReactNode | null>(null)
   const [breadcrumbOverride, setBreadcrumbOverride] = useState<string | null>(null)
+  const value = useMemo(
+    () => ({ actions, setActions, titleExtra, setTitleExtra, breadcrumbOverride, setBreadcrumbOverride }),
+    [actions, titleExtra, breadcrumbOverride],
+  )
   return (
-    <HeaderActionsContext.Provider value={{ actions, setActions, titleExtra, setTitleExtra, breadcrumbOverride, setBreadcrumbOverride }}>
+    <HeaderActionsContext.Provider value={value}>
       {children}
     </HeaderActionsContext.Provider>
   )

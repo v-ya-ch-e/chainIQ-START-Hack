@@ -458,7 +458,7 @@ export function CaseWorkspace({
       </>,
     )
     return () => setTitleExtra(null)
-  })
+  }, [data.rawRequest.status, data.recommendation.status, setTitleExtra])
 
   function handleRerun() {
     const startedAt = new Date().toISOString()
@@ -629,7 +629,8 @@ export function CaseWorkspace({
       </>,
     )
     return () => setActions(null)
-  })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadingAction])
 
   return (
     <div className="space-y-0">
