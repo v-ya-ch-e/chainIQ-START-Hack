@@ -26,6 +26,7 @@ class LLMClient:
         user_prompt: str,
         response_model: type[T],
         max_tokens: int = 2000,
+        temperature: float | None = None,
     ) -> tuple[T | None, bool]:
         """
         Call Claude with tool_use for structured output.
@@ -34,7 +35,7 @@ class LLMClient:
         If LLM fails, returns (None, True).
         """
         try:
-            response = await self.client.messages.create(
+            kwargs: dict = dict(
                 model=self.model,
                 max_tokens=max_tokens,
                 system=system_prompt,
@@ -48,6 +49,9 @@ class LLMClient:
                 ],
                 tool_choice={"type": "tool", "name": "structured_output"},
             )
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = await self.client.messages.create(**kwargs)
             tool_block = next(
                 (b for b in response.content if b.type == "tool_use"), None
             )
