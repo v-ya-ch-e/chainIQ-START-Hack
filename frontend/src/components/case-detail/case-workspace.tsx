@@ -1,6 +1,6 @@
 "use client"
 
-import { ArrowRight, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { ArrowRight, Download, FileDown, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
@@ -478,11 +478,14 @@ export function CaseWorkspace({
       successMessage: `Pipeline re-run started for ${data.id}.`,
     })
       .then(async () => {
-        await startPolling(data.id, {
+        const finalPhase = await startPolling(data.id, {
           initialPhase: "queued",
           intervalMs: 2000,
           timeoutMs: 45_000,
         })
+        if (finalPhase === "completed" || finalPhase === "failed" || finalPhase === "timed_out") {
+          await new Promise((r) => setTimeout(r, 500))
+        }
         router.refresh()
       })
       .catch(() => {
@@ -589,6 +592,30 @@ export function CaseWorkspace({
     router.push(`/escalations?caseId=${data.id}`)
   }
 
+  function handleGenerateReport() {
+    void runAction({
+      label: "report",
+      request: () => chainIqApi.pipeline.report(data.id),
+      successMessage: `Audit report generated for ${data.id}.`,
+    })
+      .then((result) => {
+        const blobData = result as { blob: Blob; contentDisposition: string | null } | undefined
+        if (blobData?.blob) {
+          const url = URL.createObjectURL(blobData.blob)
+          const link = document.createElement("a")
+          link.href = url
+          const disposition = blobData.contentDisposition
+          const filenameMatch = disposition?.match(/filename="?([^";\s]+)"?/)
+          link.download = filenameMatch?.[1] ?? `${data.id}-audit-report.pdf`
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+          URL.revokeObjectURL(url)
+        }
+      })
+      .catch(() => {})
+  }
+
   const bestMatch = compliantFirst[0] ?? null
   const isBestMatchPerfect = bestMatch ? bestMatch.meetsAll : false
   const remainingSuppliers = compliantFirst.slice(1)
@@ -617,10 +644,15 @@ export function CaseWorkspace({
         <Button
           variant="outline"
           size="sm"
-          onClick={() => setActiveTab("audit")}
+          onClick={handleGenerateReport}
+          disabled={loadingAction !== null}
         >
-          <ShieldCheck className="size-3.5" />
-          Audit
+          {loadingAction === "report" ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <FileDown className="size-3.5" />
+          )}
+          {loadingAction === "report" ? "Generating..." : "Audit"}
         </Button>
         <Button size="sm" onClick={handleEscalate}>
           <TimerReset className="size-3.5" />
