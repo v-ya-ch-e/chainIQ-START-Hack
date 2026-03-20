@@ -1,5 +1,8 @@
 # ChainIQ — Audit-Ready Autonomous Sourcing Agent
 
+## TRY IT OUT
+http://3.68.96.236:3000/
+
 **START Hack 2026 — ChainIQ Challenge**
 
 A full-stack prototype that converts unstructured, multilingual purchase requests into structured, defensible supplier comparisons with transparent reasoning, rule versioning, and escalation logic. The system processes 304 real-world procurement requests across 19 countries, 3 currencies, and 4 category families — producing auditable decisions end to end.
