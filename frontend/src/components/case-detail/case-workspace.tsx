@@ -1,7 +1,6 @@
 "use client"
 
 import { ArrowRight, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
-import Link from "next/link"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
@@ -1661,11 +1660,15 @@ export function CaseWorkspace({
                     {[...data.evaluationRuns]
                       .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
                       .map((run, index) => (
-                      <Link
+                      <button
                         key={run.runId}
-                        href={`/cases/eval/${run.runId}`}
+                        type="button"
+                        onClick={() => {
+                          setSelectedRunId(run.runId)
+                          setActiveTab("other-info")
+                        }}
                         className={cn(
-                          "flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-accent/60",
+                          "flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors hover:bg-accent/60",
                           run.runId === selectedRunId && "border-primary bg-primary/5",
                         )}
                       >
@@ -1687,7 +1690,7 @@ export function CaseWorkspace({
                                 : "neutral"
                           }
                         />
-                      </Link>
+                      </button>
                     ))}
                   </CardContent>
                 </Card>
