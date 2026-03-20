@@ -97,6 +97,7 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 | `app/services/escalations.py` | Escalation evaluation engine (ER-001..008 + AT conflict detection) |
 | `app/services/transaction_workflows.py` | ACID transaction workflows: escalation changes, evaluation triggers, rule updates, policy check overrides |
 | `app/services/request_parser.py` | Anthropic-powered text/file → structured request parser |
+| `app/services/rule_parser.py` | Anthropic-powered free-text → structured dynamic rule (new or update to existing). Receives all active rules so the LLM can decide. |
 | **Other** | |
 | `LOGGING_API.md` | Full documentation for pipeline and audit logging APIs |
 | `Dockerfile` | Python 3.14-slim container, multi-stage (dev + runtime) |
@@ -130,6 +131,15 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 ### Parse
 - `POST /api/parse/text` — parse raw procurement text into structured request (Anthropic)
 - `POST /api/parse/file` — parse uploaded file (PDF/image) into structured request (Anthropic)
+
+### Dynamic Rules
+- `GET /api/dynamic-rules/` — list all rules (filter: `stage`, `category`, `is_active`)
+- `GET /api/dynamic-rules/active` — list active rules only
+- `POST /api/dynamic-rules/parse` — LLM-powered: convert free-text into structured rule. Fetches all active rules from DB and passes them to the LLM so it can decide whether to create a new rule or update an existing one. Returns `{complete, rule, is_update, target_rule_id}`.
+- `POST /api/dynamic-rules/` — create a new rule (auto-creates version 1)
+- `GET /api/dynamic-rules/{rule_id}` — get a single rule
+- `PUT /api/dynamic-rules/{rule_id}` — update a rule (bumps version, snapshots old)
+- `DELETE /api/dynamic-rules/{rule_id}` — soft-delete (`is_active=false`)
 
 ### Pipeline Results
 - `POST /api/pipeline-results/` — save full pipeline output (called by logical layer)

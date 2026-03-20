@@ -23,7 +23,10 @@ from app.schemas.dynamic_rules import (
     DynamicRuleVersionOut,
     RuleEvaluationResultCreate,
     RuleEvaluationResultOut,
+    RuleParseRequest,
+    RuleParseResponse,
 )
+from app.services.rule_parser import parse_rule_text
 
 router = APIRouter(prefix="/api/dynamic-rules", tags=["Dynamic Rules"])
 
@@ -99,6 +102,32 @@ def list_active_rules(
     if stage:
         q = q.filter(DynamicRule.pipeline_stage == stage)
     return q.order_by(DynamicRule.priority, DynamicRule.rule_id).all()
+
+
+# ── Parse (LLM-powered, must be before /{rule_id} routes) ─────────
+
+
+@router.post("/parse", response_model=RuleParseResponse)
+async def parse_rule(payload: RuleParseRequest, db: Session = Depends(get_db)):
+    """Convert free-text into a structured rule definition using LLM.
+
+    Fetches all active rules so the LLM can decide whether to create a new
+    rule or update an existing one.
+    """
+    active_rules = (
+        db.query(DynamicRule)
+        .filter(DynamicRule.is_active == True)  # noqa: E712
+        .order_by(DynamicRule.priority, DynamicRule.rule_id)
+        .all()
+    )
+    existing = [_rule_snapshot(r) for r in active_rules]
+
+    try:
+        result = parse_rule_text(payload.text, existing)
+    except Exception as exc:
+        raise HTTPException(502, f"Rule parsing failed: {exc}") from exc
+
+    return result
 
 
 # ── CRUD ───────────────────────────────────────────────────────────

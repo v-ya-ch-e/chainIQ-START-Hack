@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { ArrowRight, Search } from "lucide-react"
+import { ArrowRight, Loader2, Plus, Search } from "lucide-react"
 import {
   memo,
   useCallback,
@@ -18,8 +18,16 @@ import {
 import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
-import { buttonVariants } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -43,6 +51,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
 import {
   displayRecommendationStatus,
   formatCountryDisplayName,
@@ -50,6 +59,7 @@ import {
 } from "@/lib/data/formatters"
 import { labelForFilterValue, type FilterOption } from "@/lib/filter-options"
 import type { QueueEscalationItem } from "@/lib/types/case"
+import type { DynamicRuleCreate } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
 
@@ -76,6 +86,7 @@ const EscalationsWorkspaceToolbar = memo(function EscalationsWorkspaceToolbar({
   onQueryChange,
   onStatusChange,
   onBlockingChange,
+  onNewRule,
 }: {
   query: string
   statusFilter: string
@@ -83,6 +94,7 @@ const EscalationsWorkspaceToolbar = memo(function EscalationsWorkspaceToolbar({
   onQueryChange: (value: string) => void
   onStatusChange: (value: string | null) => void
   onBlockingChange: (value: string | null) => void
+  onNewRule: () => void
 }) {
   const statusTriggerLabel = labelForFilterValue(
     escalationStatusOptions,
@@ -151,6 +163,15 @@ const EscalationsWorkspaceToolbar = memo(function EscalationsWorkspaceToolbar({
           ))}
         </SelectContent>
       </Select>
+
+      <Button
+        size="sm"
+        className={cn("h-8 shrink-0", topbarFilterControlClassName)}
+        onClick={onNewRule}
+      >
+        <Plus className="mr-1.5 size-4" />
+        New Rule
+      </Button>
     </TopbarFilters>
   )
 })
@@ -168,6 +189,9 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
   const [pipelineStatus, setPipelineStatus] = useState<Record<string, unknown> | null>(null)
   const [reviewLoading, setReviewLoading] = useState(false)
   const [reviewError, setReviewError] = useState<string | null>(null)
+  const [ruleDialogOpen, setRuleDialogOpen] = useState(false)
+
+  const openNewRuleDialog = useCallback(() => setRuleDialogOpen(true), [])
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -264,6 +288,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
           onQueryChange={setQuery}
           onStatusChange={handleStatusFilterChange}
           onBlockingChange={handleBlockingFilterChange}
+          onNewRule={openNewRuleDialog}
         />,
       )
       return () => setHeaderActions(null)
@@ -275,6 +300,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
       blockingFilter,
       handleStatusFilterChange,
       handleBlockingFilterChange,
+      openNewRuleDialog,
     ],
   )
 
@@ -585,7 +611,238 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
           </SheetFooter>
         </SheetContent>
       </Sheet>
+
+      <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
+        <DialogContent className="w-[min(100vw-2rem,56rem)] max-w-none p-0" showCloseButton={false}>
+          <DialogHeader className="border-b px-5 py-4">
+            <DialogTitle>New Rule</DialogTitle>
+            <DialogDescription>
+              Describe a new rule or a change to an existing one in plain text.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="max-h-[calc(100svh-9rem)] overflow-y-auto p-5">
+            {ruleDialogOpen ? (
+              <RuleWizard onClose={() => setRuleDialogOpen(false)} />
+            ) : null}
+          </DialogBody>
+        </DialogContent>
+      </Dialog>
     </>
+  )
+}
+
+type RuleWizardStep = "input" | "review"
+
+function RuleWizard({ onClose }: { onClose: () => void }) {
+  const [step, setStep] = useState<RuleWizardStep>("input")
+  const [text, setText] = useState("")
+  const [generatedRule, setGeneratedRule] = useState<DynamicRuleCreate | null>(null)
+  const [isUpdate, setIsUpdate] = useState(false)
+  const [targetRuleId, setTargetRuleId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  async function handleGenerate() {
+    if (!text.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await chainIqApi.dynamicRules.parse({ text: text.trim() })
+      setGeneratedRule(result.rule)
+      setIsUpdate(result.is_update)
+      setTargetRuleId(result.target_rule_id)
+      setStep("review")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate rule")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleSave() {
+    if (!generatedRule) return
+    setSaving(true)
+    setError(null)
+    try {
+      if (isUpdate && targetRuleId) {
+        const { rule_id: _id, created_by: _cb, ...fields } = generatedRule
+        await chainIqApi.dynamicRules.update(targetRuleId, {
+          ...fields,
+          changed_by: "user",
+          change_reason: text.trim(),
+        })
+        setSuccess(`Rule ${targetRuleId} updated successfully.`)
+      } else {
+        await chainIqApi.dynamicRules.create({
+          ...generatedRule,
+          created_by: "user",
+        })
+        setSuccess(`Rule ${generatedRule.rule_id} created successfully.`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save rule")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (success) {
+    return (
+      <div className="space-y-4 text-center">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+          <p className="text-sm font-medium text-emerald-800">{success}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    )
+  }
+
+  if (step === "input") {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-1.5">
+          <label htmlFor="rule-text" className="text-sm font-medium">
+            Describe what you need
+          </label>
+          <Textarea
+            id="rule-text"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={
+              "e.g. Exclude suppliers with ESG score below 40\n" +
+              "e.g. Change the risk score threshold from 70 to 50\n" +
+              "e.g. Add an escalation when budget exceeds 1 million EUR"
+            }
+            rows={5}
+            className="resize-none"
+          />
+        </div>
+
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" onClick={handleGenerate} disabled={loading || !text.trim()}>
+            {loading ? (
+              <>
+                <Loader2 className="mr-1.5 size-4 animate-spin" />
+                Generating...
+              </>
+            ) : (
+              "Generate"
+            )}
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {isUpdate ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+          <p className="text-sm text-amber-800">
+            This will <strong>update</strong> existing rule <strong>{targetRuleId}</strong>
+          </p>
+        </div>
+      ) : (
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+          <p className="text-sm text-blue-800">
+            This will <strong>create</strong> a new rule <strong>{generatedRule?.rule_id}</strong>
+          </p>
+        </div>
+      )}
+
+      {generatedRule ? <RulePreview rule={generatedRule} /> : null}
+
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            setStep("input")
+            setGeneratedRule(null)
+            setError(null)
+          }}
+        >
+          Back
+        </Button>
+        <Button size="sm" onClick={handleSave} disabled={saving}>
+          {saving ? (
+            <>
+              <Loader2 className="mr-1.5 size-4 animate-spin" />
+              Saving...
+            </>
+          ) : isUpdate ? (
+            "Apply Update"
+          ) : (
+            "Create Rule"
+          )}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+const severityTone: Record<string, "destructive" | "warning" | "neutral"> = {
+  critical: "destructive",
+  high: "warning",
+  medium: "neutral",
+  low: "neutral",
+}
+
+function RulePreview({ rule }: { rule: DynamicRuleCreate }) {
+  return (
+    <div className="space-y-3 rounded-lg border p-4">
+      <div>
+        <p className="text-lg font-semibold">{rule.rule_name}</p>
+        <p className="text-xs text-muted-foreground">{rule.rule_id}</p>
+      </div>
+
+      {rule.description ? (
+        <p className="text-sm leading-relaxed text-muted-foreground">{rule.description}</p>
+      ) : null}
+
+      <div className="flex flex-wrap gap-1.5">
+        <StatusBadge label={rule.rule_category} tone="info" />
+        <StatusBadge label={rule.eval_type} tone="info" />
+        <StatusBadge label={`scope: ${rule.scope ?? "request"}`} tone="neutral" />
+        <StatusBadge label={`stage: ${rule.pipeline_stage}`} tone="neutral" />
+        <StatusBadge
+          label={rule.severity ?? "medium"}
+          tone={severityTone[rule.severity ?? "medium"] ?? "neutral"}
+        />
+        {rule.is_blocking ? <StatusBadge label="blocking" tone="destructive" /> : null}
+      </div>
+
+      <div className="grid gap-2 text-sm sm:grid-cols-2">
+        <DetailRow label="Action on fail" value={rule.action_on_fail ?? "warn"} />
+        <DetailRow label="Priority" value={String(rule.priority ?? 100)} />
+        {rule.escalation_target ? (
+          <DetailRow label="Escalation target" value={rule.escalation_target} />
+        ) : null}
+        {rule.fail_message_template ? (
+          <DetailRow label="Fail message" value={rule.fail_message_template} />
+        ) : null}
+      </div>
+
+      <details className="group">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+          eval_config (JSON)
+        </summary>
+        <pre className="mt-2 overflow-x-auto rounded-md bg-muted/50 p-3 text-xs leading-relaxed">
+          {JSON.stringify(rule.eval_config, null, 2)}
+        </pre>
+      </details>
+    </div>
   )
 }
 

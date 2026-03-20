@@ -924,25 +924,38 @@ export function CaseWorkspace({
 
         <Card>
           <CardHeader>
-            <CardTitle>Outcome summary</CardTitle>
+            <CardTitle>Decision summary</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-3 sm:grid-cols-2">
             <FieldCell
-              label="Recommended Supplier"
+              label="Confidence"
               value={
-                recommendedSupplier ??
-                data.recommendation.preferredSupplierIfResolved ??
-                "Pending human resolution"
+                data.recommendation.confidenceScore != null
+                  ? `${data.recommendation.confidenceScore}%`
+                  : "Not scored"
               }
-              variant="emphasis"
+              variant={
+                data.recommendation.confidenceScore != null && data.recommendation.confidenceScore >= 50
+                  ? "emphasis"
+                  : "default"
+              }
             />
             <FieldCell
-              label="Budget"
-              value={formatCurrency(
-                data.rawRequest.budgetAmount,
-                data.rawRequest.currency,
-              )}
+              label="Compliance"
+              value={data.recommendation.complianceStatus}
               variant="default"
+            />
+            <FieldCell
+              label="Suppliers evaluated"
+              value={`${data.recommendation.supplierCount ?? 0} shortlisted · ${data.recommendation.excludedCount ?? 0} excluded`}
+            />
+            <FieldCell
+              label="Escalations"
+              value={
+                data.recommendation.blockingEscalationCount
+                  ? `${data.recommendation.escalationCount ?? 0} total · ${data.recommendation.blockingEscalationCount} blocking`
+                  : `${data.recommendation.escalationCount ?? 0} total`
+              }
             />
             <FieldCell
               label="Approval Tier"
@@ -951,14 +964,6 @@ export function CaseWorkspace({
             <FieldCell
               label="Quotes Required"
               value={`${data.recommendation.quotesRequired}`}
-            />
-            <FieldCell
-              label="Countries"
-              value={data.rawRequest.deliveryCountries.join(", ")}
-            />
-            <FieldCell
-              label="Scenario"
-              value={data.rawRequest.scenarioTags.join(", ") || "—"}
             />
           </CardContent>
         </Card>
