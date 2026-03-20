@@ -39,14 +39,13 @@ import {
   Table,
   TableBody,
   TableCell,
-  TableHead,
-  TableHeader,
   TableRow,
 } from "@/components/ui/table"
 import {
   displayRecommendationStatus,
   formatCountryDisplayName,
   formatDateTime,
+  titleCase,
 } from "@/lib/data/formatters"
 import { labelForFilterValue, type FilterOption } from "@/lib/filter-options"
 import type { QueueEscalationItem } from "@/lib/types/case"
@@ -68,6 +67,35 @@ const escalationTypeOptions: FilterOption[] = [
   { value: "blocking", label: "Blocking only" },
   { value: "advisory", label: "Advisory only" },
 ]
+
+const RULE_CHIP_MAX_CHARS = 34
+const ESCALATIONS_PAGE_SIZE = 12
+
+function normalizeRuleName(ruleId: string, ruleLabel?: string) {
+  const raw = (ruleLabel?.trim() || ruleId).trim()
+  if (!raw) return "Policy Rule"
+
+  const isSlugLike = !raw.includes(" ") || /[_-]/.test(raw)
+  const humanized = isSlugLike ? titleCase(raw.replace(/[_-]+/g, " ")) : raw
+  return humanized.replace(/\s+/g, " ").trim()
+}
+
+function truncateRuleName(value: string, maxChars = RULE_CHIP_MAX_CHARS) {
+  if (value.length <= maxChars) return value
+
+  const words = value.split(" ")
+  let output = ""
+  for (const word of words) {
+    const next = output ? `${output} ${word}` : word
+    if (next.length > maxChars - 1) break
+    output = next
+  }
+
+  if (!output) {
+    output = value.slice(0, maxChars - 1).trimEnd()
+  }
+  return `${output}…`
+}
 
 const EscalationsWorkspaceToolbar = memo(function EscalationsWorkspaceToolbar({
   query,
@@ -160,6 +188,7 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [blockingFilter, setBlockingFilter] = useState("all")
+  const [page, setPage] = useState(1)
   const setHeaderActions = useSetWorkspaceHeaderActions()
   const [selectedEscalationId, setSelectedEscalationId] = useState<string | null>(null)
   const [isReviewOpen, setIsReviewOpen] = useState(false)
@@ -173,12 +202,14 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
     const normalizedQuery = query.trim().toLowerCase()
 
     return items.filter((item) => {
+      const ruleName = normalizeRuleName(item.ruleId, item.ruleLabel).toLowerCase()
       const matchesQuery =
         !normalizedQuery ||
         item.caseId.toLowerCase().includes(normalizedQuery) ||
         item.title.toLowerCase().includes(normalizedQuery) ||
         item.ruleId.toLowerCase().includes(normalizedQuery) ||
         item.ruleLabel.toLowerCase().includes(normalizedQuery) ||
+        ruleName.includes(normalizedQuery) ||
         item.escalateTo.toLowerCase().includes(normalizedQuery) ||
         item.businessUnit.toLowerCase().includes(normalizedQuery) ||
         item.country.toLowerCase().includes(normalizedQuery)
@@ -197,6 +228,27 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
     })
   }, [blockingFilter, items, query, statusFilter])
 
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredItems.length / ESCALATIONS_PAGE_SIZE),
+  )
+  const currentPage = Math.min(page, totalPages)
+  const pagedItems = useMemo(() => {
+    if (filteredItems.length === 0) {
+      return []
+    }
+    const start = (currentPage - 1) * ESCALATIONS_PAGE_SIZE
+    return filteredItems.slice(start, start + ESCALATIONS_PAGE_SIZE)
+  }, [currentPage, filteredItems])
+  const pageStartIndex =
+    filteredItems.length === 0
+      ? 0
+      : (currentPage - 1) * ESCALATIONS_PAGE_SIZE + 1
+  const pageEndIndex =
+    filteredItems.length === 0
+      ? 0
+      : Math.min(currentPage * ESCALATIONS_PAGE_SIZE, filteredItems.length)
+
   const handleStatusFilterChange = useCallback((value: string | null) => {
     setStatusFilter(value ?? "all")
   }, [])
@@ -204,6 +256,16 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
   const handleBlockingFilterChange = useCallback((value: string | null) => {
     setBlockingFilter(value ?? "all")
   }, [])
+
+  useEffect(() => {
+    setPage(1)
+  }, [query, statusFilter, blockingFilter])
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages)
+    }
+  }, [page, totalPages])
 
   const selectedItem =
     filteredItems.find((item) => item.escalationId === selectedEscalationId) ??
@@ -317,7 +379,8 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
           <CardTitle>All escalations</CardTitle>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <span>
-              Showing {filteredItems.length} of {items.length} escalations
+              Showing {pageStartIndex}-{pageEndIndex} of {filteredItems.length} escalations
+              {filteredItems.length !== items.length ? ` (${items.length} total)` : ""}
             </span>
             {statusFilter !== "all" ? (
               <StatusBadge
@@ -344,16 +407,6 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="min-w-[220px] px-4">Case</TableHead>
-                  <TableHead className="min-w-[120px]">Rule</TableHead>
-                  <TableHead className="min-w-[140px]">Escalate To</TableHead>
-                  <TableHead className="min-w-[90px]">Blocking</TableHead>
-                  <TableHead className="min-w-[90px]">Status</TableHead>
-                  <TableHead className="min-w-[130px]">Created</TableHead>
-                </TableRow>
-              </TableHeader>
               <TableBody>
                 {filteredItems.length === 0 ? (
                   <TableRow>
@@ -362,7 +415,13 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredItems.map((item) => (
+                  pagedItems.map((item) => {
+                    const ruleDisplayName = normalizeRuleName(
+                      item.ruleId,
+                      item.ruleLabel,
+                    )
+                    const ruleChipName = truncateRuleName(ruleDisplayName)
+                    return (
                     <TableRow
                       key={item.escalationId}
                       data-state={
@@ -392,10 +451,12 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                         </div>
                       </TableCell>
                       <TableCell>
-                        <StatusBadge
-                          label={item.ruleLabel?.trim() || item.ruleId}
-                          tone="info"
-                        />
+                        <span title={ruleDisplayName} className="inline-flex align-middle">
+                          <StatusBadge
+                            label={ruleChipName}
+                            tone="info"
+                          />
+                        </span>
                       </TableCell>
                       <TableCell className="text-sm">
                         {item.escalateTo}
@@ -420,10 +481,42 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                         {formatDateTime(item.createdAt)}
                       </TableCell>
                     </TableRow>
-                  ))
+                    )
+                  })
                 )}
               </TableBody>
             </Table>
+          </div>
+          <div className="flex items-center justify-between border-t px-4 py-3">
+            <p className="text-xs text-muted-foreground">
+              Page {currentPage} of {totalPages}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className={cn(
+                  buttonVariants({ variant: "outline", size: "sm" }),
+                  "h-8 px-3 text-xs",
+                )}
+                onClick={() => setPage((prev) => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+              >
+                Previous
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  buttonVariants({ variant: "outline", size: "sm" }),
+                  "h-8 px-3 text-xs",
+                )}
+                onClick={() =>
+                  setPage((prev) => Math.min(totalPages, prev + 1))
+                }
+                disabled={currentPage === totalPages || filteredItems.length === 0}
+              >
+                Next
+              </button>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -476,7 +569,12 @@ export function EscalationsPage({ items }: EscalationsPageProps) {
                   Escalation context
                 </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  <StatusBadge label={selectedItem.ruleId} tone="info" />
+                  <StatusBadge
+                    label={truncateRuleName(
+                      normalizeRuleName(selectedItem.ruleId, selectedItem.ruleLabel),
+                    )}
+                    tone="info"
+                  />
                   <StatusBadge
                     label={selectedItem.blocking ? "blocking" : "advisory"}
                     tone={selectedItem.blocking ? "destructive" : "warning"}
