@@ -1050,7 +1050,7 @@ export function CaseWorkspace({
             Escalations
           </TabsTrigger>
           <TabsTrigger value="audit" className="px-5 py-3">
-            Audit Trace
+            Auditing
           </TabsTrigger>
         </TabsList>
 
