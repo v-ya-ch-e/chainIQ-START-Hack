@@ -349,10 +349,9 @@ export function CaseWorkspace({
     loadingAction,
     error,
     fallback,
-    message,
-    setMessage,
     runAction,
   } = usePipelineActionRunner()
+  const [message, setMessage] = useState<string | null>(null)
   const { startPolling, patchRequestState } =
     useRequestStatusPoller()
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)

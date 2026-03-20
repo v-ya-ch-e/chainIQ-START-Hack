@@ -106,10 +106,17 @@ export function usePipelineActionRunner() {
     }
   }, [])
 
+  const lastError = lastActionLifecycle?.phase === "error"
+    ? lastActionLifecycle.errorMessage ?? null
+    : null
+  const isRunsDegraded = lastError != null && isRunsEndpointInstability(lastError)
+
   return {
     loadingAction,
     actionLifecycleByLabel,
     lastActionLifecycle,
     runAction,
+    error: isRunsDegraded ? null : lastError,
+    fallback: isRunsDegraded ? lastError : null,
   }
 }
