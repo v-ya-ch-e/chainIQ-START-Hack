@@ -191,6 +191,12 @@ export interface RecommendationSummary {
   policyNote?: string | null
   quotesRequired: number
   complianceStatus: string
+  confidenceScore?: number | null
+  supplierCount?: number
+  excludedCount?: number
+  escalationCount?: number
+  blockingEscalationCount?: number
+  hasPipelineResult?: boolean
 }
 
 export interface AuditTimelineEvent {
