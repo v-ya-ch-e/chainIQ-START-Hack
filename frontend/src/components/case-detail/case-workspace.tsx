@@ -2166,7 +2166,7 @@ function SupplierDetailSheetContent({
       <div className="flex flex-wrap items-center gap-1.5">
         <StatusBadge label={supplier.supplierId} tone="neutral" />
         <StatusBadge
-          label={`Hard: ${effectiveBreakdown.hardRuleChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.hardRuleChecks.length}`}
+          label={`Rules: ${effectiveBreakdown.hardRuleChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.hardRuleChecks.length}`}
           tone={hardFailed ? "destructive" : hardOk ? "success" : "neutral"}
         />
         <StatusBadge
