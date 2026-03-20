@@ -8,24 +8,16 @@ import {
   useMemo,
   useState,
 } from "react"
-import { AlertTriangle, ArrowRight, BarChart3 } from "lucide-react"
+import { AlertTriangle, ArrowRight } from "lucide-react"
 
 import {
   TopbarFilters,
   topbarFilterControlClassName,
 } from "@/components/app-shell/topbar-filters"
 import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
-import {
-  displayCaseStatus,
-  formatCountryDisplayName,
-  formatCurrency,
-  formatDateTime,
-} from "@/lib/data/formatters"
-import { MetricCard } from "@/components/shared/metric-card"
 import { SectionHeading } from "@/components/shared/section-heading"
 import { StatusBadge } from "@/components/shared/status-badge"
 import { Button, buttonVariants } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
@@ -33,6 +25,16 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select"
+import {
+  displayCaseStatus,
+  formatCountryDisplayName,
+  formatDateTime,
+} from "@/lib/data/formatters"
+import {
+  buildFilterOptions,
+  labelForFilterValue,
+  type FilterOption,
+} from "@/lib/filter-options"
 import type {
   CaseListItem,
   CaseStatus,
@@ -40,11 +42,6 @@ import type {
   DashboardInsights,
   DashboardMetric,
 } from "@/lib/types/case"
-import {
-  buildFilterOptions,
-  labelForFilterValue,
-  type FilterOption,
-} from "@/lib/filter-options"
 import { cn } from "@/lib/utils"
 
 interface OverviewPageProps {
@@ -54,10 +51,18 @@ interface OverviewPageProps {
   insights: DashboardInsights
 }
 
+const OVERVIEW_WIDGET_LIMIT = 4
+
 function getStatusTone(status: CaseStatus) {
   if (status === "resolved" || status === "recommended") return "success"
   if (status === "pending_review" || status === "escalated") return "warning"
   return "neutral"
+}
+
+function sortByLastUpdatedDesc(entries: CaseListItem[]) {
+  return [...entries].sort((a, b) => {
+    return new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime()
+  })
 }
 
 const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
@@ -111,7 +116,7 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
         <SelectTrigger
           size="sm"
           className={cn(
-            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            "h-8 min-w-[10.5rem] grow border-input/80 transition-colors duration-150 sm:max-w-[12rem] sm:grow-0",
             topbarFilterControlClassName,
           )}
         >
@@ -131,7 +136,7 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
         <SelectTrigger
           size="sm"
           className={cn(
-            "h-8 min-w-[11rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[13rem] sm:grow-0",
+            "h-8 min-w-[11rem] grow border-input/80 transition-colors duration-150 sm:max-w-[13rem] sm:grow-0",
             topbarFilterControlClassName,
           )}
         >
@@ -154,7 +159,7 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
         <SelectTrigger
           size="sm"
           className={cn(
-            "h-8 min-w-[10.5rem] grow transition-[color,box-shadow,opacity] duration-150 sm:max-w-[12rem] sm:grow-0",
+            "h-8 min-w-[10.5rem] grow border-input/80 transition-colors duration-150 sm:max-w-[12rem] sm:grow-0",
             topbarFilterControlClassName,
           )}
         >
@@ -172,7 +177,7 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
       </Select>
       <label
         className={cn(
-          "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border border-transparent bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground",
+          "flex h-8 shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap border border-input/80 bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground",
           topbarFilterControlClassName,
         )}
       >
@@ -195,12 +200,127 @@ const OverviewWorkspaceToolbar = memo(function OverviewWorkspaceToolbar({
   )
 })
 
-export function OverviewPage({
-  metrics,
-  cases,
-  dataState,
-  insights,
-}: OverviewPageProps) {
+function InlineStat({
+  label,
+  value,
+  tone = "default",
+}: {
+  label: string
+  value: string
+  tone?: "default" | "warning" | "destructive"
+}) {
+  return (
+    <div className="rounded-[var(--overview-strip-inner-radius)] border px-3 py-2 shadow-none">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p
+        className={cn(
+          "mt-1 text-sm font-semibold tabular-nums",
+          tone === "warning" && "text-amber-700",
+          tone === "destructive" && "text-rose-700",
+        )}
+      >
+        {value}
+      </p>
+    </div>
+  )
+}
+
+function CaseActionRow({
+  entry,
+  detail,
+}: {
+  entry: CaseListItem
+  detail?: string
+}) {
+  const escalationTone =
+    entry.escalationStatus === "blocking" ? "destructive" : "warning"
+  const metadata = [
+    entry.category || "Uncategorized",
+    formatCountryDisplayName(entry.countryLabel),
+    entry.businessUnit,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+
+  return (
+    <Link
+      href={`/cases/${entry.requestId}`}
+      className="group flex items-center gap-3 border-t px-3 py-2.5 transition-colors hover:bg-muted/35"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className="truncate text-sm font-medium">{entry.title}</p>
+          <StatusBadge
+            label={displayCaseStatus(entry.status)}
+            tone={getStatusTone(entry.status)}
+          />
+          {entry.escalationStatus !== "none" ? (
+            <StatusBadge label={entry.escalationStatus} tone={escalationTone} />
+          ) : null}
+        </div>
+        <p className="mt-1 truncate text-xs text-muted-foreground">{metadata}</p>
+        <p
+          className="mt-1 truncate text-[11px] text-muted-foreground"
+          suppressHydrationWarning
+        >
+          {detail ?? `Updated ${formatDateTime(entry.lastUpdated)}`}
+        </p>
+      </div>
+      <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+    </Link>
+  )
+}
+
+function ActionPanel({
+  title,
+  actionLabel,
+  actionHref,
+  items,
+  emptyMessage,
+  rowDetail,
+}: {
+  title: string
+  actionLabel: string
+  actionHref: string
+  items: CaseListItem[]
+  emptyMessage: string
+  rowDetail?: (entry: CaseListItem) => string
+}) {
+  return (
+    <section className="rounded-[var(--layout-inner-radius)] border bg-background shadow-none">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <h2 className="text-sm font-semibold">{title}</h2>
+        <Link
+          href={actionHref}
+          className={cn(
+            buttonVariants({ variant: "ghost", size: "sm" }),
+            "h-8 px-2.5 text-xs",
+          )}
+        >
+          {actionLabel}
+        </Link>
+      </div>
+      {items.length === 0 ? (
+        <p className="px-4 py-4 text-sm text-muted-foreground">{emptyMessage}</p>
+      ) : (
+        <div>
+          {items.map((entry) => (
+            <CaseActionRow
+              key={entry.requestId}
+              entry={entry}
+              detail={rowDetail?.(entry)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+export function OverviewPage(props: OverviewPageProps) {
+  const { cases, dataState, insights } = props
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [categoryFilter, setCategoryFilter] = useState<string>("all")
   const [countryFilter, setCountryFilter] = useState<string>("all")
@@ -252,33 +372,62 @@ export function OverviewPage({
     })
   }, [attentionOnly, cases, categoryFilter, countryFilter, statusFilter])
 
-  const blockedCases = useMemo(
+  const needsAttentionCases = useMemo(
+    () => sortByLastUpdatedDesc(filteredCases.filter((entry) => entry.needsAttention)),
+    [filteredCases],
+  )
+
+  const recentEscalationCases = useMemo(
     () =>
-      filteredCases.filter(
-        (entry) => entry.recommendationStatus === "cannot_proceed",
+      sortByLastUpdatedDesc(
+        filteredCases.filter((entry) => entry.escalationStatus !== "none"),
       ),
     [filteredCases],
   )
-  const escalatedCases = useMemo(
-    () => filteredCases.filter((entry) => entry.escalationStatus !== "none"),
+
+  const dueSoonCases = useMemo(() => {
+    return [...filteredCases]
+      .filter((entry) => !Number.isNaN(new Date(entry.requiredByDate).getTime()))
+      .filter((entry) => entry.status !== "resolved")
+      .sort((a, b) => {
+        const dueDiff =
+          new Date(a.requiredByDate).getTime() -
+          new Date(b.requiredByDate).getTime()
+        if (dueDiff !== 0) return dueDiff
+        return (
+          new Date(b.lastUpdated).getTime() - new Date(a.lastUpdated).getTime()
+        )
+      })
+  }, [filteredCases])
+
+  const readyOutcomeCases = useMemo(
+    () =>
+      sortByLastUpdatedDesc(
+        filteredCases.filter(
+          (entry) =>
+            entry.status === "recommended" ||
+            entry.status === "resolved" ||
+            entry.recommendationStatus === "proceed",
+        ),
+      ),
     [filteredCases],
   )
 
-  const statusChartRows = useMemo(() => {
-    const counts = new Map<CaseStatus, number>()
-    for (const entry of filteredCases) {
-      counts.set(entry.status, (counts.get(entry.status) ?? 0) + 1)
-    }
+  const blockingCount = useMemo(
+    () =>
+      filteredCases.filter(
+        (entry) => entry.recommendationStatus === "cannot_proceed",
+      ).length,
+    [filteredCases],
+  )
 
-    return insights.filterOptions.statuses
-      .map((status) => ({
-        status,
-        label: displayCaseStatus(status),
-        count: counts.get(status) ?? 0,
-      }))
-      .filter((entry) => entry.count > 0)
-      .sort((a, b) => b.count - a.count)
-  }, [filteredCases, insights.filterOptions.statuses])
+  const activeFiltersCount =
+    Number(statusFilter !== "all") +
+    Number(categoryFilter !== "all") +
+    Number(countryFilter !== "all") +
+    Number(attentionOnly)
+
+  const setHeaderActions = useSetWorkspaceHeaderActions()
 
   const resetFilters = useCallback(() => {
     setStatusFilter("all")
@@ -298,14 +447,6 @@ export function OverviewPage({
   const handleCountryFilterChange = useCallback((value: string | null) => {
     setCountryFilter(value ?? "all")
   }, [])
-
-  const activeFiltersCount =
-    Number(statusFilter !== "all") +
-    Number(categoryFilter !== "all") +
-    Number(countryFilter !== "all") +
-    Number(attentionOnly)
-
-  const setHeaderActions = useSetWorkspaceHeaderActions()
 
   useLayoutEffect(
     () => {
@@ -346,250 +487,97 @@ export function OverviewPage({
   )
 
   return (
-    <div className="space-y-8">
-      <div className="animate-fade-in-up flex flex-col gap-2 @xl/main:flex-row @xl/main:items-end @xl/main:justify-between">
+    <div className="space-y-4">
+      <div className="animate-fade-in-up flex flex-col gap-1.5 @xl/main:flex-row @xl/main:items-end @xl/main:justify-between">
         <SectionHeading
           eyebrow="Overview"
           title="Sourcing overview"
-          description="Quick operational snapshot and focused queues for action."
+          description="Operational triage for requests requiring action."
         />
-        <div className="text-xs text-muted-foreground">
-          <p suppressHydrationWarning>
-            Snapshot as of {formatDateTime(dataState.asOf)}
-          </p>
-          <p className="mt-1">
-            Showing {filteredCases.length} of {cases.length} cases
-          </p>
-        </div>
+        <p className="text-xs text-muted-foreground" suppressHydrationWarning>
+          Snapshot as of {formatDateTime(dataState.asOf)}
+        </p>
       </div>
 
       {dataState.mode === "stale" ? (
-        <Card
-          className="animate-fade-in-up border-amber-300 bg-amber-50/70 text-amber-900"
-          style={{ animationDelay: "40ms" }}
+        <div
+          className="animate-fade-in-up flex items-start gap-2 rounded-[var(--layout-inner-radius)] border border-amber-300/80 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 shadow-none"
+          style={{ animationDelay: "30ms" }}
         >
-          <CardContent className="flex flex-col gap-1 pt-4">
-            <p className="flex items-center gap-2 text-sm font-medium">
-              <AlertTriangle className="size-4" />
-              Backend temporarily unavailable. Showing last successful snapshot.
-            </p>
-            <p className="text-xs text-amber-800" suppressHydrationWarning>
-              Snapshot as of {formatDateTime(dataState.asOf)}.
-              {dataState.reason ? ` ${dataState.reason}` : ""}
-            </p>
-          </CardContent>
-        </Card>
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <p suppressHydrationWarning>
+            Backend temporarily unavailable. Showing last successful snapshot from{" "}
+            {formatDateTime(dataState.asOf)}.
+            {dataState.reason ? ` ${dataState.reason}` : ""}
+          </p>
+        </div>
       ) : null}
 
       <section
-        className="animate-fade-in-up grid gap-3 @xl/main:grid-cols-2 @3xl/main:grid-cols-4"
-        style={{ animationDelay: "80ms" }}
+        className="animate-fade-in-up [--overview-strip-inner-padding:0.375rem] [--overview-strip-inner-radius:var(--radius-md)] [--overview-strip-outer-radius:calc(var(--overview-strip-inner-radius)+var(--overview-strip-inner-padding))] rounded-[var(--overview-strip-outer-radius)] border p-[var(--overview-strip-inner-padding)] shadow-none"
+        style={{ animationDelay: "60ms" }}
       >
-        {metrics.map((metric) => (
-          <MetricCard
-            key={metric.label}
-            label={metric.label}
-            value={metric.valueLabel ?? metric.value}
-            helper={metric.helper}
-            tone={metric.tone}
+        <div className="grid gap-2 sm:grid-cols-2 @3xl/main:grid-cols-4">
+          <InlineStat
+            label="Visible cases"
+            value={`${filteredCases.length} / ${cases.length}`}
           />
-        ))}
+          <InlineStat
+            label="Needs attention"
+            value={String(needsAttentionCases.length)}
+            tone="warning"
+          />
+          <InlineStat
+            label="Blocking"
+            value={String(blockingCount)}
+            tone="destructive"
+          />
+          <InlineStat
+            label="Open escalations"
+            value={String(recentEscalationCases.length)}
+            tone="warning"
+          />
+        </div>
       </section>
 
       <section
-        className="animate-fade-in-up grid gap-6 @3xl/main:grid-cols-2"
-        style={{ animationDelay: "160ms" }}
+        className="animate-fade-in-up grid gap-4 @3xl/main:grid-cols-2 @5xl/main:grid-cols-4"
+        style={{ animationDelay: "90ms" }}
       >
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <BarChart3 className="size-4 text-muted-foreground" />
-              Case status mix
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {statusChartRows.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No cases match the selected filters.
-              </p>
-            ) : (
-              (() => {
-                const maxCount = Math.max(
-                  ...statusChartRows.map((entry) => entry.count),
-                )
-                return statusChartRows.map((entry) => (
-                  <div key={entry.status} className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <StatusBadge
-                          label={entry.label}
-                          tone={getStatusTone(entry.status)}
-                        />
-                      </div>
-                      <span className="font-medium tabular-nums">{entry.count}</span>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted">
-                      <div
-                        className="h-2 rounded-full bg-primary/70 transition-all"
-                        style={{
-                          width: `${(entry.count / maxCount) * 100}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))
-              })()
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Spend by category</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {insights.spendByCategory.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Spend analytics are currently unavailable.
-              </p>
-            ) : (
-              (() => {
-                const maxSpend = Math.max(
-                  ...insights.spendByCategory.map((entry) => entry.totalSpend),
-                )
-                return insights.spendByCategory.map((entry) => (
-                  <div key={entry.category} className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="truncate text-xs font-medium">{entry.category}</p>
-                      <p className="shrink-0 text-xs text-muted-foreground">
-                        {formatCurrency(entry.totalSpend)} · {entry.awardCount} awards
-                      </p>
-                    </div>
-                    <div className="h-2 rounded-full bg-muted">
-                      <div
-                        className="h-2 rounded-full bg-emerald-500/80 transition-all"
-                        style={{
-                          width: `${maxSpend > 0 ? (entry.totalSpend / maxSpend) * 100 : 0}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))
-              })()
-            )}
-          </CardContent>
-        </Card>
-      </section>
-
-      <section
-        className="animate-fade-in-up grid gap-6 @3xl/main:grid-cols-2"
-        style={{ animationDelay: "220ms" }}
-      >
-        <Card>
-          <CardHeader className="flex-row items-center justify-between pb-3">
-            <CardTitle className="text-base">Blocked cases</CardTitle>
-            <Link
-              href="/escalations"
-              className={buttonVariants({ variant: "ghost", size: "sm" })}
-            >
-              View all
-            </Link>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {blockedCases.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No blocked cases for this filter set.
-              </p>
-            ) : (
-              blockedCases.slice(0, 5).map((entry) => (
-                <Link
-                  key={entry.requestId}
-                  href={`/cases/${entry.requestId}`}
-                  className="group flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">
-                        {entry.title}
-                      </span>
-                      <StatusBadge label="cannot proceed" tone="destructive" />
-                    </div>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {entry.category}
-                    </p>
-                    <p
-                      className={cn(
-                        "mt-1 truncate text-[11px] text-muted-foreground",
-                        entry.needsAttention && "text-amber-700",
-                      )}
-                      suppressHydrationWarning
-                    >
-                      {entry.businessUnit} ·{" "}
-                      {formatCountryDisplayName(entry.countryLabel)} · updated{" "}
-                      {formatDateTime(entry.lastUpdated)}
-                    </p>
-                  </div>
-                  <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                </Link>
-              ))
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex-row items-center justify-between pb-3">
-            <CardTitle className="text-base">Recent escalations</CardTitle>
-            <Link
-              href="/inbox"
-              className={buttonVariants({ variant: "ghost", size: "sm" })}
-            >
-              Open inbox
-            </Link>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {escalatedCases.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No escalations for this filter set.
-              </p>
-            ) : (
-              escalatedCases.slice(0, 5).map((entry) => (
-                <Link
-                  key={entry.requestId}
-                  href={`/cases/${entry.requestId}`}
-                  className="group flex items-center justify-between gap-3 rounded-lg border p-3 transition-colors hover:bg-muted/50"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">
-                        {entry.title}
-                      </span>
-                      <StatusBadge
-                        label={entry.escalationStatus}
-                        tone={
-                          entry.escalationStatus === "blocking"
-                            ? "destructive"
-                            : "warning"
-                        }
-                      />
-                    </div>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                      {entry.title}
-                    </p>
-                    <p
-                      className="mt-1 truncate text-[11px] text-muted-foreground"
-                      suppressHydrationWarning
-                    >
-                      {(entry.scenarioTags ?? []).slice(0, 3).join(", ") ||
-                        "—"}{" "}
-                      · updated {formatDateTime(entry.lastUpdated)}
-                    </p>
-                  </div>
-                  <ArrowRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                </Link>
-              ))
-            )}
-          </CardContent>
-        </Card>
+        <ActionPanel
+          title="Needs attention"
+          actionLabel="Open inbox"
+          actionHref="/inbox"
+          items={needsAttentionCases.slice(0, OVERVIEW_WIDGET_LIMIT)}
+          emptyMessage="No cases currently require attention for this filter set."
+        />
+        <ActionPanel
+          title="Recent escalations"
+          actionLabel="View escalations"
+          actionHref="/escalations"
+          items={recentEscalationCases.slice(0, OVERVIEW_WIDGET_LIMIT)}
+          emptyMessage="No escalations for this filter set."
+        />
+        <ActionPanel
+          title="Due soon"
+          actionLabel="Open inbox"
+          actionHref="/inbox"
+          items={dueSoonCases.slice(0, OVERVIEW_WIDGET_LIMIT)}
+          emptyMessage="No upcoming due dates in this filter set."
+          rowDetail={(entry) => `Due ${formatDateTime(entry.requiredByDate)}`}
+        />
+        <ActionPanel
+          title="Ready outcomes"
+          actionLabel="Open pipeline"
+          actionHref="/pipeline"
+          items={readyOutcomeCases.slice(0, OVERVIEW_WIDGET_LIMIT)}
+          emptyMessage="No ready outcomes in this filter set."
+          rowDetail={(entry) =>
+            entry.supplierLabel
+              ? `Preferred supplier ${entry.supplierLabel}`
+              : `Updated ${formatDateTime(entry.lastUpdated)}`
+          }
+        />
       </section>
     </div>
   )
