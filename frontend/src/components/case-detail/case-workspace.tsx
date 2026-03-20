@@ -702,7 +702,7 @@ export function CaseWorkspace({
                       isBestMatchPerfect ? "text-emerald-600" : "",
                     )}>
                       {isBestMatchPerfect
-                        ? "Match found:"
+                        ? "Recommendation:"
                         : "No match found — here's the best match:"}
                     </span>
                     <span className="text-xl font-bold tracking-tight">
