@@ -19,13 +19,15 @@ export default async function Page({
   }
 
   const initialTab =
-    tab === "overview" || tab === "suppliers" || tab === "escalations" || tab === "audit"
+    tab === "other-info" || tab === "escalations" || tab === "audit"
       ? tab
-      : undefined
+      : tab === "overview" || tab === "suppliers"
+        ? "other-info" as const
+        : undefined
 
   return (
     <CaseWorkspace
-      key={`${data.id}-${initialTab ?? "overview"}`}
+      key={`${data.id}-${initialTab ?? "other-info"}`}
       data={data}
       initialTab={initialTab}
       createdFromIntake={created === "1"}

@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation"
 import { ChevronRight } from "lucide-react"
 
 import { AppNavigation } from "@/components/app-shell/nav-links"
+import { HeaderActionsProvider, useHeaderActions } from "@/components/app-shell/header-actions-context"
 import { NavUser } from "@/components/app-shell/nav-user"
 import { PageTransition } from "@/components/shared/page-transition"
 import {
@@ -39,112 +40,75 @@ export function WorkspaceShell({
 
   return (
     <WorkspaceHeaderActionsProvider>
-    <SidebarProvider
-      defaultOpen={defaultSidebarOpen}
-      style={
-        {
-          "--sidebar-width": "calc(var(--spacing) * 72)",
-          "--header-height": "calc(var(--spacing) * 12)",
-          "--layout-inner-padding": "clamp(0.75rem, 1.2vw, 1rem)",
-          "--layout-inner-radius": "calc(var(--radius) * 1.4)",
-          // Shell curve: outer radius = inner content radius + page gutter (matches globals.css)
-          "--layout-outer-radius":
-            "calc(var(--layout-inner-radius) + var(--layout-inner-padding))",
-          height: "100svh",
-          minHeight: 0,
-          overflow: "hidden",
-        } as React.CSSProperties
-      }
-    >
-      <Sidebar variant="inset" collapsible="icon">
-        <SidebarHeader className="p-3">
-          <div className="flex items-center gap-2.5 overflow-hidden">
-            <Image
-              src="/chainiq_logo.svg"
-              alt="ChainIQ"
-              width={473}
-              height={187}
-              priority
-              className="h-8 w-auto shrink-0 group-data-[collapsible=icon]:hidden"
+    <HeaderActionsProvider>
+      <SidebarProvider
+        defaultOpen={defaultSidebarOpen}
+        style={
+          {
+            "--sidebar-width": "calc(var(--spacing) * 72)",
+            "--header-height": "calc(var(--spacing) * 12)",
+            "--layout-inner-padding": "clamp(0.75rem, 1.2vw, 1rem)",
+            "--layout-inner-radius": "calc(var(--radius) * 1.4)",
+            "--layout-outer-radius":
+              "calc(var(--layout-inner-radius) + var(--layout-inner-padding))",
+            height: "100svh",
+            minHeight: 0,
+            overflow: "hidden",
+          } as React.CSSProperties
+        }
+      >
+        <Sidebar variant="inset" collapsible="icon">
+          <SidebarHeader className="p-3">
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <Image
+                src="/chainiq_logo.svg"
+                alt="ChainIQ"
+                width={473}
+                height={187}
+                priority
+                className="h-8 w-auto shrink-0 group-data-[collapsible=icon]:hidden"
+              />
+              <Image
+                src="/chainiq_logo.svg"
+                alt="ChainIQ"
+                width={473}
+                height={187}
+                priority
+                className="hidden h-5 w-auto shrink-0 group-data-[collapsible=icon]:block"
+              />
+            </div>
+          </SidebarHeader>
+
+          <SidebarContent>
+            <AppNavigation />
+          </SidebarContent>
+
+          <SidebarFooter className="gap-2">
+            <div className="flex justify-end px-0 group-data-[collapsible=icon]:justify-center">
+              <ThemeToggle />
+            </div>
+            <NavUser
+              user={{
+                name: "Max Analyst",
+                email: "max.analyst@chainiq.com",
+                avatar: "",
+              }}
             />
-            <Image
-              src="/chainiq_logo.svg"
-              alt="ChainIQ"
-              width={473}
-              height={187}
-              priority
-              className="hidden h-5 w-auto shrink-0 group-data-[collapsible=icon]:block"
-            />
+          </SidebarFooter>
+        </Sidebar>
+
+        <SidebarInset className="min-h-0 overflow-hidden bg-white">
+          <ShellHeader crumbs={crumbs} />
+          <div className="min-h-0 flex-1 overflow-y-auto p-[var(--layout-inner-padding)]">
+            <div className="@container/main min-w-0 rounded-[var(--layout-inner-radius)]">
+              <PageTransition>
+                {children}
+              </PageTransition>
+            </div>
           </div>
-        </SidebarHeader>
-
-        <SidebarContent>
-          <AppNavigation />
-        </SidebarContent>
-
-        <SidebarFooter className="gap-2">
-          <div className="flex justify-end px-0 group-data-[collapsible=icon]:justify-center">
-            <ThemeToggle />
-          </div>
-          <NavUser
-            user={{
-              name: "Max Analyst",
-              email: "max.analyst@chainiq.com",
-              avatar: "",
-            }}
-          />
-        </SidebarFooter>
-
-      </Sidebar>
-
-      <SidebarInset className="min-h-0 overflow-hidden bg-background">
-        <header className="flex min-h-(--header-height) min-w-0 shrink-0 flex-nowrap items-center gap-4 rounded-t-[var(--layout-outer-radius)] border-b bg-background px-[var(--layout-inner-padding)] py-2.5">
-          <SidebarTrigger className="shrink-0" />
-          <nav
-            aria-label="Breadcrumb"
-            className="min-w-0 max-w-[min(100%,12rem)] shrink-0 overflow-hidden sm:max-w-[min(100%,16rem)] lg:max-w-[min(100%,20rem)] xl:max-w-[min(100%,24rem)]"
-          >
-            <ol className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:text-sm">
-              {crumbs.map((crumb, index) => {
-                const isLast = index === crumbs.length - 1
-
-                return (
-                  <li
-                    key={crumb.href ?? `${crumb.label}-${index}`}
-                    className="flex min-w-0 items-center gap-1.5"
-                  >
-                    {index > 0 ? (
-                      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" />
-                    ) : null}
-                    {isLast || !crumb.href ? (
-                      <span className="truncate font-medium text-foreground">
-                        {crumb.label}
-                      </span>
-                    ) : (
-                      <Link
-                        href={crumb.href}
-                        className="truncate transition-colors hover:text-foreground"
-                      >
-                        {crumb.label}
-                      </Link>
-                    )}
-                  </li>
-                )
-              })}
-            </ol>
-          </nav>
-          <WorkspaceHeaderActionsSlot />
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-[var(--layout-inner-padding)]">
-          <div className="@container/main min-w-0 rounded-[var(--layout-inner-radius)]">
-            <PageTransition>
-              {children}
-            </PageTransition>
-          </div>
-        </div>
-      </SidebarInset>
-    </SidebarProvider>
+        </SidebarInset>
+      </SidebarProvider>
+    </HeaderActionsProvider>
     </WorkspaceHeaderActionsProvider>
   )
 }
@@ -206,6 +170,64 @@ function buildBreadcrumbs(pathname: string): BreadcrumbItem[] {
   return [
     { label: toTitleCase(normalizedPath.split("/").filter(Boolean).at(-1) ?? "Page") },
   ]
+}
+
+function ShellHeader({ crumbs }: { crumbs: BreadcrumbItem[] }) {
+  const { actions, titleExtra, breadcrumbOverride } = useHeaderActions()
+
+  const effectiveCrumbs = breadcrumbOverride && crumbs.length > 0
+    ? [
+        ...crumbs.slice(0, -1),
+        { ...crumbs[crumbs.length - 1], label: breadcrumbOverride },
+      ]
+    : crumbs
+
+  return (
+    <header className="flex h-(--header-height) shrink-0 items-center gap-3 border-b bg-white px-4">
+      <SidebarTrigger className="-ml-1" />
+      <nav aria-label="Breadcrumb" className="min-w-0">
+        <ol className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground md:text-sm">
+          {effectiveCrumbs.map((crumb, index) => {
+            const isLast = index === effectiveCrumbs.length - 1
+
+            return (
+              <li
+                key={crumb.href ?? `${crumb.label}-${index}`}
+                className="flex min-w-0 items-center gap-1.5"
+              >
+                {index > 0 ? (
+                  <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/70" />
+                ) : null}
+                {isLast || !crumb.href ? (
+                  <span className="truncate font-medium text-foreground">
+                    {crumb.label}
+                  </span>
+                ) : (
+                  <Link
+                    href={crumb.href}
+                    className="truncate transition-colors hover:text-foreground"
+                  >
+                    {crumb.label}
+                  </Link>
+                )}
+              </li>
+            )
+          })}
+        </ol>
+      </nav>
+      {titleExtra ? (
+        <div className="flex items-center gap-1.5">
+          {titleExtra}
+        </div>
+      ) : null}
+      <WorkspaceHeaderActionsSlot />
+      {actions ? (
+        <div className="ml-auto flex items-center gap-2">
+          {actions}
+        </div>
+      ) : null}
+    </header>
+  )
 }
 
 function toTitleCase(value: string) {

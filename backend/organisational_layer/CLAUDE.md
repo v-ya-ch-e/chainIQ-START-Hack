@@ -98,6 +98,7 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 | `app/services/transaction_workflows.py` | ACID transaction workflows: escalation changes, evaluation triggers, rule updates, policy check overrides |
 | `app/services/request_parser.py` | Anthropic-powered text/file → structured request parser |
 | `app/services/rule_parser.py` | Anthropic-powered free-text → structured dynamic rule (new or update to existing). Receives all active rules so the LLM can decide. |
+| `app/services/dynamic_rule_versions.py` | Resolves frozen/active snapshots from `dynamic_rule_versions` table with safe fallbacks to live `dynamic_rules` rows |
 | **Other** | |
 | `LOGGING_API.md` | Full documentation for pipeline and audit logging APIs |
 | `Dockerfile` | Python 3.14-slim container, multi-stage (dev + runtime) |
@@ -128,6 +129,13 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 - Policy checks: `GET/PATCH /api/rule-versions/policy-checks[/{check_id}]`, `POST /api/rule-versions/evaluations/{run_id}/policy-checks`
 - Audit logs: `GET /api/rule-versions/logs/evaluation-run/{run_id}`, `GET /api/rule-versions/logs/escalation/{escalation_id}`, `GET /api/rule-versions/logs/policy-change/{escalation_id}`, `GET /api/rule-versions/logs/policy-check`
 
+### Enriched Rule Check Output
+`RuleCheckOut` (hard rule checks and policy checks) now includes traceability fields:
+- `rule_name` — human-readable name from `rule_definitions`
+- `version_snapshot` — frozen `rule_config` from `rule_versions` at evaluation time
+- `dynamic_snapshot` — active row from `dynamic_rule_versions.snapshot` when rule exists in dynamic rules
+- `dynamic_rule_version` — integer version from `dynamic_rule_versions` for the evaluated rule
+
 ### Parse
 - `POST /api/parse/text` — parse raw procurement text into structured request (Anthropic)
 - `POST /api/parse/file` — parse uploaded file (PDF/image) into structured request (Anthropic)
@@ -136,10 +144,16 @@ Test dependencies: `pytest`, `httpx` (included in `requirements.txt`).
 - `GET /api/dynamic-rules/` — list all rules (filter: `stage`, `category`, `is_active`)
 - `GET /api/dynamic-rules/active` — list active rules only
 - `POST /api/dynamic-rules/parse` — LLM-powered: convert free-text into structured rule. Fetches all active rules from DB and passes them to the LLM so it can decide whether to create a new rule or update an existing one. Returns `{complete, rule, is_update, target_rule_id}`.
+- `POST /api/dynamic-rules/evaluation-results` — bulk-store evaluation results from pipeline runs
+- `GET /api/dynamic-rules/evaluation-results/by-run/{run_id}` — retrieve evaluation results for a specific run
 - `POST /api/dynamic-rules/` — create a new rule (auto-creates version 1)
 - `GET /api/dynamic-rules/{rule_id}` — get a single rule
 - `PUT /api/dynamic-rules/{rule_id}` — update a rule (bumps version, snapshots old)
 - `DELETE /api/dynamic-rules/{rule_id}` — soft-delete (`is_active=false`)
+
+### Dynamic Rule Version Snapshots (`/api/rule-versions/`)
+- `GET /api/rule-versions/dynamic-rule-versions/active/{rule_id}` — active/latest snapshot from `dynamic_rule_versions` with fallback to live `dynamic_rules` row
+- `GET /api/rule-versions/dynamic-rule-versions/{rule_id}/at-version/{version_num}` — pinned snapshot by exact rule version number
 
 ### Pipeline Results
 - `POST /api/pipeline-results/` — save full pipeline output (called by logical layer)

@@ -161,3 +161,19 @@ The Escalations page has a "New Rule" button that opens a dialog with a single t
 - **temperature=0**: Validation LLM calls use `temperature=0` for deterministic results across identical pipeline runs.
 - **Each contradiction preserves its description**: Individual contradictions from the LLM are logged as separate audit entries with specific field/description, visible in the frontend decision timeline.
 - **Conservative prompt**: The system prompt explicitly lists what IS NOT a contradiction (approximations, omissions, rounding, different wording for same value) to minimize false positives.
+
+## Evaluation Traceability (added via dev merge)
+
+The Org Layer now enriches rule check responses with full traceability metadata:
+
+- **`RuleCheckOut` enrichment**: Hard rule checks and policy checks include `rule_name` (from `rule_definitions`), `version_snapshot` (frozen `rule_config` from `rule_versions`), `dynamic_snapshot` (active row from `dynamic_rule_versions`), and `dynamic_rule_version` (integer version).
+- **Dynamic rule version resolution service**: `backend/organisational_layer/app/services/dynamic_rule_versions.py` resolves snapshots with a 3-tier fallback: active version row → latest version row → live `dynamic_rules` row.
+- **New endpoints**: `GET /api/rule-versions/dynamic-rule-versions/active/{rule_id}` and `GET /api/rule-versions/dynamic-rule-versions/{rule_id}/at-version/{version_num}` for on-demand snapshot resolution.
+- **Evaluation results persistence**: `POST /api/dynamic-rules/evaluation-results` stores bulk evaluation results; `GET /api/dynamic-rules/evaluation-results/by-run/{run_id}` retrieves them.
+
+## Frontend Case Workspace Redesign (added via dev merge)
+
+- **Header actions context**: `frontend/src/components/app-shell/header-actions-context.tsx` provides `setActions`, `setTitleExtra`, and `setBreadcrumbOverride` to let child pages inject actions into the shell header.
+- **Dual provider pattern**: The shell wraps pages in both `WorkspaceHeaderActionsProvider` (for list pages with topbar filters) and `HeaderActionsProvider` (for case detail with contextual actions).
+- **Enriched rule checks table**: The case workspace displays rule checks with tooltips showing frozen `eval_config.condition` snapshots, rule names from definitions, and dynamic rule versions.
+- **Evaluation run history**: The case detail view shows all evaluation runs with per-supplier hard rule and policy check breakdowns, supplier shortlist, and excluded suppliers from each run.

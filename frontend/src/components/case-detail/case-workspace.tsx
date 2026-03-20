@@ -1,15 +1,13 @@
 "use client"
 
-import { AlertTriangle, ArrowLeft, ChevronRight, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
-import { toast } from "sonner"
-import Link from "next/link"
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { ArrowRight, Download, Loader2, Play, RefreshCw, ShieldCheck, TimerReset } from "lucide-react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { useRouter } from "next/navigation"
 
-import { SectionHeading } from "@/components/shared/section-heading"
+import { useHeaderActions } from "@/components/app-shell/header-actions-context"
 import { JsonViewer } from "@/components/shared/json-viewer"
 import { StatusBadge } from "@/components/shared/status-badge"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import {
@@ -20,7 +18,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Separator } from "@/components/ui/separator"
 import {
   Sheet,
   SheetContent,
@@ -30,110 +27,45 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
-  displayApprovalTier,
-  displayCaseStatus,
-  displayRecommendationStatus,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+import {
   formatCurrency,
   formatDate,
   formatDateTime,
   scoreTone,
   severityTone,
-  titleCase,
 } from "@/lib/data/formatters"
 import type {
-  AuditTimelineEvent,
   CaseDetail,
   EvaluationRunDetail,
   RuleCheckResult,
   SupplierRuleBreakdown,
   SupplierRuleCheck,
   SupplierRow,
-  ValidationIssue,
 } from "@/lib/types/case"
-import { useSetWorkspaceHeaderActions } from "@/components/app-shell/workspace-header-actions"
 import { cn } from "@/lib/utils"
 import { chainIqApi } from "@/lib/api/client"
 import { usePipelineActionRunner } from "@/lib/pipeline/action-runner"
 import {
-  classifyPipelineStatus,
   useRequestStatusPoller,
 } from "@/lib/pipeline/request-status-poller"
 
+type CaseTab = "other-info" | "escalations" | "audit"
+
+type CaseTabInput = CaseTab | "overview" | "suppliers"
+
 interface CaseWorkspaceProps {
   data: CaseDetail
-  initialTab?: CaseTab
+  initialTab?: CaseTabInput
   createdFromIntake?: boolean
   initialRunId?: string
   showReturnToLatest?: boolean
 }
 
-type CaseTab = "overview" | "suppliers" | "escalations" | "audit"
-
-function livePhaseLabel(
-  phase: "idle" | "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out",
-) {
-  switch (phase) {
-    case "idle":
-      return "Not started"
-    case "queued":
-      return "Queued"
-    case "running":
-      return "Running"
-    case "completed":
-      return "Completed"
-    case "failed":
-      return "Failed"
-    case "timed_out":
-      return "Timed out"
-    default:
-      return "Unknown"
-  }
-}
-
-function livePhaseTone(
-  phase: "idle" | "queued" | "running" | "completed" | "failed" | "unknown" | "timed_out",
-) {
-  switch (phase) {
-    case "completed":
-      return "success" as const
-    case "failed":
-    case "timed_out":
-      return "destructive" as const
-    case "running":
-      return "info" as const
-    case "queued":
-      return "warning" as const
-    case "idle":
-      return "neutral" as const
-    default:
-      return "neutral" as const
-  }
-}
-
-function filenameFromContentDisposition(header: string | null, fallback: string): string {
-  if (!header) return fallback
-  const utfMatch = header.match(/filename\*=UTF-8''([^;]+)/i)
-  if (utfMatch?.[1]) {
-    const decoded = decodeURIComponent(utfMatch[1]).trim()
-    if (decoded) return decoded
-  }
-  const quotedMatch = header.match(/filename="([^"]+)"/i)
-  if (quotedMatch?.[1]) return quotedMatch[1].trim()
-  const rawMatch = header.match(/filename=([^;]+)/i)
-  if (rawMatch?.[1]) return rawMatch[1].trim()
-  return fallback
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement("a")
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  URL.revokeObjectURL(url)
-}
 
 function toRuleCheckResult(value: string | null | undefined): RuleCheckResult {
   if (value === "passed" || value === "failed" || value === "warned" || value === "skipped") {
@@ -179,154 +111,235 @@ function meetsAllCriteria(breakdown: SupplierRuleBreakdown | null): boolean {
   return !failedHard && !failedPolicy
 }
 
-function CaseWorkspaceHeaderActions({
-  caseId,
-  showReturnToLatest,
-  loadingAction,
-  onRerun,
-  onStatus,
-  onResult,
-  onExport,
-  onAuditDownload,
-  onEscalate,
-}: {
-  caseId: string
-  showReturnToLatest: boolean
-  loadingAction: string | null
-  onRerun: () => void
-  onStatus: () => void
-  onResult: () => void
-  onExport: () => void
-  onAuditDownload: () => void
-  onEscalate: () => void
-}) {
+function getRuleCounts(breakdown: SupplierRuleBreakdown | null): {
+  hardPassed: number
+  hardTotal: number
+  policyPassed: number
+  policyTotal: number
+} {
+  const hard = breakdown?.hardRuleChecks ?? []
+  const policy = breakdown?.policyChecks ?? []
+  return {
+    hardPassed: hard.filter((c) => c.result === "passed").length,
+    hardTotal: hard.length,
+    policyPassed: policy.filter((c) => c.result === "passed").length,
+    policyTotal: policy.length,
+  }
+}
+
+function hasNoFailedChecks(checks: SupplierRuleCheck[] | undefined): boolean {
+  if (!checks || checks.length === 0) return false
+  return !checks.some((c) => c.result === "failed")
+}
+
+function toneForCheckResult(result: SupplierRuleCheck["result"]) {
+  if (result === "passed") return "success"
+  if (result === "warned") return "warning"
+  if (result === "skipped") return "neutral"
+  return "destructive"
+}
+
+function getEvalConfigCondition(
+  snap: Record<string, unknown> | null | undefined,
+): unknown {
+  if (!snap || typeof snap !== "object") return null
+  const ec = snap.eval_config
+  if (!ec || typeof ec !== "object" || ec === null) return null
+  const condition = (ec as { condition?: unknown }).condition
+  return condition !== undefined ? condition : null
+}
+
+/** Prefer `eval_config.condition` from dynamic (then static) snapshot, per rule engine shape. */
+function formatConditionHoverContent(check: SupplierRuleCheck): string {
+  const dyn = check.dynamicSnapshot
+  const ver = check.versionSnapshot
+  const cond = getEvalConfigCondition(dyn) ?? getEvalConfigCondition(ver)
+  if (cond != null) {
+    return JSON.stringify(cond, null, 2)
+  }
+  if (dyn && typeof dyn === "object") {
+    const ec = (dyn as { eval_config?: unknown }).eval_config
+    if (ec != null) return JSON.stringify(ec, null, 2)
+    return JSON.stringify(dyn, null, 2)
+  }
+  if (ver && typeof ver === "object") {
+    return JSON.stringify(ver, null, 2)
+  }
+  return "No snapshot available."
+}
+
+function coerceDynamicRuleVersionFromRow(c: Record<string, unknown>): number | null {
+  const v = c.dynamic_rule_version ?? c.dynamicRuleVersion
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string" && v.trim() !== "" && !Number.isNaN(Number(v))) {
+    return Number(v)
+  }
+  return null
+}
+
+function coerceJsonObjectRecord(value: unknown): Record<string, unknown> | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return null
+}
+
+let ruleDefinitionNamesCache: Promise<Record<string, string>> | null = null
+
+function loadRuleDefinitionNames(): Promise<Record<string, string>> {
+  if (!ruleDefinitionNamesCache) {
+    ruleDefinitionNamesCache = fetch("/api/rule-versions/definitions")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((defs: Array<{ rule_id?: string; rule_name?: string }>) => {
+        const m: Record<string, string> = {}
+        for (const d of Array.isArray(defs) ? defs : []) {
+          const id = d?.rule_id
+          const name = d?.rule_name
+          if (id && typeof name === "string" && name.trim()) {
+            m[id] = name.trim()
+          }
+        }
+        return m
+      })
+      .catch(() => ({}))
+  }
+  return ruleDefinitionNamesCache
+}
+
+function ruleLabelForCheck(
+  check: SupplierRuleCheck,
+  nameByRuleId: Record<string, string>,
+): string {
+  const fromCheck = check.ruleName?.trim()
+  if (fromCheck) return fromCheck
+  const fromDefs = nameByRuleId[check.ruleId]?.trim()
+  if (fromDefs) return fromDefs
+  return check.ruleId
+}
+
+function pickRuleNameFromApiRow(c: Record<string, unknown>): string | null {
+  const a = c.rule_name
+  const b = c.ruleName
+  if (typeof a === "string" && a.trim()) return a.trim()
+  if (typeof b === "string" && b.trim()) return b.trim()
+  return null
+}
+
+function EnrichedRuleChecksTable({ checks }: { checks: SupplierRuleCheck[] }) {
+  const [nameByRuleId, setNameByRuleId] = useState<Record<string, string>>({})
+  const checkKey = checks.map((c) => c.checkId).join("|")
+
+  useEffect(() => {
+    if (checks.length === 0) return
+    let cancelled = false
+    void loadRuleDefinitionNames().then((m) => {
+      if (!cancelled) setNameByRuleId(m)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [checkKey])
+
+  if (checks.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">No checks in this category.</p>
+    )
+  }
   return (
-    <div className="max-w-full overflow-x-auto overscroll-x-contain py-0.5 [scrollbar-width:thin]">
-      <div className="ml-auto flex w-max min-w-0 flex-nowrap items-center gap-3">
-      {showReturnToLatest ? (
-        <Link
-          href={`/cases/${caseId}`}
-          className={cn(
-            buttonVariants({ variant: "outline", size: "sm" }),
-            "h-8 shrink-0 gap-1.5 whitespace-nowrap",
-          )}
-        >
-          <ArrowLeft className="size-3.5" />
-          Return to latest evaluation
-        </Link>
-      ) : null}
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0"
-        onClick={onRerun}
-        disabled={loadingAction !== null}
-      >
-        {loadingAction === "rerun" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <Play className="size-3.5" />
-        )}
-        {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0"
-        onClick={onStatus}
-        disabled={loadingAction !== null}
-      >
-        {loadingAction === "status" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <RefreshCw className="size-3.5" />
-        )}
-        {loadingAction === "status" ? "Checking..." : "Check updates"}
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0"
-        onClick={onResult}
-        disabled={loadingAction !== null}
-      >
-        {loadingAction === "result" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <ShieldCheck className="size-3.5" />
-        )}
-        Result
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0"
-        onClick={onExport}
-        disabled={loadingAction !== null}
-      >
-        {loadingAction === "export" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <Download className="size-3.5" />
-        )}
-        {loadingAction === "export" ? "Exporting..." : "Export"}
-      </Button>
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 shrink-0"
-        onClick={onAuditDownload}
-        disabled={loadingAction !== null}
-      >
-        {loadingAction === "auditDownload" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <ShieldCheck className="size-3.5" />
-        )}
-        {loadingAction === "auditDownload" ? "Downloading..." : "Audit"}
-      </Button>
-      <Button
-        size="sm"
-        className="h-8 shrink-0"
-        onClick={onEscalate}
-        disabled={loadingAction !== null}
-      >
-        {loadingAction === "escalate" ? (
-          <Loader2 className="size-3.5 animate-spin" />
-        ) : (
-          <TimerReset className="size-3.5" />
-        )}
-        {loadingAction === "escalate" ? "Escalating..." : "Escalate"}
-      </Button>
+    <TooltipProvider delay={200}>
+      <div className="overflow-x-auto rounded-lg border p-4">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="px-3 py-3">Rule</TableHead>
+              <TableHead className="py-3">Result</TableHead>
+              <TableHead className="py-3">Checked</TableHead>
+              <TableHead className="py-3 text-right font-mono text-xs">Version</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {checks.map((check) => (
+              <TableRow key={check.checkId}>
+                <TableCell className="max-w-[min(280px,40vw)] px-3 py-3">
+                  <Tooltip>
+                    <TooltipTrigger className="block w-full cursor-help text-left font-medium">
+                      {ruleLabelForCheck(check, nameByRuleId)}
+                    </TooltipTrigger>
+                    <TooltipContent
+                      side="right"
+                      className="max-h-96 max-w-lg overflow-auto border bg-popover p-3 text-left text-popover-foreground shadow-md"
+                    >
+                      <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                        {getEvalConfigCondition(check.dynamicSnapshot) != null ||
+                        getEvalConfigCondition(check.versionSnapshot) != null
+                          ? "Condition (eval_config.condition)"
+                          : check.dynamicSnapshot
+                            ? "Rule config (snapshot)"
+                            : ""}
+                      </p>
+                      <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-snug">
+                        {formatConditionHoverContent(check)}
+                      </pre>
+                    </TooltipContent>
+                  </Tooltip>
+                </TableCell>
+                <TableCell className="py-3">
+                  <StatusBadge
+                    label={check.result}
+                    tone={toneForCheckResult(check.result)}
+                  />
+                </TableCell>
+                <TableCell className="py-3 text-xs text-muted-foreground">
+                  {formatDateTime(check.checkedAt)}
+                </TableCell>
+                <TableCell className="py-3 text-right font-mono text-[11px] text-muted-foreground tabular-nums">
+                  {check.dynamicRuleVersion != null &&
+                  check.dynamicRuleVersion !== undefined
+                    ? check.dynamicRuleVersion
+                    : "—"}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
-    </div>
+    </TooltipProvider>
   )
 }
 
+function normalizeTab(tab: CaseTabInput | undefined): CaseTab {
+  if (tab === "overview" || tab === "suppliers" || !tab) return "other-info"
+  return tab
+}
 
 export function CaseWorkspace({
   data,
-  initialTab = "overview",
+  initialTab,
   createdFromIntake = false,
   initialRunId,
   showReturnToLatest = false,
 }: CaseWorkspaceProps) {
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<CaseTab>(initialTab)
+  const [activeTab, setActiveTab] = useState<CaseTab>(normalizeTab(initialTab))
   const [contentMinHeight, setContentMinHeight] = useState<number | null>(null)
   const [runId, setRunId] = useState("")
   const [selectedRunId, setSelectedRunId] = useState<string | null>(
     initialRunId ?? data.evaluationRuns[0]?.runId ?? null,
   )
-  const [suppliersExpanded, setSuppliersExpanded] = useState(false)
-  const [supplierPriority, setSupplierPriority] = useState<"balanced" | "price" | "speed">("balanced")
   const [selectedSupplierDetail, setSelectedSupplierDetail] = useState<{
     supplier: SupplierRow
     breakdown: SupplierRuleBreakdown | null
   } | null>(null)
-  const [selectedIssue, setSelectedIssue] = useState<ValidationIssue | null>(null)
-  const [statusResult, setStatusResult] = useState<unknown>(null)
-  const [pipelineResult, setPipelineResult] = useState<unknown>(null)
   const [runsResult, setRunsResult] = useState<unknown>(null)
   const [runDetailResult, setRunDetailResult] = useState<unknown>(null)
   const [auditResult, setAuditResult] = useState<unknown>(null)
@@ -334,11 +347,13 @@ export function CaseWorkspace({
   const [stepResult, setStepResult] = useState<unknown>(null)
   const {
     loadingAction,
+    error,
+    fallback,
+    message,
+    setMessage,
     runAction,
-    actionLifecycleByLabel,
-    lastActionLifecycle,
   } = usePipelineActionRunner()
-  const { requestLiveState, startPolling, patchRequestState } =
+  const { startPolling, patchRequestState } =
     useRequestStatusPoller()
   const blockingIssues = data.validationIssues.filter((issue) => issue.blocking)
   const recommendedSupplier = data.recommendation.recommendedSupplier
@@ -370,11 +385,9 @@ export function CaseWorkspace({
   const fastestExpeditedLeadTime = hasShortlist
     ? Math.min(...effectiveShortlist.map((entry) => entry.expeditedLeadTimeDays))
     : null
-  const overviewRef = useRef<HTMLDivElement>(null)
-  const suppliersRef = useRef<HTMLDivElement>(null)
+  const otherInfoRef = useRef<HTMLDivElement>(null)
   const escalationsRef = useRef<HTMLDivElement>(null)
   const auditRef = useRef<HTMLDivElement>(null)
-  const createdFlowHandledRef = useRef(false)
 
   const shortlistWithBreakdown = effectiveShortlist.map((s) => ({
     supplier: s,
@@ -383,25 +396,14 @@ export function CaseWorkspace({
       getSupplierBreakdown(s.supplierId, data.evaluationRuns, selectedRun),
     ),
   }))
-  const compliantFirst = [...shortlistWithBreakdown].sort((a, b) => {
-    if (a.meetsAll !== b.meetsAll) return a.meetsAll ? -1 : 1
-    if (supplierPriority === "price") return a.supplier.totalPrice - b.supplier.totalPrice
-    if (supplierPriority === "speed") return a.supplier.expeditedLeadTimeDays - b.supplier.expeditedLeadTimeDays
-    return 0
-  })
-  const compliantCount = compliantFirst.filter((x) => x.meetsAll).length
-  const visibleCount = suppliersExpanded
-    ? compliantFirst.length
-    : compliantCount > 0
-      ? Math.min(3, compliantCount)
-      : Math.min(3, compliantFirst.length)
-  const visibleSuppliers = compliantFirst.slice(0, visibleCount)
-  const hasMore = compliantFirst.length > visibleCount
+  const compliantFirst = [...shortlistWithBreakdown].sort((a, b) =>
+    a.meetsAll === b.meetsAll ? 0 : a.meetsAll ? -1 : 1,
+  )
+  const visibleSuppliers = compliantFirst
 
   useEffect(() => {
     const tabPanelMap: Record<CaseTab, HTMLDivElement | null> = {
-      overview: overviewRef.current,
-      suppliers: suppliersRef.current,
+      "other-info": otherInfoRef.current,
       escalations: escalationsRef.current,
       audit: auditRef.current,
     }
@@ -423,74 +425,41 @@ export function CaseWorkspace({
 
   useEffect(() => {
     if (createdFromIntake) {
-      toast.success("Case created successfully", { description: data.id })
+      setMessage(`Case ${data.id} created successfully.`)
     }
-  }, [createdFromIntake, data.id])
+  }, [createdFromIntake, data.id, setMessage])
+
+  const { setActions, setTitleExtra, setBreadcrumbOverride } = useHeaderActions()
 
   useEffect(() => {
-    if (!createdFromIntake || createdFlowHandledRef.current) return
-    createdFlowHandledRef.current = true
+    const titleLabel = showReturnToLatest && selectedRunOrdinal
+      ? `${data.title} - Evaluation ${selectedRunOrdinal}`
+      : data.title
+    setBreadcrumbOverride(titleLabel)
+    return () => setBreadcrumbOverride(null)
+  }, [data.title, showReturnToLatest, selectedRunOrdinal, setBreadcrumbOverride])
 
-    const nextUrl = `/cases/${data.id}?tab=${activeTab}`
-    const clearCreatedFlag = () => {
-      router.replace(nextUrl, { scroll: false })
-    }
-
-    if (data.evaluationRuns.length > 0) {
-      clearCreatedFlag()
-      return
-    }
-
-    const startedAt = new Date().toISOString()
-    patchRequestState(data.id, {
-      phase: "queued",
-      startedAt,
-      lastCheckedAt: startedAt,
-      finishedAt: undefined,
-      error: undefined,
-    })
-
-    void runAction({
-      label: "autoTrigger",
-      request: () =>
-        chainIqApi.pipeline.processBatch({
-          request_ids: [data.id],
-          concurrency: 1,
-        }),
-      successMessage: "Pipeline trigger started",
-      successDescription: data.id,
-    })
-      .then(async () => {
-        await startPolling(data.id, {
-          initialPhase: "queued",
-          intervalMs: 2000,
-          timeoutMs: 45_000,
-        })
-        router.refresh()
-      })
-      .catch(() => {
-        patchRequestState(data.id, {
-          phase: "failed",
-          lastCheckedAt: new Date().toISOString(),
-          finishedAt: new Date().toISOString(),
-        })
-        toast.warning("Case created but auto-trigger failed", {
-          description: "Use Re-run to start processing manually.",
-        })
-      })
-      .finally(() => {
-        clearCreatedFlag()
-      })
-  }, [
-    activeTab,
-    createdFromIntake,
-    data.evaluationRuns.length,
-    data.id,
-    patchRequestState,
-    router,
-    runAction,
-    startPolling,
-  ])
+  useEffect(() => {
+    setTitleExtra(
+      <>
+        <StatusBadge
+          label={data.rawRequest.status.replaceAll("_", " ")}
+          tone="neutral"
+        />
+        <StatusBadge
+          label={data.recommendation.status.replaceAll("_", " ")}
+          tone={
+            data.recommendation.status === "proceed"
+              ? "success"
+              : data.recommendation.status === "proceed_with_conditions"
+                ? "warning"
+                : "destructive"
+          }
+        />
+      </>,
+    )
+    return () => setTitleExtra(null)
+  })
 
   function handleRerun() {
     const startedAt = new Date().toISOString()
@@ -507,8 +476,7 @@ export function CaseWorkspace({
         chainIqApi.pipeline.process({
           request_id: data.id,
         }),
-      successMessage: "Pipeline re-run started",
-      successDescription: data.id,
+      successMessage: `Pipeline re-run started for ${data.id}.`,
     })
       .then(async () => {
         await startPolling(data.id, {
@@ -527,49 +495,12 @@ export function CaseWorkspace({
       })
   }
 
-  function handleStatus() {
-    void runAction({
-      label: "status",
-      request: () => chainIqApi.pipeline.status(data.id),
-      onSuccess: (result) => {
-        setStatusResult(result)
-        const phase = classifyPipelineStatus(result)
-        patchRequestState(data.id, {
-          phase,
-          startedAt:
-            requestLiveState[data.id]?.startedAt ?? new Date().toISOString(),
-          lastCheckedAt: new Date().toISOString(),
-          ...(phase === "completed" || phase === "failed"
-            ? { finishedAt: new Date().toISOString() }
-            : {}),
-          statusPayload: result,
-        })
-      },
-      successMessage: "Status updated",
-      successDescription: data.id,
-    }).catch(() => {
-      // Error state is handled by shared action runner.
-    })
-  }
-
-  function handleResult() {
-    void runAction({
-      label: "result",
-      request: () => chainIqApi.pipeline.result(data.id),
-      onSuccess: setPipelineResult,
-      successMessage: "Pipeline result loaded",
-      successDescription: data.id,
-    }).catch(() => {
-      // Error state is handled by shared action runner.
-    })
-  }
-
   function handleRunDiagnostics() {
     void runAction({
       label: "runs",
       request: () => chainIqApi.pipeline.runs({ limit: 25, skip: 0 }),
       onSuccess: setRunsResult,
-      successMessage: "Pipeline runs loaded",
+      successMessage: "Fetched recent pipeline runs.",
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -581,8 +512,7 @@ export function CaseWorkspace({
       label: "run",
       request: () => chainIqApi.pipeline.run(runId.trim()),
       onSuccess: setRunDetailResult,
-      successMessage: "Run details loaded",
-      successDescription: runId.trim(),
+      successMessage: `Fetched run details for ${runId.trim()}.`,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -593,8 +523,7 @@ export function CaseWorkspace({
       label: "audit",
       request: () => chainIqApi.pipeline.audit(data.id, { limit: 100, skip: 0 }),
       onSuccess: setAuditResult,
-      successMessage: "Audit trail loaded",
-      successDescription: data.id,
+      successMessage: `Fetched audit trail for ${data.id}.`,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -605,8 +534,7 @@ export function CaseWorkspace({
       label: "summary",
       request: () => chainIqApi.pipeline.auditSummary(data.id),
       onSuccess: setSummaryResult,
-      successMessage: "Audit summary loaded",
-      successDescription: data.id,
+      successMessage: `Fetched audit summary for ${data.id}.`,
     }).catch(() => {
       // Error state is handled by shared action runner.
     })
@@ -625,8 +553,7 @@ export function CaseWorkspace({
       label: `step:${step}`,
       request: () => chainIqApi.pipeline.steps[step]({ request_id: data.id }),
       onSuccess: setStepResult,
-      successMessage: `Step "${step}" executed`,
-      successDescription: data.id,
+      successMessage: `Executed ${step} step for ${data.id}.`,
     })
       .then(async () => {
         await startPolling(data.id, {
@@ -646,351 +573,483 @@ export function CaseWorkspace({
   }
 
   function handleExport() {
-    void runAction({
-      label: "export",
-      request: async () => ({
-        request_id: data.id,
-        exported_at: new Date().toISOString(),
-        case_data: data,
-        pipeline: {
-          status: statusResult,
-          result: pipelineResult,
-          runs: runsResult,
-          run_detail: runDetailResult,
-          audit_trail: auditResult,
-          audit_summary: summaryResult,
-          step_result: stepResult,
-          live_state: requestLiveState[data.id] ?? null,
-        },
-      }),
-      onSuccess: (exportPayload) => {
-        const payload = JSON.stringify(exportPayload, null, 2)
-        const blob = new Blob([payload], { type: "application/json" })
-        downloadBlob(blob, `${data.id}-export.json`)
-      },
-      successMessage: "JSON export downloaded",
-      successDescription: data.id,
-    }).catch(() => {
-      // Error state is handled by shared action runner.
-    })
-  }
-
-  function handleAuditDownload() {
-    void runAction({
-      label: "auditDownload",
-      request: () => chainIqApi.pipeline.report(data.id),
-      onSuccess: ({ blob, contentDisposition }) => {
-        const filename = filenameFromContentDisposition(
-          contentDisposition,
-          `${data.id}-audit-report.pdf`,
-        )
-        downloadBlob(blob, filename)
-      },
-      successMessage: "Audit report downloaded",
-      successDescription: data.id,
-    }).catch(() => {
-      // Error state is handled by shared action runner.
-    })
+    const payload = JSON.stringify(data, null, 2)
+    const blob = new Blob([payload], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `${data.id}-audit-export.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    setMessage(`Exported ${data.id} payload as JSON.`)
   }
 
   function handleEscalate() {
-    const startedAt = new Date().toISOString()
-    patchRequestState(data.id, {
-      phase: "running",
-      startedAt,
-      lastCheckedAt: startedAt,
-      finishedAt: undefined,
-      error: undefined,
-    })
-    void runAction({
-      label: "escalate",
-      request: () => chainIqApi.pipeline.steps.escalate({ request_id: data.id }),
-      onSuccess: setStepResult,
-      successMessage: "Escalation triggered",
-      successDescription: data.id,
-    })
-      .then(async () => {
-        await startPolling(data.id, {
-          initialPhase: "running",
-          intervalMs: 2000,
-          timeoutMs: 30_000,
-        })
-        router.push(`/escalations?caseId=${data.id}`)
-      })
-      .catch(() => {
-        patchRequestState(data.id, {
-          phase: "failed",
-          lastCheckedAt: new Date().toISOString(),
-          finishedAt: new Date().toISOString(),
-        })
-      })
+    router.push(`/escalations?caseId=${data.id}`)
   }
 
-  const requestLive = requestLiveState[data.id]
-  const isRerunning =
-    requestLive?.phase === "queued" || requestLive?.phase === "running"
-  const activeActionLifecycle = loadingAction
-    ? actionLifecycleByLabel[loadingAction] ?? null
-    : null
+  const bestMatch = compliantFirst[0] ?? null
+  const isBestMatchPerfect = bestMatch ? bestMatch.meetsAll : false
+  const remainingSuppliers = compliantFirst.slice(1)
+  const fullyCompatibleCount = compliantFirst.filter((s) => s.meetsAll).length
 
-  const setHeaderActions = useSetWorkspaceHeaderActions()
-
-  useLayoutEffect(
-    () => {
-      setHeaderActions(
-        <CaseWorkspaceHeaderActions
-          caseId={data.id}
-          showReturnToLatest={showReturnToLatest}
-          loadingAction={loadingAction}
-          onRerun={handleRerun}
-          onStatus={handleStatus}
-          onResult={handleResult}
-          onExport={handleExport}
-          onAuditDownload={handleAuditDownload}
-          onEscalate={handleEscalate}
-        />,
-      )
-      return () => setHeaderActions(null)
-    },
-    // Toolbar uses current handler closures; listed deps cover case refresh and busy state.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [setHeaderActions, data, showReturnToLatest, loadingAction],
-  )
+  useEffect(() => {
+    setActions(
+      <>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRerun}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "rerun" ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <Play className="size-3.5" />
+          )}
+          {loadingAction === "rerun" ? "Re-running..." : "Re-run"}
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleExport}>
+          <Download className="size-3.5" />
+          Export
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setActiveTab("audit")}
+        >
+          <ShieldCheck className="size-3.5" />
+          Audit
+        </Button>
+        <Button size="sm" onClick={handleEscalate}>
+          <TimerReset className="size-3.5" />
+          Escalate
+        </Button>
+      </>,
+    )
+    return () => setActions(null)
+  })
 
   return (
-    <div className="space-y-6">
-      {/* Page header */}
-      <div className="animate-fade-in-up space-y-2">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <StatusBadge
-            label={displayCaseStatus(data.rawRequest.status)}
-            tone="neutral"
-          />
-          <StatusBadge
-            label={displayRecommendationStatus(data.recommendation.status)}
-            tone={
-              data.recommendation.status === "not_evaluated"
-                ? "neutral"
-                : data.recommendation.status === "proceed"
-                  ? "success"
-                  : data.recommendation.status === "proceed_with_conditions"
-                    ? "warning"
-                    : "destructive"
-            }
-          />
-          <StatusBadge
-            label={`${data.rawRequest.categoryL1} / ${data.rawRequest.categoryL2}`}
-            tone="info"
-          />
-        </div>
-        <SectionHeading
-          eyebrow={data.id}
-          title={
-            showReturnToLatest && selectedRunOrdinal
-              ? `${data.title} - Evaluation ${selectedRunOrdinal}`
-              : data.title
-          }
-          description={
-            showReturnToLatest && selectedRun
-              ? `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)} · run ${formatDateTime(selectedRun.startedAt)}`
-              : `${data.rawRequest.country} · ${data.rawRequest.businessUnit} · created ${formatDateTime(data.rawRequest.createdAt)} · required by ${formatDate(data.rawRequest.requiredByDate)}`
-          }
+    <div className="space-y-0">
+      {/* Side info bar */}
+      <div className="animate-fade-in-up flex flex-wrap items-center gap-1.5 pb-2">
+        <StatusBadge
+          label={`${data.rawRequest.categoryL1} / ${data.rawRequest.categoryL2}`}
+          tone="info"
         />
-
-        <div className="flex flex-nowrap items-center gap-2">
-          {showReturnToLatest ? (
-            <Link
-              href={`/cases/${data.id}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
-            >
-              <ArrowLeft className="size-3.5" />
-              Return to latest evaluation
-            </Link>
-          ) : null}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRerun}
-            disabled={isRerunning}
-          >
-            {isRerunning ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Play className="size-3.5" />
-            )}
-            Re-run
-          </Button>
-          <Button variant="outline" size="sm">
-            <Download className="size-3.5" />
-            Export
-          </Button>
-          <Button variant="outline" size="sm">
-            <ShieldCheck className="size-3.5" />
-            Audit
-          </Button>
-          <Button size="sm" onClick={handleEscalate}>
-            <TimerReset className="size-3.5" />
-            Escalate
-          </Button>
-        </div>
+        <span className="text-sm text-muted-foreground">
+          {data.rawRequest.country} · {data.rawRequest.businessUnit} · created {formatDateTime(data.rawRequest.createdAt)} · required by {formatDate(data.rawRequest.requiredByDate)}
+          {showReturnToLatest && selectedRun
+            ? ` · run ${formatDateTime(selectedRun.startedAt)}`
+            : ""}
+        </span>
       </div>
 
-      {requestLive && (requestLive.phase === "queued" || requestLive.phase === "running") ? (
-        <Card className="border-blue-200 bg-blue-50/60">
-          <CardContent className="flex items-center gap-3 py-3">
-            <Loader2 className="size-4 animate-spin text-blue-700" />
-            <p className="text-sm font-medium text-blue-800">
-              Pipeline is {livePhaseLabel(requestLive.phase).toLowerCase()}…
-            </p>
+      {error ? (
+        <Card className="border-rose-200 bg-rose-50/70 text-rose-900">
+          <CardContent className="py-3 text-sm">{error}</CardContent>
+        </Card>
+      ) : null}
+
+      {message ? (
+        <Card className="border-emerald-200 bg-emerald-50/70 text-emerald-900">
+          <CardContent className="py-3 text-sm">{message}</CardContent>
+        </Card>
+      ) : null}
+      {fallback ? (
+        <Card className="border-amber-200 bg-amber-50/70 text-amber-900">
+          <CardContent className="py-3 text-sm">
+            Runs endpoint degraded. Other pipeline actions remain usable. {fallback}
           </CardContent>
         </Card>
       ) : null}
 
-      {/* Primary summary strip */}
-      <section className="animate-fade-in-up grid gap-4 xl:grid-cols-[1.2fr_0.8fr]" style={{ animationDelay: "80ms" }}>
-        <Card className="border-primary/20 bg-primary/[0.03]">
-          <CardHeader className="pb-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <StatusBadge
-                label={data.outcomeLabel}
-                tone={
-                  data.recommendation.status === "not_evaluated"
-                    ? "neutral"
-                    : data.recommendation.status === "proceed"
-                      ? "success"
-                      : "destructive"
-                }
-              />
-              <StatusBadge
-                label={displayApprovalTier(data.recommendation.approvalTier)}
-                tone="info"
-              />
-              <StatusBadge
-                label={`${data.recommendation.quotesRequired} quotes`}
-                tone="neutral"
-              />
-            </div>
-            <CardTitle className="mt-2 text-lg font-semibold tracking-tight">
-              {recommendedSupplier ?? "Human review required before award"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <p className="text-sm leading-relaxed text-muted-foreground">
-                {data.recommendation.reason}
-              </p>
-              <p className="text-sm leading-relaxed text-muted-foreground">
-                {data.recommendation.rationale}
-              </p>
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              <KpiCell
-                label="Total Price"
-                value={
-                  data.recommendation.totalPrice
-                    ? formatCurrency(
-                        data.recommendation.totalPrice,
-                        data.recommendation.currency,
-                      )
-                    : formatCurrency(
-                        data.recommendation.minimumBudgetRequired,
-                        data.recommendation.currency,
-                      )
-                }
-                helper={
-                  data.recommendation.totalPrice
-                    ? "Recommended commercial value"
-                    : "Minimum viable budget"
-                }
-              />
-              <KpiCell
-                label="Compliance"
-                value={data.recommendation.complianceStatus}
-                helper="Policy posture"
-              />
-              <KpiCell
-                label="Blocking Issues"
-                value={blockingIssues.length}
-                helper="Validation or policy blockers"
-              />
-              <KpiCell
-                label="Escalations"
-                value={data.escalations.length}
-                helper="Workflow actions opened"
-              />
-            </div>
-          </CardContent>
-        </Card>
+      {/* Best Match hero box */}
+      <section className="animate-fade-in-up pt-4" style={{ animationDelay: "80ms" }}>
+        <Card
+          className="cursor-pointer border-2 border-foreground/80 transition-colors hover:bg-accent/20"
+          onClick={() => {
+            if (bestMatch) {
+              setSelectedSupplierDetail({
+                supplier: bestMatch.supplier,
+                breakdown: bestMatch.breakdown,
+              })
+            }
+          }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if ((e.key === "Enter" || e.key === " ") && bestMatch) {
+              e.preventDefault()
+              setSelectedSupplierDetail({
+                supplier: bestMatch.supplier,
+                breakdown: bestMatch.breakdown,
+              })
+            }
+          }}
+        >
+          <CardContent className="p-0">
+            {bestMatch ? (
+              <>
+                <div className="px-6 pt-3 pb-0">
+                  <p className="flex flex-wrap items-baseline gap-2.5">
+                    <span className={cn(
+                      "text-sm font-semibold",
+                      isBestMatchPerfect ? "text-emerald-600" : "",
+                    )}>
+                      {isBestMatchPerfect
+                        ? "Recommendation:"
+                        : "No match found — here's the best match:"}
+                    </span>
+                    <span className="text-xl font-bold tracking-tight">
+                      {bestMatch.supplier.supplierName}
+                    </span>
+                  </p>
+                </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Decision summary</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-2">
-            <FieldCell
-              label="Confidence"
-              value={
-                data.recommendation.confidenceScore != null
-                  ? `${data.recommendation.confidenceScore}%`
-                  : "Not scored"
-              }
-              variant={
-                data.recommendation.confidenceScore != null && data.recommendation.confidenceScore >= 50
-                  ? "emphasis"
-                  : "default"
-              }
-            />
-            <FieldCell
-              label="Compliance"
-              value={data.recommendation.complianceStatus}
-              variant="default"
-            />
-            <FieldCell
-              label="Suppliers evaluated"
-              value={`${data.recommendation.supplierCount ?? 0} shortlisted · ${data.recommendation.excludedCount ?? 0} excluded`}
-            />
-            <FieldCell
-              label="Escalations"
-              value={
-                data.recommendation.blockingEscalationCount
-                  ? `${data.recommendation.escalationCount ?? 0} total · ${data.recommendation.blockingEscalationCount} blocking`
-                  : `${data.recommendation.escalationCount ?? 0} total`
-              }
-            />
-            <FieldCell
-              label="Approval Tier"
-              value={displayApprovalTier(data.recommendation.approvalTier)}
-            />
-            <FieldCell
-              label="Quotes Required"
-              value={`${data.recommendation.quotesRequired}`}
-            />
+                <div className="grid lg:grid-cols-[30fr_55fr_15fr]">
+                  {/* Left 30% — rule tiles */}
+                  <div className="flex flex-col justify-center px-6 py-2.5">
+                    <div className="space-y-2">
+                      <RuleBox
+                        label="Price"
+                        value={formatCurrency(bestMatch.supplier.totalPrice, data.recommendation.currency)}
+                        limit={data.rawRequest.budgetAmount != null
+                          ? `Budget: ${formatCurrency(data.rawRequest.budgetAmount, data.rawRequest.currency)}`
+                          : "No budget specified"}
+                        status={
+                          data.rawRequest.budgetAmount != null
+                            ? bestMatch.supplier.totalPrice <= data.rawRequest.budgetAmount
+                              ? "met"
+                              : "not-met"
+                            : "partial"
+                        }
+                      />
+                      <RuleBox
+                        label="Lead Time"
+                        value={`${bestMatch.supplier.standardLeadTimeDays}d std · ${bestMatch.supplier.expeditedLeadTimeDays}d exp`}
+                        limit={`Required by ${formatDate(data.rawRequest.requiredByDate)}`}
+                        status={
+                          bestMatch.supplier.standardLeadTimeDays <= 30
+                            ? "met"
+                            : bestMatch.supplier.expeditedLeadTimeDays <= 30
+                              ? "partial"
+                              : "not-met"
+                        }
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-sm text-muted-foreground px-3">
+                      <span>ESG <span className="font-bold text-foreground">{bestMatch.supplier.esgScore}</span></span>
+                      <span>Quality <span className="font-bold text-foreground">{bestMatch.supplier.qualityScore}</span></span>
+                      <span>Risk <span className="font-bold text-foreground">{bestMatch.supplier.riskScore}</span></span>
+                    </div>
+                  </div>
+
+                  {/* Middle 55% — rationale */}
+                  <div className="flex flex-col border-t border-border/50 px-6 py-2.5 lg:border-t-0 lg:border-l">
+                    <p className="shrink-0 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Rationale
+                    </p>
+                    <p className="mt-1.5 overflow-hidden text-sm leading-relaxed text-foreground" style={{ display: "-webkit-box", WebkitLineClamp: 9, WebkitBoxOrient: "vertical" }}>
+                      {bestMatch.supplier.recommendationNote}
+                    </p>
+                  </div>
+
+                  {/* Right 15% — stats + action */}
+                  <div className="flex flex-col justify-between border-t border-border/50 px-5 py-2.5 lg:border-t-0 lg:border-l">
+                    <div className="space-y-2.5">
+                      <div className="rounded-lg bg-muted/40 px-4 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Considered
+                        </p>
+                        <p className="mt-0.5 text-2xl font-bold tabular-nums tracking-tight">
+                          {evaluatedSuppliers}
+                        </p>
+                      </div>
+                      <div className="rounded-lg bg-muted/40 px-4 py-3">
+                        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                          Fully compatible
+                        </p>
+                        <p className="mt-0.5 text-2xl font-bold tabular-nums tracking-tight">
+                          {fullyCompatibleCount}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      className="mt-5 w-full"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setSelectedSupplierDetail({
+                          supplier: bestMatch.supplier,
+                          breakdown: bestMatch.breakdown,
+                        })
+                      }}
+                    >
+                      Take Action
+                      <ArrowRight className="ml-1.5 size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="px-6 py-0">
+                <p className="text-sm text-muted-foreground">
+                  No suppliers on the shortlist for this case.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
       </section>
+
+      {/* Supplier comparison (full width, without best match) */}
+      {remainingSuppliers.length > 0 ? (
+        <section className="animate-fade-in-up min-w-0 space-y-4 pt-6" style={{ animationDelay: "120ms" }}>
+          <Card className="h-fit w-full max-w-full overflow-hidden">
+            <CardHeader>
+              <CardTitle>Other Suppliers</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="overflow-x-auto rounded-lg border">
+                <Table className="min-w-[720px] table-fixed">
+                  <colgroup>
+                    <col className="w-[4%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[11%]" />
+                    <col className="w-[12%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[7%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[6%]" />
+                    <col className="w-[13%]" />
+                  </colgroup>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="px-3">Rank</TableHead>
+                      <TableHead>Supplier</TableHead>
+                      <TableHead>Pricing Tier</TableHead>
+                      <TableHead>Total</TableHead>
+                      <TableHead>Lead Time</TableHead>
+                      <TableHead>Rules</TableHead>
+                      <TableHead>Policy</TableHead>
+                      <TableHead>Quality</TableHead>
+                      <TableHead>Risk</TableHead>
+                      <TableHead>ESG</TableHead>
+                      <TableHead>Flags</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {remainingSuppliers.map(({ supplier, breakdown }) => {
+                      const { hardPassed, hardTotal, policyPassed, policyTotal } =
+                        getRuleCounts(breakdown)
+                      const rulesLabel =
+                        data.evaluationRuns.length > 0
+                          ? `${hardPassed}/${hardTotal}`
+                          : "—"
+                      const policyLabel =
+                        data.evaluationRuns.length > 0
+                          ? `${policyPassed}/${policyTotal}`
+                          : "—"
+                      return (
+                        <TableRow
+                          key={supplier.supplierId}
+                          className="cursor-pointer [&>td]:align-middle"
+                          onClick={() =>
+                            setSelectedSupplierDetail({ supplier, breakdown })
+                          }
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`View details for ${supplier.supplierName}`}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault()
+                              setSelectedSupplierDetail({ supplier, breakdown })
+                            }
+                          }}
+                        >
+                          <TableCell className="px-3">
+                            <p className="text-base font-semibold tabular-nums">
+                              #{supplier.rank}
+                            </p>
+                          </TableCell>
+                          <TableCell className="align-middle">
+                            <div className="space-y-1">
+                              <p className="font-medium">
+                                {supplier.supplierName}
+                              </p>
+                              <p className="text-xs uppercase tracking-wider text-muted-foreground">
+                                {supplier.supplierId}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {supplier.countryHq ?? "N/A"} ·{" "}
+                                {supplier.currency ?? data.recommendation.currency}
+                              </p>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <p>{supplier.pricingTierApplied}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {supplier.region ?? "N/A"} · qty{" "}
+                              {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              MOQ {supplier.moq ?? "N/A"}
+                            </p>
+                          </TableCell>
+                          <TableCell className="font-medium tabular-nums">
+                            <div>
+                              {formatCurrency(
+                                supplier.totalPrice,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Unit{" "}
+                              {formatCurrency(
+                                supplier.unitPrice,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Exp.{" "}
+                              {formatCurrency(
+                                supplier.expeditedTotal,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Exp unit{" "}
+                              {formatCurrency(
+                                supplier.expeditedUnitPrice,
+                                data.recommendation.currency,
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            <div>{supplier.standardLeadTimeDays}d std</div>
+                            <div className="text-xs text-muted-foreground">
+                              {supplier.expeditedLeadTimeDays}d exp
+                            </div>
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "tabular-nums text-sm",
+                              data.evaluationRuns.length > 0 &&
+                                breakdown &&
+                                hasNoFailedChecks(breakdown.hardRuleChecks) &&
+                                "font-semibold text-emerald-600",
+                            )}
+                          >
+                            {rulesLabel}
+                          </TableCell>
+                          <TableCell
+                            className={cn(
+                              "tabular-nums text-sm",
+                              data.evaluationRuns.length > 0 &&
+                                breakdown &&
+                                hasNoFailedChecks(breakdown.policyChecks) &&
+                                "font-semibold text-emerald-600",
+                            )}
+                          >
+                            {policyLabel}
+                          </TableCell>
+                          <TableCell
+                            className={scoreTone(supplier.qualityScore)}
+                          >
+                            {supplier.qualityScore}
+                          </TableCell>
+                          <TableCell
+                            className={scoreTone(supplier.riskScore, true)}
+                          >
+                            {supplier.riskScore}
+                          </TableCell>
+                          <TableCell className={scoreTone(supplier.esgScore)}>
+                            {supplier.esgScore}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex max-w-[180px] flex-wrap gap-1">
+                              {supplier.preferred ? (
+                                <StatusBadge label="Preferred" tone="info" />
+                              ) : null}
+                              {supplier.incumbent ? (
+                                <StatusBadge label="Incumbent" tone="neutral" />
+                              ) : null}
+                              {supplier.policyCompliant ? (
+                                <StatusBadge label="Compliant" tone="success" />
+                              ) : (
+                                <StatusBadge label="Conflict" tone="destructive" />
+                              )}
+                              {supplier.dataResidencySupported ? (
+                                <StatusBadge label="Data residency" tone="info" />
+                              ) : null}
+                              {supplier.coversDeliveryCountry ? (
+                                <StatusBadge label="Covers country" tone="neutral" />
+                              ) : null}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
+
+      {/* Supplier detail sheet (shared across hero box and table clicks) */}
+      <Sheet
+        open={!!selectedSupplierDetail}
+        onOpenChange={(open) => !open && setSelectedSupplierDetail(null)}
+      >
+        <SheetContent
+          side="right"
+          className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl overflow-y-auto px-6"
+        >
+          <SheetHeader>
+            <SheetTitle>
+              {selectedSupplierDetail?.supplier.supplierName ?? "Supplier"}
+            </SheetTitle>
+            <SheetDescription>
+              Rule and policy check results for this supplier.
+            </SheetDescription>
+          </SheetHeader>
+          {selectedSupplierDetail ? (
+            <SupplierDetailSheetContent
+              key={`${data.id}-${selectedSupplierDetail.supplier.supplierId}`}
+              requestId={data.id}
+              supplier={selectedSupplierDetail.supplier}
+              breakdown={selectedSupplierDetail.breakdown}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
 
       {/* Tabs */}
       <Tabs
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as CaseTab)}
-        className="animate-fade-in-up space-y-6"
+        className="animate-fade-in-up space-y-6 pt-6"
         style={{ animationDelay: "160ms" }}
       >
         <TabsList
           variant="line"
           className="w-full justify-start rounded-none border-b border-border/70 p-0"
         >
-          <TabsTrigger value="overview" className="px-5 py-3">
-            Overview
-          </TabsTrigger>
-          <TabsTrigger value="suppliers" className="px-5 py-3">
-            Suppliers
+          <TabsTrigger value="other-info" className="px-5 py-3">
+            Other Info
           </TabsTrigger>
           <TabsTrigger value="escalations" className="px-5 py-3">
             Escalations
           </TabsTrigger>
           <TabsTrigger value="audit" className="px-5 py-3">
-            Audit Trace
+            Auditing
           </TabsTrigger>
         </TabsList>
 
@@ -998,214 +1057,13 @@ export function CaseWorkspace({
           className="transition-[min-height] duration-300 ease-out"
           style={contentMinHeight ? { minHeight: `${contentMinHeight}px` } : undefined}
         >
-          {/* Overview tab */}
+          {/* Other Info tab (was Overview + Suppliers metrics + Outcome summary + Excluded + Historical precedent) */}
           <TabsContent
-            ref={overviewRef}
-            value="overview"
+            ref={otherInfoRef}
+            value="other-info"
             className="space-y-6 transition-all duration-200 ease-out"
           >
-          <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
-            <Card>
-              <CardHeader>
-                <CardTitle>Original request</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-5">
-                <div className="rounded-lg border bg-muted/30 p-4">
-                  <p className="text-sm leading-relaxed">
-                    {data.rawRequest.requestText}
-                  </p>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <FieldCell
-                    label="Business unit"
-                    value={data.rawRequest.businessUnit}
-                  />
-                  <FieldCell label="Site" value={data.rawRequest.site} />
-                  <FieldCell
-                    label="Request channel"
-                    value={data.rawRequest.requestChannel}
-                  />
-                  <FieldCell
-                    label="Language"
-                    value={data.rawRequest.requestLanguage}
-                  />
-                  <FieldCell
-                    label="Requester role"
-                    value={data.rawRequest.requesterRole}
-                  />
-                  <FieldCell
-                    label="Contract type"
-                    value={data.rawRequest.contractTypeRequested}
-                  />
-                  <FieldCell
-                    label="Preferred supplier"
-                    value={
-                      data.rawRequest.preferredSupplierMentioned ?? "Not stated"
-                    }
-                  />
-                  <FieldCell
-                    label="Incumbent supplier"
-                    value={data.rawRequest.incumbentSupplier ?? "Not stated"}
-                  />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Interpreted requirements</CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-3">
-                {data.interpretedRequirements.map((item) => (
-                  <div
-                    key={item.label}
-                    className={cn(
-                      "rounded-lg border p-3.5",
-                      item.emphasis
-                        ? "border-primary/30 bg-primary/[0.05]"
-                        : "bg-muted/20",
-                    )}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                        {item.label}
-                      </p>
-                      {item.inferred ? (
-                        <StatusBadge label="Inferred" tone="info" />
-                      ) : null}
-                    </div>
-                    <p
-                      className={cn(
-                        "mt-1 text-sm leading-relaxed",
-                        item.emphasis ? "font-medium" : "text-muted-foreground",
-                      )}
-                    >
-                      {item.value}
-                    </p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
-            <Card className="bg-card/70">
-              <CardHeader>
-                <CardTitle>Validation & issues</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {data.validationIssues.map((issue) => (
-                  <button
-                    key={issue.issueKey}
-                    type="button"
-                    onClick={() => setSelectedIssue(issue)}
-                    className="w-full rounded-lg border bg-background/80 p-3.5 text-left transition-colors hover:border-primary/40 hover:bg-accent/40"
-                  >
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={issue.issueId} tone="neutral" />
-                      <StatusBadge
-                        label={titleCase(issue.severity)}
-                        tone={severityTone(issue.severity)}
-                      />
-                      <StatusBadge
-                        label={titleCase(issue.type)}
-                        tone="info"
-                      />
-                      {issue.blocking ? (
-                        <StatusBadge label="Blocking" tone="destructive" />
-                      ) : null}
-                      <ChevronRight className="ml-auto size-4 text-muted-foreground" />
-                    </div>
-                    <p className="mt-2 text-sm leading-relaxed">
-                      {issue.description}
-                    </p>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                      {issue.actionRequired}
-                    </p>
-                  </button>
-                ))}
-              </CardContent>
-            </Card>
-
-            <Sheet
-              open={!!selectedIssue}
-              onOpenChange={(open) => !open && setSelectedIssue(null)}
-            >
-              <SheetContent
-                side="right"
-                className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl overflow-y-auto px-6"
-              >
-                <SheetHeader>
-                  <SheetTitle className="flex items-center gap-2">
-                    <AlertTriangle className="size-4" />
-                    {selectedIssue?.issueId ?? "Issue"}
-                  </SheetTitle>
-                  <SheetDescription>
-                    Validation issue details, audit log context, and related pipeline events.
-                  </SheetDescription>
-                </SheetHeader>
-                {selectedIssue ? (
-                  <IssueDetailSheetContent
-                    issue={selectedIssue}
-                    requestId={data.id}
-                    timeline={data.auditTrail.timeline}
-                  />
-                ) : null}
-              </SheetContent>
-            </Sheet>
-
-            <Card className="bg-card/70">
-              <CardHeader>
-                <CardTitle>Policy evaluation</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {data.policyCards.map((policy) => (
-                  <div
-                    key={policy.ruleId}
-                    className="rounded-lg border bg-background/80 p-3.5"
-                  >
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={policy.ruleId} tone="info" />
-                      <StatusBadge
-                        label={titleCase(policy.status)}
-                        tone={
-                          policy.status === "satisfied"
-                            ? "success"
-                            : policy.status === "conflict"
-                              ? "destructive"
-                              : "neutral"
-                        }
-                      />
-                    </div>
-                    <h3 className="mt-2 text-sm font-semibold">
-                      {policy.title}
-                    </h3>
-                    <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                      {policy.summary}
-                    </p>
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      {policy.detail.map((detail) => (
-                        <FieldCell
-                          key={detail.label}
-                          label={detail.label}
-                          value={detail.value}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-          </TabsContent>
-
-          {/* Suppliers tab */}
-          <TabsContent
-            ref={suppliersRef}
-            value="suppliers"
-            className="space-y-5 transition-all duration-200 ease-out"
-          >
-          <div className="space-y-5">
+            {/* Supplier metrics row */}
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MiniMetric
                 label="Suppliers evaluated"
@@ -1233,322 +1091,358 @@ export function CaseWorkspace({
               />
             </section>
 
-            <section className="space-y-4">
-              <Card className="h-fit">
-                <CardHeader className="flex-row items-center justify-between gap-4">
-                  <CardTitle>Supplier comparison</CardTitle>
-                  <div className="flex items-center gap-1 rounded-lg border bg-muted/30 p-0.5">
-                    {(["balanced", "price", "speed"] as const).map((mode) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => setSupplierPriority(mode)}
-                        className={cn(
-                          "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                          supplierPriority === mode
-                            ? "bg-background text-foreground shadow-sm"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        {mode === "balanced" ? "Balanced" : mode === "price" ? "Lowest price" : "Fastest delivery"}
-                      </button>
-                    ))}
-                  </div>
+            {/* Outcome summary */}
+            <Card>
+              <CardHeader>
+                <CardTitle>Outcome summary</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <FieldCell
+                  label="Recommended Supplier"
+                  value={
+                    recommendedSupplier ??
+                    data.recommendation.preferredSupplierIfResolved ??
+                    "Pending human resolution"
+                  }
+                  variant="emphasis"
+                />
+                <FieldCell
+                  label="Approval Tier"
+                  value={data.recommendation.approvalTier}
+                />
+                <FieldCell
+                  label="Quotes Required"
+                  value={`${data.recommendation.quotesRequired}`}
+                />
+                <FieldCell
+                  label="Managers"
+                  value={
+                    data.recommendation.managers?.length
+                      ? data.recommendation.managers.join(", ")
+                      : "Not specified"
+                  }
+                />
+                <FieldCell
+                  label="Deviation Approvers"
+                  value={
+                    data.recommendation.deviationApprovers?.length
+                      ? data.recommendation.deviationApprovers.join(", ")
+                      : "Not specified"
+                  }
+                />
+                <FieldCell
+                  label="Country Scope"
+                  value={data.rawRequest.deliveryCountries.join(", ")}
+                />
+                <FieldCell
+                  label="Scenario Tags"
+                  value={data.rawRequest.scenarioTags.join(", ") || "standard"}
+                />
+                <FieldCell
+                  label="Budget"
+                  value={formatCurrency(
+                    data.rawRequest.budgetAmount,
+                    data.rawRequest.currency,
+                  )}
+                  variant="default"
+                />
+                <FieldCell
+                  label="Tier Range"
+                  value={`${formatCurrency(data.recommendation.minAmount ?? null, data.recommendation.currency)} - ${formatCurrency(data.recommendation.maxAmount ?? null, data.recommendation.currency)}`}
+                  variant="default"
+                />
+                <FieldCell
+                  label="Compliance"
+                  value={data.recommendation.complianceStatus}
+                />
+                <FieldCell
+                  label="Blocking Issues"
+                  value={`${blockingIssues.length}`}
+                />
+                <FieldCell
+                  label="Last Updated"
+                  value={formatDateTime(data.lastUpdated)}
+                />
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Original request</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="overflow-x-auto rounded-lg border">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3">Rank</TableHead>
-                          <TableHead>Supplier</TableHead>
-                          <TableHead>Pricing Tier</TableHead>
-                          <TableHead>Total</TableHead>
-                          <TableHead>Lead Time</TableHead>
-                          <TableHead>Rules</TableHead>
-                          <TableHead>Policy</TableHead>
-                          <TableHead>Quality</TableHead>
-                          <TableHead>Risk</TableHead>
-                          <TableHead>ESG</TableHead>
-                          <TableHead>Flags</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {visibleSuppliers.map(({ supplier }) => (
-                          <TableRow
-                            key={supplier.supplierId}
-                            className={cn(
-                              supplier.rank === 1 ? "bg-emerald-50/40" : "",
-                              "[&>td]:align-top",
-                            )}
-                          >
-                            <TableCell className="px-3">
-                              <div className="space-y-1">
-                                <p className="text-base font-semibold tabular-nums">
-                                  #{supplier.rank}
-                                </p>
-                                {supplier.rank === 1 ? (
-                                  <StatusBadge label="Top option" tone="success" />
-                                ) : null}
-                              </div>
-                            </TableCell>
-                            <TableCell className="max-w-sm whitespace-normal break-words align-top">
-                              <div className="space-y-1">
-                                <p className="font-medium">
-                                  {supplier.supplierName}
-                                </p>
-                                <p className="text-xs text-muted-foreground">
-                                  {supplier.countryHq ?? "N/A"} ·{" "}
-                                  {supplier.currency ?? data.recommendation.currency}
-                                </p>
-                                {supplier.recommendationNote ? (
-                                  <p className="text-xs leading-relaxed text-muted-foreground">
-                                    {supplier.recommendationNote}
-                                  </p>
-                                ) : null}
-                              </div>
-                            </TableCell>
-                            <TableCell className="whitespace-normal text-sm">
-                              <p>{supplier.pricingTierApplied}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {supplier.region ?? "N/A"} · qty{" "}
-                                {supplier.minQuantity ?? "?"}-{supplier.maxQuantity ?? "?"}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                MOQ {supplier.moq ?? "N/A"}
-                              </p>
-                            </TableCell>
-                            <TableCell className="whitespace-normal font-medium tabular-nums">
-                              <div>
-                                {formatCurrency(
-                                  supplier.totalPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Unit{" "}
-                                {formatCurrency(
-                                  supplier.unitPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Exp.{" "}
-                                {formatCurrency(
-                                  supplier.expeditedTotal,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                Exp unit{" "}
-                                {formatCurrency(
-                                  supplier.expeditedUnitPrice,
-                                  data.recommendation.currency,
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell className="whitespace-normal tabular-nums">
-                              <div>{supplier.standardLeadTimeDays}d std</div>
-                              <div className="text-xs text-muted-foreground">
-                                {supplier.expeditedLeadTimeDays}d exp
-                              </div>
-                            </TableCell>
-                            <TableCell
-                              className={scoreTone(supplier.qualityScore)}
-                            >
-                              {supplier.qualityScore}
-                            </TableCell>
-                            <TableCell
-                              className={scoreTone(supplier.riskScore, true)}
-                            >
-                              {supplier.riskScore}
-                            </TableCell>
-                            <TableCell className={scoreTone(supplier.esgScore)}>
-                              {supplier.esgScore}
-                            </TableCell>
-                            <TableCell className="whitespace-normal">
-                              <div className="flex max-w-[180px] flex-wrap gap-1">
-                                {supplier.preferred ? (
-                                  <StatusBadge label="Preferred" tone="info" />
-                                ) : null}
-                                {supplier.incumbent ? (
-                                  <StatusBadge label="Incumbent" tone="neutral" />
-                                ) : null}
-                                {supplier.policyCompliant ? (
-                                  <StatusBadge label="Compliant" tone="success" />
-                                ) : (
-                                  <StatusBadge label="Conflict" tone="destructive" />
-                                )}
-                                {supplier.dataResidencySupported ? (
-                                  <StatusBadge label="Data residency" tone="info" />
-                                ) : null}
-                                {supplier.coversDeliveryCountry ? (
-                                  <StatusBadge label="Covers country" tone="neutral" />
-                                ) : null}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                <CardContent className="space-y-5">
+                  <div className="rounded-lg border bg-muted/30 p-4">
+                    <p className="text-sm leading-relaxed">
+                      {data.rawRequest.requestText}
+                    </p>
                   </div>
-                  {hasMore ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSuppliersExpanded(true)}
-                      className="w-full"
-                    >
-                      Extend — show {compliantFirst.length - visibleCount} more
-                    </Button>
-                  ) : null}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <FieldCell
+                      label="Request channel"
+                      value={data.rawRequest.requestChannel}
+                    />
+                    <FieldCell
+                      label="Request ID"
+                      value={data.rawRequest.requestId}
+                    />
+                    <FieldCell
+                      label="Request language"
+                      value={data.rawRequest.requestLanguage}
+                    />
+                    <FieldCell
+                      label="Business unit"
+                      value={data.rawRequest.businessUnit}
+                    />
+                    <FieldCell
+                      label="Requester ID"
+                      value={data.rawRequest.requesterId ?? "Not specified"}
+                    />
+                    <FieldCell label="Site" value={data.rawRequest.site} />
+                    <FieldCell
+                      label="Requester role"
+                      value={data.rawRequest.requesterRole}
+                    />
+                    <FieldCell
+                      label="Submitted for"
+                      value={data.rawRequest.submittedForId}
+                    />
+                    <FieldCell
+                      label="Preferred supplier"
+                      value={
+                        data.rawRequest.preferredSupplierMentioned ?? "Not stated"
+                      }
+                    />
+                    <FieldCell
+                      label="Incumbent supplier"
+                      value={data.rawRequest.incumbentSupplier ?? "Not stated"}
+                    />
+                    <FieldCell
+                      label="Contract type"
+                      value={data.rawRequest.contractTypeRequested}
+                    />
+                  </div>
                 </CardContent>
               </Card>
 
-              <Sheet
-                open={!!selectedSupplierDetail}
-                onOpenChange={(open) => !open && setSelectedSupplierDetail(null)}
-              >
-                <SheetContent
-                  side="right"
-                  className="data-[side=right]:w-full data-[side=right]:sm:max-w-2xl overflow-y-auto px-6"
-                >
-                  <SheetHeader>
-                    <SheetTitle>
-                      {selectedSupplierDetail?.supplier.supplierName ?? "Supplier"}
-                    </SheetTitle>
-                    <SheetDescription>
-                      Rule and policy check results for this supplier.
-                    </SheetDescription>
-                  </SheetHeader>
-                  {selectedSupplierDetail ? (
-                    <SupplierDetailSheetContent
-                      requestId={data.id}
-                      supplier={selectedSupplierDetail.supplier}
-                      breakdown={selectedSupplierDetail.breakdown}
-                    />
-                  ) : null}
-                </SheetContent>
-              </Sheet>
-
-              <div
-                className={cn(
-                  "grid gap-4",
-                  data.historicalPrecedent ? "xl:grid-cols-2" : "xl:grid-cols-1",
-                )}
-              >
-                <Card className="bg-card/70">
-                  <CardHeader>
-                    <CardTitle>Excluded suppliers</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {effectiveExcluded.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No supplier was excluded.
+              <Card>
+                <CardHeader>
+                  <CardTitle>Interpreted requirements</CardTitle>
+                </CardHeader>
+                <CardContent className="grid gap-3">
+                  {data.interpretedRequirements.map((item) => (
+                    <div
+                      key={item.label}
+                      className={cn(
+                        "rounded-lg border p-3.5",
+                        item.emphasis
+                          ? "border-primary/30 bg-primary/[0.05]"
+                          : "bg-muted/20",
+                      )}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                          {item.label}
+                        </p>
+                        {item.inferred ? (
+                          <StatusBadge label="Inferred" tone="info" />
+                        ) : null}
+                      </div>
+                      <p
+                        className={cn(
+                          "mt-1 text-sm leading-relaxed",
+                          item.emphasis ? "font-medium" : "text-muted-foreground",
+                        )}
+                      >
+                        {item.value}
                       </p>
-                    ) : (
-                      effectiveExcluded.map((supplier) => (
-                        <div
-                          key={supplier.supplierId}
-                          className="rounded-lg border bg-background/80 p-3.5"
-                        >
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <StatusBadge
-                              label={supplier.supplierId}
-                              tone="neutral"
-                            />
-                            <StatusBadge
-                              label={
-                                supplier.hardExclusion
-                                  ? "hard exclusion"
-                                  : "not shortlisted"
-                              }
-                              tone={
-                                supplier.hardExclusion ? "destructive" : "warning"
-                              }
-                            />
-                          </div>
-                          <p className="mt-2 text-sm font-medium">
-                            {supplier.supplierName}
-                          </p>
-                          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-                            {supplier.reason}
-                          </p>
-                        </div>
-                      ))
-                    )}
-                  </CardContent>
-                </Card>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
 
-                {data.historicalPrecedent ? (
-                  <Card className="border-blue-200 bg-blue-50/50">
-                    <CardHeader>
-                      <CardTitle>{data.historicalPrecedent.title}</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm leading-relaxed text-muted-foreground">
-                        {data.historicalPrecedent.description}
+            <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Validation & issues</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {data.validationIssues.map((issue) => (
+                    <div
+                      key={issue.issueId}
+                      className="rounded-lg border bg-background/80 p-3.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StatusBadge label={issue.issueId} tone="neutral" />
+                        <StatusBadge
+                          label={issue.severity}
+                          tone={severityTone(issue.severity)}
+                        />
+                        <StatusBadge
+                          label={issue.type.replaceAll("_", " ")}
+                          tone="info"
+                        />
+                        {issue.blocking ? (
+                          <StatusBadge label="blocking" tone="destructive" />
+                        ) : null}
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed">
+                        {issue.description}
                       </p>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                        {data.historicalPrecedent.metrics.map((metric) => (
+                      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                        {issue.actionRequired}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Policy evaluation</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {data.policyCards.map((policy) => (
+                    <div
+                      key={policy.ruleId}
+                      className="rounded-lg border bg-background/80 p-3.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <StatusBadge label={policy.ruleId} tone="info" />
+                        <StatusBadge
+                          label={policy.status}
+                          tone={
+                            policy.status === "satisfied"
+                              ? "success"
+                              : policy.status === "conflict"
+                                ? "destructive"
+                                : "neutral"
+                          }
+                        />
+                      </div>
+                      <h3 className="mt-2 text-sm font-semibold">
+                        {policy.title}
+                      </h3>
+                      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                        {policy.summary}
+                      </p>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        {policy.detail.map((detail) => (
                           <FieldCell
-                            key={metric.label}
-                            label={metric.label}
-                            value={metric.value}
-                            variant="default"
+                            key={detail.label}
+                            label={detail.label}
+                            value={detail.value}
                           />
                         ))}
                       </div>
-                    </CardContent>
-                  </Card>
-                ) : null}
-              </div>
-            </section>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
 
-            <section className="space-y-4">
+            {/* Excluded suppliers */}
+            <div
+              className={cn(
+                "grid gap-4",
+                data.historicalPrecedent ? "xl:grid-cols-2" : "xl:grid-cols-1",
+              )}
+            >
               <Card className="bg-card/70">
                 <CardHeader>
-                  <CardTitle>Rule checks by supplier</CardTitle>
+                  <CardTitle>Excluded suppliers</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  {data.evaluationRuns.length === 0 ? (
+                <CardContent className="space-y-3">
+                  {effectiveExcluded.length === 0 ? (
                     <p className="text-sm text-muted-foreground">
-                      No stored evaluation runs found for this case yet.
+                      No supplier was excluded.
                     </p>
                   ) : (
-                    <>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <StatusBadge
-                          label={`Runs: ${data.evaluationRuns.length}`}
-                          tone="neutral"
-                        />
-                        <div className="flex flex-wrap gap-2">
-                          {data.evaluationRuns.slice(0, 4).map((run) => (
-                            <Button
-                              key={run.runId}
-                              type="button"
-                              size="sm"
-                              variant={run.runId === selectedRun?.runId ? "default" : "outline"}
-                              onClick={() => setSelectedRunId(run.runId)}
-                            >
-                              {run.runId.slice(0, 8)}
-                            </Button>
-                          ))}
-                          {data.evaluationRuns.length > 4 ? (
-                            <StatusBadge label="More in API" tone="info" />
-                          ) : null}
+                    effectiveExcluded.map((supplier) => (
+                      <div
+                        key={supplier.supplierId}
+                        className="rounded-lg border bg-background/80 p-3.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <StatusBadge
+                            label={supplier.supplierId}
+                            tone="neutral"
+                          />
+                          <StatusBadge
+                            label={
+                              supplier.hardExclusion
+                                ? "hard exclusion"
+                                : "not shortlisted"
+                            }
+                            tone={
+                              supplier.hardExclusion ? "destructive" : "warning"
+                            }
+                          />
                         </div>
+                        <p className="mt-2 text-sm font-medium">
+                          {supplier.supplierName}
+                        </p>
+                        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                          {supplier.reason}
+                        </p>
                       </div>
-
-                      {selectedRun ? (
-                        <EvaluationRunBreakdown run={selectedRun} />
-                      ) : null}
-                    </>
+                    ))
                   )}
                 </CardContent>
               </Card>
-            </section>
-          </div>
+
+              {data.historicalPrecedent ? (
+                <Card className="border-blue-200 bg-blue-50/50">
+                  <CardHeader>
+                    <CardTitle>{data.historicalPrecedent.title}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm leading-relaxed text-muted-foreground">
+                      {data.historicalPrecedent.description}
+                    </p>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                      {data.historicalPrecedent.metrics.map((metric) => (
+                        <FieldCell
+                          key={metric.label}
+                          label={metric.label}
+                          value={metric.value}
+                          variant="default"
+                        />
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              ) : null}
+            </div>
+
+            {/* Supplier notes */}
+            {visibleSuppliers.length > 0 ? (
+              <Card className="bg-card/70">
+                <CardHeader>
+                  <CardTitle>Supplier notes</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {visibleSuppliers.map(({ supplier }) => (
+                    <div
+                      key={supplier.supplierId}
+                      className="rounded-lg border bg-background/80 p-3.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusBadge label={`#${supplier.rank}`} tone="neutral" />
+                        <span className="font-medium">{supplier.supplierName}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {supplier.supplierId}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                        {supplier.recommendationNote}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : null}
           </TabsContent>
 
           {/* Escalations tab */}
@@ -1605,9 +1499,10 @@ export function CaseWorkspace({
                 <CardContent className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-1.5">
+                      <StatusBadge label={activeEscalation.escalationId} tone="neutral" />
                       <StatusBadge label={activeEscalation.rule} tone="info" />
                       <StatusBadge
-                        label={titleCase(activeEscalation.status)}
+                        label={activeEscalation.status}
                         tone={
                           activeEscalation.status === "resolved"
                             ? "success"
@@ -1615,7 +1510,7 @@ export function CaseWorkspace({
                         }
                       />
                       <StatusBadge
-                        label={activeEscalation.blocking ? "Blocking" : "Advisory"}
+                        label={activeEscalation.blocking ? "blocking" : "advisory"}
                         tone={activeEscalation.blocking ? "destructive" : "warning"}
                       />
                     </div>
@@ -1661,20 +1556,25 @@ export function CaseWorkspace({
                       {data.escalations.map((entry) => (
                         <TableRow key={entry.escalationId}>
                           <TableCell className="px-3 align-top">
-                            <p className="font-medium">{entry.ruleLabel || entry.rule}</p>
+                            <p className="font-medium">{entry.escalationId}</p>
                             <p className="mt-1 max-w-[320px] text-xs leading-relaxed text-muted-foreground">
                               {entry.trigger}
                             </p>
                           </TableCell>
                           <TableCell className="align-top text-sm">
-                            <StatusBadge label={entry.rule} tone="info" />
+                            <p className="font-medium">{entry.rule}</p>
+                            {entry.ruleLabel ? (
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                {entry.ruleLabel}
+                              </p>
+                            ) : null}
                           </TableCell>
                           <TableCell className="align-top text-sm">
                             {entry.escalateTo}
                           </TableCell>
                           <TableCell className="align-top">
                             <StatusBadge
-                              label={titleCase(entry.status)}
+                              label={entry.status}
                               tone={
                                 entry.status === "resolved"
                                   ? "success"
@@ -1684,7 +1584,7 @@ export function CaseWorkspace({
                           </TableCell>
                           <TableCell className="align-top">
                             <StatusBadge
-                              label={entry.blocking ? "Blocking" : "Advisory"}
+                              label={entry.blocking ? "blocking" : "advisory"}
                               tone={entry.blocking ? "destructive" : "warning"}
                             />
                           </TableCell>
@@ -1722,10 +1622,10 @@ export function CaseWorkspace({
                       {formatDateTime(event.timestamp)}
                     </p>
                     <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                      <StatusBadge label={titleCase(event.kind)} tone="info" />
+                      <StatusBadge label={event.kind} tone="info" />
                       {event.level ? (
                         <StatusBadge
-                          label={titleCase(event.level)}
+                          label={event.level}
                           tone={
                             event.level === "error"
                               ? "destructive"
@@ -1751,27 +1651,64 @@ export function CaseWorkspace({
             </Card>
 
             <div className="space-y-4">
+              {data.evaluationRuns.length > 0 ? (
+                <Card className="bg-card/70">
+                  <CardHeader>
+                    <CardTitle>Evaluation runs</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    {[...data.evaluationRuns]
+                      .sort((a, b) => new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime())
+                      .map((run, index) => (
+                      <button
+                        key={run.runId}
+                        type="button"
+                        onClick={() => {
+                          setSelectedRunId(run.runId)
+                          setActiveTab("other-info")
+                        }}
+                        className={cn(
+                          "flex w-full items-center justify-between rounded-lg border p-3 text-left transition-colors hover:bg-accent/60",
+                          run.runId === selectedRunId && "border-primary bg-primary/5",
+                        )}
+                      >
+                        <div>
+                          <p className="text-sm font-medium">
+                            Evaluation {index + 1}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDateTime(run.startedAt)}
+                          </p>
+                        </div>
+                        <StatusBadge
+                          label={run.status}
+                          tone={
+                            run.status === "completed"
+                              ? "success"
+                              : run.status === "failed"
+                                ? "destructive"
+                                : "neutral"
+                          }
+                        />
+                      </button>
+                    ))}
+                  </CardContent>
+                </Card>
+              ) : null}
+
               <Card className="bg-card/70">
                 <CardHeader>
                   <CardTitle>Audit facts</CardTitle>
                 </CardHeader>
                 <CardContent className="grid gap-3 sm:grid-cols-2">
                   <FieldCell
-                    label="Suppliers evaluated"
-                    value={
-                      data.auditTrail.supplierIdsEvaluated
-                        .map((id) => {
-                          const match = data.supplierShortlist.find((s) => s.supplierId === id)
-                            ?? data.excludedSuppliers.find((s) => s.supplierId === id)
-                          return match?.supplierName ?? id
-                        })
-                        .join(", ") || "—"
-                    }
+                    label="Policies checked"
+                    value={data.auditTrail.policiesChecked.join(", ")}
                     variant="default"
                   />
                   <FieldCell
-                    label="Policies checked"
-                    value={`${data.auditTrail.policiesChecked.length} rules`}
+                    label="Suppliers evaluated"
+                    value={data.auditTrail.supplierIdsEvaluated.join(", ")}
                     variant="default"
                   />
                   <FieldCell
@@ -1780,12 +1717,20 @@ export function CaseWorkspace({
                     variant="default"
                   />
                   <FieldCell
-                    label="Historical precedent"
+                    label="Data sources used"
+                    value={data.auditTrail.dataSourcesUsed.join(", ")}
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Historical awards consulted"
                     value={
-                      data.auditTrail.historicalAwardsConsulted
-                        ? data.auditTrail.historicalAwardNote || "Yes"
-                        : "No historical awards consulted"
+                      data.auditTrail.historicalAwardsConsulted ? "Yes" : "No"
                     }
+                    variant="default"
+                  />
+                  <FieldCell
+                    label="Historical award note"
+                    value={data.auditTrail.historicalAwardNote}
                     variant="default"
                   />
                 </CardContent>
@@ -1797,7 +1742,7 @@ export function CaseWorkspace({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {data.auditTrail.reasoningTrace.map((step, index) => (
-                    <div key={`${index}-${step}`} className="rounded-lg border bg-background/80 p-3.5">
+                    <div key={step} className="rounded-lg border bg-background/80 p-3.5">
                       <div className="flex items-center gap-1.5">
                         <StatusBadge
                           label={`Step ${index + 1}`}
@@ -1822,69 +1767,116 @@ export function CaseWorkspace({
             </div>
           </div>
 
-          <details className="group">
-            <summary className="flex cursor-pointer items-center gap-2 rounded-lg border bg-muted/15 px-5 py-3 text-sm font-medium text-muted-foreground hover:text-foreground">
-              <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
-              Advanced pipeline diagnostics
-            </summary>
-            <Card className="mt-2 bg-muted/15 border-dashed">
-              <CardContent className="space-y-4 pt-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Input
-                    value={runId}
-                    onChange={(event) => setRunId(event.target.value)}
-                    placeholder="Run ID (optional for run detail)"
-                    className="w-full sm:w-[340px]"
-                  />
-                  <Button variant="outline" size="sm" onClick={handleRunDiagnostics} disabled={loadingAction !== null}>
-                    {loadingAction === "runs" ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                    List runs
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={handleRunDetail} disabled={loadingAction !== null || !runId.trim()}>
-                    {loadingAction === "run" ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
-                    Get run
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={handleAuditTrail} disabled={loadingAction !== null}>
-                    {loadingAction === "audit" ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
-                    Audit trail
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={handleAuditSummary} disabled={loadingAction !== null}>
-                    {loadingAction === "summary" ? <Loader2 className="size-3.5 animate-spin" /> : <ShieldCheck className="size-3.5" />}
-                    Audit summary
-                  </Button>
-                </div>
-                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-                  {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map((step) => (
-                    <Button key={step} variant="outline" size="sm" onClick={() => handleStep(step)} disabled={loadingAction !== null}>
-                      {loadingAction === `step:${step}` ? <RefreshCw className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+          <Card className="bg-muted/15">
+            <CardHeader>
+              <CardTitle>Advanced pipeline diagnostics</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Access run diagnostics and step-level controls moved from Pipeline Ops.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  value={runId}
+                  onChange={(event) => setRunId(event.target.value)}
+                  placeholder="Run ID (optional for run detail)"
+                  className="w-full sm:w-[340px]"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDiagnostics}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "runs" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  List runs
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleRunDetail}
+                  disabled={loadingAction !== null || !runId.trim()}
+                >
+                  {loadingAction === "run" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Play className="size-3.5" />
+                  )}
+                  Get run
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditTrail}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "audit" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit trail
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAuditSummary}
+                  disabled={loadingAction !== null}
+                >
+                  {loadingAction === "summary" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="size-3.5" />
+                  )}
+                  Audit summary
+                </Button>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                {(["fetch", "validate", "filter", "comply", "rank", "escalate"] as const).map(
+                  (step) => (
+                    <Button
+                      key={step}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleStep(step)}
+                      disabled={loadingAction !== null}
+                    >
+                      {loadingAction === `step:${step}` ? (
+                        <RefreshCw className="size-3.5 animate-spin" />
+                      ) : (
+                        <Play className="size-3.5" />
+                      )}
                       {step}
                     </Button>
-                  ))}
-                </div>
-                <div className="grid gap-4 xl:grid-cols-2">
-                  {statusResult ? <JsonViewer title="Pipeline Status" value={statusResult} /> : null}
-                  {pipelineResult ? <JsonViewer title="Pipeline Result" value={pipelineResult} /> : null}
-                  {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
-                  {runDetailResult ? <JsonViewer title="Run Detail" value={runDetailResult} /> : null}
-                  {auditResult ? <JsonViewer title="Audit Trail" value={auditResult} /> : null}
-                  {summaryResult ? <JsonViewer title="Audit Summary" value={summaryResult} /> : null}
-                  {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
-                </div>
-              </CardContent>
-            </Card>
-          </details>
+                  ),
+                )}
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                {runsResult ? <JsonViewer title="Runs" value={runsResult} /> : null}
+                {runDetailResult ? (
+                  <JsonViewer title="Run Detail" value={runDetailResult} />
+                ) : null}
+                {auditResult ? (
+                  <JsonViewer title="Audit Trail" value={auditResult} />
+                ) : null}
+                {summaryResult ? (
+                  <JsonViewer title="Audit Summary" value={summaryResult} />
+                ) : null}
+                {stepResult ? <JsonViewer title="Step Result" value={stepResult} /> : null}
+              </div>
+            </CardContent>
+          </Card>
           </TabsContent>
         </div>
       </Tabs>
     </div>
   )
-}
-
-function toneForCheckResult(result: SupplierRuleCheck["result"]) {
-  if (result === "passed") return "success"
-  if (result === "warned") return "warning"
-  if (result === "skipped") return "neutral"
-  return "destructive"
 }
 
 function SupplierDetailSheetContent({
@@ -1905,8 +1897,6 @@ function SupplierDetailSheetContent({
 
   useEffect(() => {
     if (breakdown || !requestId || !supplier.supplierId) {
-      setFetchedBreakdown(null)
-      setFetchError(null)
       return
     }
     let cancelled = false
@@ -1934,21 +1924,37 @@ function SupplierDetailSheetContent({
           excluded: false,
           exclusionRuleId: null,
           exclusionReason: null,
-          hardRuleChecks: h.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; skipped?: boolean; checked_at: string }) => ({
-            checkId: c.check_id,
-            ruleId: c.rule_id,
-            versionId: c.version_id,
-            supplierId: c.supplier_id,
-            result: c.skipped ? "skipped" : toRuleCheckResult(c.result),
-            checkedAt: c.checked_at,
+          hardRuleChecks: h.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: c.skipped ? "skipped" : toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
+            dynamicSnapshot:
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
-          policyChecks: p.map((c: { check_id: string; rule_id: string; version_id: string; supplier_id: string | null; result: string; checked_at: string }) => ({
-            checkId: c.check_id,
-            ruleId: c.rule_id,
-            versionId: c.version_id,
-            supplierId: c.supplier_id,
-            result: toRuleCheckResult(c.result),
-            checkedAt: c.checked_at,
+          policyChecks: p.map((c: Record<string, unknown>) => ({
+            checkId: String(c.check_id),
+            ruleId: String(c.rule_id),
+            versionId: String(c.version_id),
+            supplierId: (c.supplier_id as string | null) ?? null,
+            result: toRuleCheckResult(c.result as string),
+            checkedAt: String(c.checked_at),
+            ruleName: pickRuleNameFromApiRow(c),
+            versionSnapshot:
+              coerceJsonObjectRecord(c.version_snapshot) ??
+              coerceJsonObjectRecord(c.versionSnapshot),
+            dynamicSnapshot:
+              coerceJsonObjectRecord(c.dynamic_snapshot) ??
+              coerceJsonObjectRecord(c.dynamicSnapshot),
+            dynamicRuleVersion: coerceDynamicRuleVersionFromRow(c),
           })),
         })
       })
@@ -1988,33 +1994,28 @@ function SupplierDetailSheetContent({
     )
   }
 
-  const hardPassed = effectiveBreakdown.hardRuleChecks
-    .filter((c) => c.result === "passed")
-    .map((c) => c.ruleId)
-  const policyPassed = effectiveBreakdown.policyChecks
-    .filter((c) => c.result === "passed")
-    .map((c) => c.ruleId)
+  const hardFailed = effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
+  const policyFailed = effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
+  const policyWarned = effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
+  const hardOk =
+    effectiveBreakdown.hardRuleChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.hardRuleChecks)
+  const policyOk =
+    effectiveBreakdown.policyChecks.length > 0 &&
+    hasNoFailedChecks(effectiveBreakdown.policyChecks)
 
   return (
     <div className="space-y-6 pt-4 pb-6">
       <div className="flex flex-wrap items-center gap-1.5">
         <StatusBadge label={supplier.supplierId} tone="neutral" />
         <StatusBadge
-          label={`Hard: ${hardPassed.length}/${effectiveBreakdown.hardRuleChecks.length}`}
-          tone={
-            effectiveBreakdown.hardRuleChecks.some((c) => c.result === "failed")
-              ? "destructive"
-              : "neutral"
-          }
+          label={`Rules: ${effectiveBreakdown.hardRuleChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.hardRuleChecks.length}`}
+          tone={hardFailed ? "destructive" : hardOk ? "success" : "neutral"}
         />
         <StatusBadge
-          label={`Policy: ${policyPassed.length}/${effectiveBreakdown.policyChecks.length}`}
+          label={`Policy: ${effectiveBreakdown.policyChecks.filter((c) => c.result === "passed").length}/${effectiveBreakdown.policyChecks.length}`}
           tone={
-            effectiveBreakdown.policyChecks.some((c) => c.result === "failed")
-              ? "destructive"
-              : effectiveBreakdown.policyChecks.some((c) => c.result === "warned")
-                ? "warning"
-                : "neutral"
+            policyFailed ? "destructive" : policyOk ? "success" : policyWarned ? "warning" : "neutral"
           }
         />
       </div>
@@ -2024,246 +2025,27 @@ function SupplierDetailSheetContent({
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Hard checks
           </p>
-          {hardPassed.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Rules passed: {hardPassed.join(", ")}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto rounded-lg border p-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 py-3">Rule</TableHead>
-                  <TableHead className="py-3">Version</TableHead>
-                  <TableHead className="py-3">Result</TableHead>
-                  <TableHead className="py-3">Checked</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {effectiveBreakdown.hardRuleChecks.map((check) => (
-                  <TableRow key={check.checkId}>
-                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {check.versionId.slice(0, 8)}
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <StatusBadge
-                        label={titleCase(check.result)}
-                        tone={toneForCheckResult(check.result)}
-                      />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {formatDateTime(check.checkedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.hardRuleChecks} />
         </div>
 
         <div className="space-y-2">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Policy checks
           </p>
-          {policyPassed.length > 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Rules passed: {policyPassed.join(", ")}
-            </p>
-          ) : null}
-          <div className="overflow-x-auto rounded-lg border p-4">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 py-3">Rule</TableHead>
-                  <TableHead className="py-3">Version</TableHead>
-                  <TableHead className="py-3">Result</TableHead>
-                  <TableHead className="py-3">Checked</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {effectiveBreakdown.policyChecks.map((check) => (
-                  <TableRow key={check.checkId}>
-                    <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {check.versionId.slice(0, 8)}
-                    </TableCell>
-                    <TableCell className="py-3">
-                      <StatusBadge
-                        label={titleCase(check.result)}
-                        tone={toneForCheckResult(check.result)}
-                      />
-                    </TableCell>
-                    <TableCell className="py-3 text-xs text-muted-foreground">
-                      {formatDateTime(check.checkedAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <EnrichedRuleChecksTable checks={effectiveBreakdown.policyChecks} />
         </div>
       </div>
-    </div>
-  )
-}
 
-function EvaluationRunBreakdown({ run }: { run: EvaluationRunDetail }) {
-  const suppliers = run.supplierBreakdowns
-    .slice()
-    .sort((a, b) => (a.excluded === b.excluded ? 0 : a.excluded ? 1 : -1))
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-1.5">
-        <StatusBadge label={`Run ${run.runId}`} tone="neutral" />
-        <StatusBadge label={titleCase(run.status)} tone="info" />
-        <StatusBadge label={`Suppliers ${suppliers.length}`} tone="neutral" />
-      </div>
-
-      <div className="space-y-4">
-        {suppliers.map((supplier) => {
-          const passedHard = supplier.hardRuleChecks.filter((c) => c.result === "passed").length
-          const failedHard = supplier.hardRuleChecks.filter((c) => c.result === "failed").length
-          const skippedHard = supplier.hardRuleChecks.filter((c) => c.result === "skipped").length
-
-          const passedPolicy = supplier.policyChecks.filter((c) => c.result === "passed").length
-          const warnedPolicy = supplier.policyChecks.filter((c) => c.result === "warned").length
-          const failedPolicy = supplier.policyChecks.filter((c) => c.result === "failed").length
-
-          return (
-            <div key={supplier.supplierId} className="rounded-lg border bg-background/80 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <StatusBadge label={supplier.supplierId} tone="neutral" />
-                    {supplier.excluded ? (
-                      <StatusBadge label="excluded" tone="destructive" />
-                    ) : (
-                      <StatusBadge label="evaluated" tone="success" />
-                    )}
-                  </div>
-                  <p className="text-sm font-semibold">
-                    {supplier.supplierName ?? "Supplier"}
-                  </p>
-                  {supplier.exclusionReason ? (
-                    <p className="text-sm text-muted-foreground">
-                      {supplier.exclusionRuleId ? `${supplier.exclusionRuleId}: ` : ""}
-                      {supplier.exclusionReason}
-                    </p>
-                  ) : null}
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <StatusBadge
-                    label={`Hard: ${passedHard}✓ ${failedHard}✕ ${skippedHard}⎯`}
-                    tone={failedHard > 0 ? "destructive" : "neutral"}
-                  />
-                  <StatusBadge
-                    label={`Policy: ${passedPolicy}✓ ${warnedPolicy}⚠ ${failedPolicy}✕`}
-                    tone={failedPolicy > 0 ? "destructive" : warnedPolicy > 0 ? "warning" : "neutral"}
-                  />
-                </div>
-              </div>
-
-              <Separator className="my-4" />
-
-              <div className="grid gap-4 xl:grid-cols-2">
-                <div className="space-y-2">
-                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Hard checks
-                  </p>
-                  <div className="overflow-x-auto rounded-lg border p-4">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3 py-3">Rule</TableHead>
-                          <TableHead className="py-3">Version</TableHead>
-                          <TableHead className="py-3">Result</TableHead>
-                          <TableHead className="py-3">Checked</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {supplier.hardRuleChecks.map((check) => (
-                          <TableRow key={check.checkId}>
-                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {check.versionId.slice(0, 8)}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge label={titleCase(check.result)} tone={toneForCheckResult(check.result)} />
-                            </TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {formatDateTime(check.checkedAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Policy checks
-                  </p>
-                  <div className="overflow-x-auto rounded-lg border p-4">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="px-3 py-3">Rule</TableHead>
-                          <TableHead className="py-3">Version</TableHead>
-                          <TableHead className="py-3">Result</TableHead>
-                          <TableHead className="py-3">Checked</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {supplier.policyChecks.map((check) => (
-                          <TableRow key={check.checkId}>
-                            <TableCell className="px-3 py-3 font-medium">{check.ruleId}</TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {check.versionId.slice(0, 8)}
-                            </TableCell>
-                            <TableCell className="py-3">
-                              <StatusBadge label={titleCase(check.result)} tone={toneForCheckResult(check.result)} />
-                            </TableCell>
-                            <TableCell className="py-3 text-xs text-muted-foreground">
-                              {formatDateTime(check.checkedAt)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )
-        })}
+      <div className="rounded-lg border bg-muted/20 p-4">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Rationale
+        </p>
+        <p className="mt-2 text-sm leading-relaxed">{supplier.recommendationNote}</p>
       </div>
     </div>
   )
 }
 
-function KpiCell({
-  label,
-  value,
-  helper,
-}: {
-  label: string
-  value: string | number
-  helper: string
-}) {
-  return (
-    <div className="rounded-lg border bg-card/50 p-3.5">
-      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
-      <p className="mt-1 text-base font-semibold tabular-nums">{value}</p>
-      <p className="mt-0.5 text-xs text-muted-foreground">{helper}</p>
-    </div>
-  )
-}
 
 function FieldCell({
   label,
@@ -2322,195 +2104,37 @@ function MiniMetric({
   )
 }
 
-function IssueDetailSheetContent({
-  issue,
-  requestId,
-  timeline,
+function RuleBox({
+  label,
+  value,
+  limit,
+  status,
 }: {
-  issue: ValidationIssue
-  requestId: string
-  timeline: AuditTimelineEvent[]
+  label: string
+  value: string
+  limit: string
+  status: "met" | "partial" | "not-met"
 }) {
-  const [relatedLogs, setRelatedLogs] = useState<AuditTimelineEvent[] | null>(null)
-  const [loadingLogs, setLoadingLogs] = useState(false)
-  const [logError, setLogError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function fetchRelated() {
-      setLoadingLogs(true)
-      setLogError(null)
-      try {
-        const params: { limit?: number; skip?: number; run_id?: string; step_name?: string } = { limit: 100, skip: 0 }
-        if (issue.runId) params.run_id = issue.runId
-        if (issue.stepName) params.step_name = issue.stepName
-
-        const result = await chainIqApi.orgLogs.audit.byRequest(requestId, params)
-        if (cancelled) return
-        const mapped = result.items.map((entry) => ({
-          id: `${entry.request_id}-${entry.id}`,
-          timestamp: entry.timestamp,
-          title: entry.message,
-          description: entry.step_name
-            ? `${entry.category} · ${entry.step_name}`
-            : entry.category,
-          kind: "audit" as const,
-          level: entry.level,
-          category: entry.category,
-          stepName: entry.step_name,
-          source: entry.source,
-          details: entry.details as Record<string, unknown> | null,
-        }))
-        setRelatedLogs(mapped)
-      } catch (error) {
-        if (cancelled) return
-        setLogError(error instanceof Error ? error.message : "Failed to load related logs")
-        const fromTimeline = timeline.filter(
-          (event) =>
-            event.category === issue.type ||
-            event.stepName === issue.stepName,
-        )
-        setRelatedLogs(fromTimeline.length > 0 ? fromTimeline : null)
-      } finally {
-        if (!cancelled) setLoadingLogs(false)
-      }
-    }
-
-    void fetchRelated()
-    return () => { cancelled = true }
-  }, [issue.runId, issue.stepName, issue.type, requestId, timeline])
-
-  const detailEntries = issue.details
-    ? Object.entries(issue.details).filter(
-        ([key]) => !["action_required"].includes(key),
-      )
-    : []
-
   return (
-    <div className="space-y-6 pt-4">
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <StatusBadge label={issue.issueId} tone="neutral" />
-          <StatusBadge label={titleCase(issue.severity)} tone={severityTone(issue.severity)} />
-          <StatusBadge label={titleCase(issue.type)} tone="info" />
-          {issue.blocking ? (
-            <StatusBadge label="Blocking" tone="destructive" />
-          ) : null}
-        </div>
-
-        <div className="space-y-1.5">
-          <p className="text-sm font-medium leading-relaxed">{issue.description}</p>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            {issue.actionRequired}
-          </p>
-        </div>
-      </div>
-
-      <Separator />
-
-      <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Audit record
-        </p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <FieldCell label="Audit Row ID" value={String(issue.auditRowId)} variant="muted" />
-          <FieldCell label="Run ID" value={issue.runId ?? "—"} variant="muted" />
-          <FieldCell label="Timestamp" value={formatDateTime(issue.timestamp)} variant="muted" />
-          <FieldCell label="Step" value={issue.stepName ?? "—"} variant="muted" />
-          <FieldCell label="Level" value={issue.level} variant="muted" />
-          <FieldCell label="Source" value={issue.source} variant="muted" />
-        </div>
-      </div>
-
-      {detailEntries.length > 0 ? (
-        <>
-          <Separator />
-          <div className="space-y-3">
-            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Issue details
-            </p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {detailEntries.map(([key, value]) => (
-                <FieldCell
-                  key={key}
-                  label={titleCase(key)}
-                  value={
-                    typeof value === "object" && value !== null
-                      ? JSON.stringify(value, null, 2)
-                      : String(value ?? "—")
-                  }
-                  variant="muted"
-                />
-              ))}
-            </div>
-          </div>
-        </>
-      ) : null}
-
-      <Separator />
-
-      <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Related audit logs{issue.stepName ? ` · ${issue.stepName}` : ""}
-        </p>
-
-        {loadingLogs ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />
-            Loading related logs...
-          </div>
-        ) : logError && !relatedLogs ? (
-          <p className="text-sm text-muted-foreground">{logError}</p>
-        ) : relatedLogs && relatedLogs.length > 0 ? (
-          <div className="space-y-2">
-            {relatedLogs.map((event) => (
-              <div
-                key={event.id}
-                className="rounded-lg border bg-muted/20 p-3"
-              >
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {event.level ? (
-                    <StatusBadge
-                      label={titleCase(event.level)}
-                      tone={
-                        event.level === "error"
-                          ? "destructive"
-                          : event.level === "warning"
-                            ? "warning"
-                            : "neutral"
-                      }
-                    />
-                  ) : null}
-                  {event.category ? (
-                    <StatusBadge
-                      label={titleCase(event.category)}
-                      tone="info"
-                    />
-                  ) : null}
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    {formatDateTime(event.timestamp)}
-                  </span>
-                </div>
-                <p className="mt-1.5 text-sm leading-relaxed">{event.title}</p>
-                {event.details && Object.keys(event.details).length > 0 ? (
-                  <details className="mt-2">
-                    <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
-                      Raw details
-                    </summary>
-                    <pre className="mt-1 max-h-40 overflow-auto rounded bg-muted/30 p-2 text-xs leading-relaxed">
-                      {JSON.stringify(event.details, null, 2)}
-                    </pre>
-                  </details>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            No related audit logs found for this step.
-          </p>
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-lg border bg-card pl-3",
+      )}
+    >
+      <div
+        className={cn(
+          "absolute inset-y-0 left-0 w-1",
+          status === "met" && "bg-emerald-500",
+          status === "partial" && "bg-amber-500",
+          status === "not-met" && "bg-rose-500",
         )}
+      />
+      <div className="p-3">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          {label}
+        </p>
+        <p className="mt-1 text-sm font-semibold">{value}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{limit}</p>
       </div>
     </div>
   )

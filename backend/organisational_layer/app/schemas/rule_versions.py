@@ -62,6 +62,24 @@ class RuleVersionWithDefinitionOut(RuleVersionOut):
     rule_type: str | None = None
 
 
+class DynamicRuleVersionActiveOut(BaseModel):
+    """Active (or best-effort) snapshot from `dynamic_rule_versions` / `dynamic_rules`."""
+
+    rule_id: str
+    version: int
+    snapshot: dict[str, Any]
+
+
+class DynamicRuleVersionPinnedOut(BaseModel):
+    """One historical row from `dynamic_rule_versions` by integer version."""
+
+    rule_id: str
+    version: int
+    snapshot: dict[str, Any]
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+
+
 class RuleCheckOut(BaseModel):
     """Single rule check (hard or policy) with version traceability."""
 
@@ -74,6 +92,10 @@ class RuleCheckOut(BaseModel):
     skipped: bool | None = None
     skip_reason: str | None = None
     checked_at: datetime
+    rule_name: str | None = None
+    version_snapshot: dict[str, Any] | None = None
+    dynamic_snapshot: dict[str, Any] | None = None
+    dynamic_rule_version: int | None = None
 
     model_config = {"from_attributes": True}
 

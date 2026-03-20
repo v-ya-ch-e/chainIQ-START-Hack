@@ -130,6 +130,28 @@ async def parse_rule(payload: RuleParseRequest, db: Session = Depends(get_db)):
     return result
 
 
+# ── Evaluation Results (before /{rule_id} so paths are not captured) ──
+
+
+@router.post("/evaluation-results", status_code=201)
+def store_evaluation_results(payload: BulkEvaluationResultCreate, db: Session = Depends(get_db)):
+    for r in payload.results:
+        obj = RuleEvaluationResult(**r.model_dump())
+        db.add(obj)
+    db.commit()
+    return {"stored": len(payload.results)}
+
+
+@router.get("/evaluation-results/by-run/{run_id}", response_model=list[RuleEvaluationResultOut])
+def get_results_by_run(run_id: str, db: Session = Depends(get_db)):
+    return (
+        db.query(RuleEvaluationResult)
+        .filter(RuleEvaluationResult.run_id == run_id)
+        .order_by(RuleEvaluationResult.evaluated_at)
+        .all()
+    )
+
+
 # ── CRUD ───────────────────────────────────────────────────────────
 
 
@@ -251,27 +273,5 @@ def list_versions(rule_id: str, db: Session = Depends(get_db)):
         db.query(DynamicRuleVersion)
         .filter(DynamicRuleVersion.rule_id == rule_id)
         .order_by(DynamicRuleVersion.version)
-        .all()
-    )
-
-
-# ── Evaluation Results ─────────────────────────────────────────────
-
-
-@router.post("/evaluation-results", status_code=201)
-def store_evaluation_results(payload: BulkEvaluationResultCreate, db: Session = Depends(get_db)):
-    for r in payload.results:
-        obj = RuleEvaluationResult(**r.model_dump())
-        db.add(obj)
-    db.commit()
-    return {"stored": len(payload.results)}
-
-
-@router.get("/evaluation-results/by-run/{run_id}", response_model=list[RuleEvaluationResultOut])
-def get_results_by_run(run_id: str, db: Session = Depends(get_db)):
-    return (
-        db.query(RuleEvaluationResult)
-        .filter(RuleEvaluationResult.run_id == run_id)
-        .order_by(RuleEvaluationResult.evaluated_at)
         .all()
     )

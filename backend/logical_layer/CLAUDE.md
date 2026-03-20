@@ -44,6 +44,8 @@ The PDF is rendered via `reportlab` in `app/reports/audit_report.py` and returne
 - `POST /api/rule-versions/evaluations/from-pipeline` — evaluation persistence
 - `POST /api/pipeline-results/` — full pipeline output persistence
 - `GET /api/pipeline-results/latest/{request_id}` — retrieve latest persisted result
+- `GET /api/rule-versions/dynamic-rule-versions/active/{rule_id}` — active/latest snapshot from dynamic_rule_versions (3-tier fallback)
+- `POST /api/dynamic-rules/evaluation-results` — bulk-store dynamic rule evaluation results
 
 ## Bugs Fixed (2026-03-19)
 

@@ -120,6 +120,7 @@ backend/organisational_layer/
       transaction_workflows.py  # ACID transaction workflows: escalation changes, evaluation triggers,
                                 #   rule updates, policy check overrides
       request_parser.py      # Anthropic-powered text/file → structured request parser
+      dynamic_rule_versions.py  # Resolve frozen/active snapshots from dynamic_rule_versions
 
   LOGGING_API.md             # Full docs for pipeline + audit logging + rule management APIs
   Dockerfile                 # Python 3.14-slim, port 8000
@@ -218,6 +219,10 @@ backend/organisational_layer/
 | `POST /api/rule-versions/evaluations/from-pipeline` | Persist hard-rule + policy + supplier evaluations from pipeline |
 | `POST /api/rule-versions/evaluations/reeval/{request_id}` | Re-evaluate a request |
 | `GET /api/rule-versions/evaluations/by-request/{request_id}` | All evaluations for a request |
+| `GET /api/rule-versions/dynamic-rule-versions/active/{rule_id}` | Active/latest snapshot from dynamic_rule_versions (3-tier fallback) |
+| `GET /api/rule-versions/dynamic-rule-versions/{rule_id}/at-version/{version_num}` | Pinned snapshot by exact integer version |
+
+**Enriched Rule Check Output:** `RuleCheckOut` includes `rule_name`, `version_snapshot` (frozen `rule_config`), `dynamic_snapshot` (active dynamic rule row), and `dynamic_rule_version` for full traceability in the frontend evaluation detail view.
 
 ---
 

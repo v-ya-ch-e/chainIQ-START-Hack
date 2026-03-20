@@ -133,6 +133,14 @@ export interface SupplierRuleCheck {
   skipped?: boolean | null
   skipReason?: string | null
   evidence?: Record<string, unknown> | null
+  /** From `rule_definitions.rule_name` when API enriches checks. */
+  ruleName?: string | null
+  /** Frozen config from `rule_versions` at evaluation time. */
+  versionSnapshot?: Record<string, unknown> | null
+  /** Active row from `dynamic_rule_versions.snapshot` when rule exists in dynamic rules. */
+  dynamicSnapshot?: Record<string, unknown> | null
+  /** `dynamic_rule_versions.version` for the active dynamic rule row, when applicable. */
+  dynamicRuleVersion?: number | null
 }
 
 export interface SupplierRuleBreakdown {
