@@ -202,15 +202,6 @@ async def compute_escalations(
             pipeline_issues, budget, rank_result, currency,
         )
 
-        # #region agent log
-        import json as _json5a, time as _time5a
-        try:
-            with open("/Users/vyach/projects/chain-iq-project/chainIQ-START-Hack/.cursor/debug-5a2860.log", "a") as _f5a:
-                _f5a.write(_json5a.dumps({"sessionId":"5a2860","location":"escalate.py:pre_merge","message":"Pipeline issues before merge","data":{"request_id":req.request_id,"pipeline_issue_count":len(pipeline_issues),"issues":[{"rule_id":pi.rule_id,"trigger":pi.trigger[:80],"blocking":pi.blocking} for pi in pipeline_issues],"budget":budget,"currency":currency},"timestamp":_time5a.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-
         merged = _merge_escalations(
             fetch_result.org_escalations,
             pipeline_issues,

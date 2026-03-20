@@ -388,9 +388,9 @@ POLICY        ESCALATIONS
 | 4 COMPLY | `steps/comply.py` | Maybe | Per-supplier: global restriction, country-scoped restriction, value-conditional restriction, delivery coverage, data residency, capacity. Calls `check-restricted` for borderline cases. |
 | 5 RANK | `steps/rank.py` | No | `true_cost = total_price / (quality/100) / ((100-risk)/100)`. ESG divisor added when `esg_requirement=true`. Falls back to quality-score ranking when quantity is null. |
 | 6 POLICY | `steps/policy.py` | No | Approval threshold, preferred supplier analysis, restricted supplier analysis, category rules, geography rules — all from `FetchResult`. |
-| 7 ESCALATE | `steps/escalate.py` | No | Merge Org Layer escalations (base) + pipeline-discovered issues + LLM-detected contradictions. Deduplicates by `rule_id`, keeps more specific trigger description. |
-| 8 RECOMMEND | `steps/recommend.py` | Yes | Deterministic status (`proceed` / `proceed_with_conditions` / `cannot_proceed`). LLM generates `reason` + `preferred_supplier_rationale`. Template fallback if LLM fails. |
-| 9 ASSEMBLE | `steps/assemble.py` | Yes | LLM enriches validation issues (severity, action_required) and generates per-supplier recommendation notes. Dynamic currency-suffixed keys (`unit_price_eur`, `total_price_usd`, etc.). |
+| 7 ESCALATE | `steps/escalate.py` | No | Merge Org Layer escalations (base) + pipeline-discovered issues + LLM-detected contradictions + budget insufficiency (ER-BUDGET). Deduplicates by `rule_id`, keeps more specific trigger description. |
+| 8 RECOMMEND | `steps/recommend.py` | Yes | Deterministic status based on escalations AND validation issues. Critical issues (budget insufficient) force `proceed_with_conditions`. LLM generates concise `reason` + `preferred_supplier_rationale` (1-2 sentences). Template fallback if LLM fails. |
+| 9 ASSEMBLE | `steps/assemble.py` | Yes | LLM enriches validation issues (severity, action_required) and generates per-supplier recommendation notes (2-3 sentences). Dynamic currency-suffixed keys (`unit_price_eur`, `total_price_usd`, etc.). |
 
 ---
 
@@ -584,7 +584,7 @@ if blocking_escalations:
 score -= len(non_blocking_escalations) * 10
 
 # Validation issue penalties
-severity_penalty = {"critical": 15, "high": 10, "medium": 5, "low": 2}
+severity_penalty = {"critical": 20, "high": 10, "medium": 5, "low": 2}
 for issue in validation_issues:
     score -= severity_penalty[issue.severity]
 

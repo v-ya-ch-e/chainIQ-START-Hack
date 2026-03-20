@@ -249,15 +249,6 @@ async def validate_request(
             requester_instruction=requester_instruction,
         )
 
-        # #region agent log
-        import json as _json5a, time as _time5a
-        try:
-            with open("/Users/vyach/projects/chain-iq-project/chainIQ-START-Hack/.cursor/debug-5a2860.log", "a") as _f5a:
-                _f5a.write(_json5a.dumps({"sessionId":"5a2860","location":"validate.py:issues_summary","message":"Validation issues after all checks","data":{"request_id":req.request_id,"issue_count":len(issues),"issues":[{"type":i.type,"severity":i.severity,"desc":i.description[:100]} for i in issues]},"timestamp":_time5a.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-
         # Order: budget_insufficient, policy_conflict, lead_time_infeasible, then others
         _ORDER = {"budget_insufficient": 0, "policy_conflict": 1, "lead_time_infeasible": 2}
         issues.sort(key=lambda i: (_ORDER.get(i.type, 99), i.type))

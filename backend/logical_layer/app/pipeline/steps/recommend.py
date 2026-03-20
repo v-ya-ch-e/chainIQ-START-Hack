@@ -80,15 +80,6 @@ async def generate_recommendation(
         else:
             status = "proceed"
 
-        # #region agent log
-        import json as _json5a, time as _time5a
-        try:
-            with open("/Users/vyach/projects/chain-iq-project/chainIQ-START-Hack/.cursor/debug-5a2860.log", "a") as _f5a:
-                _f5a.write(_json5a.dumps({"sessionId":"5a2860","location":"recommend.py:status","message":"Recommendation status determination","data":{"request_id":req.request_id,"status":status,"has_blocking":escalation_result.has_blocking,"has_budget_issue":has_budget_issue,"has_critical_issues":has_critical_issues,"has_high_issues":has_high_issues,"non_blocking_count":escalation_result.non_blocking_count,"confidence":confidence if 'confidence' in dir() else "not_yet"},"timestamp":_time5a.time()}) + "\n")
-        except Exception:
-            pass
-        # #endregion
-
         # ── Deterministic fields ──────────────────────────────
 
         top_supplier_name: str | None = None
