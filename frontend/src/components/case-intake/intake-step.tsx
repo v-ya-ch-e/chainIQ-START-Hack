@@ -1,20 +1,22 @@
 "use client"
 
-import { Upload } from "lucide-react"
+import { useEffect, useMemo } from "react"
+import Image from "next/image"
+import { FileImage, FileText, Upload, X } from "lucide-react"
 
 import { Alert } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
+import { UploadDropzone } from "@/components/ui/upload-dropzone"
 import type { IntakeSourceType, RequestChannel } from "@/lib/types/case"
+import { cn } from "@/lib/utils"
 
 interface IntakeStepProps {
   mode: IntakeSourceType
@@ -29,7 +31,27 @@ interface IntakeStepProps {
   onNoteChange: (value: string) => void
   onRequestChannelChange: (value: RequestChannel) => void
   onSelectedFilesChange: (value: File[]) => void
-  onExtract: () => void
+}
+
+function useObjectUrl(file: File | null) {
+  const url = useMemo(() => {
+    if (!file || !file.type.startsWith("image/")) return null
+    return URL.createObjectURL(file)
+  }, [file])
+
+  useEffect(() => {
+    return () => {
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [url])
+
+  return url
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export function IntakeStep({
@@ -45,156 +67,163 @@ export function IntakeStep({
   onNoteChange,
   onRequestChannelChange,
   onSelectedFilesChange,
-  onExtract,
 }: IntakeStepProps) {
+  const selectedFile = selectedFiles[0] ?? null
+  const previewUrl = useObjectUrl(selectedFile)
   const requestChannelLabelByValue: Record<RequestChannel, string> = {
     portal: "Portal",
     email: "Email",
     teams: "Teams",
   }
 
-  function handleFileInputChange(files: FileList | null) {
-    if (!files) {
-      onSelectedFilesChange([])
-      return
+  function handleFiles(files: File[]) {
+    const nextFiles = files.slice(0, 1)
+    onSelectedFilesChange(nextFiles)
+    if (nextFiles.length > 0) {
+      onModeChange("upload")
     }
-    onSelectedFilesChange(Array.from(files))
   }
 
-  const extractionButtonLabel =
-    mode === "upload" ? "Analyze file" : "Extract information"
+  function handleSourceText(value: string) {
+    onSourceTextChange(value)
+    if (value.trim().length > 0) {
+      onModeChange("paste")
+    } else if (selectedFiles.length > 0) {
+      onModeChange("upload")
+    }
+  }
 
   return (
-    <Card className="mx-auto max-w-6xl">
-      <CardHeader>
+    <Card className="mx-auto max-w-5xl rounded-[var(--layout-outer-radius)] border-muted ring-0 animate-intake-stage-in">
+      <CardHeader className="pb-4">
         <CardTitle>Provide request input</CardTitle>
         <CardDescription>
           Share what you have. We will extract structured fields and guide completion.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 px-[var(--layout-inner-padding)] pb-[var(--layout-inner-padding)]">
         {error ? <Alert variant="destructive">{error}</Alert> : null}
-        <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+
+        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.18fr)_minmax(16.5rem,0.82fr)]">
           <div className="space-y-4">
-            <Tabs
-              value={mode}
-              onValueChange={(value) =>
-                onModeChange((value as IntakeSourceType) ?? "paste")
-              }
-              className="space-y-4"
-            >
-              <TabsList>
-                <TabsTrigger value="paste">Paste text</TabsTrigger>
-                <TabsTrigger value="upload">Upload file</TabsTrigger>
-                <TabsTrigger value="manual">Manual entry</TabsTrigger>
-              </TabsList>
+            <UploadDropzone
+              multiple={false}
+              disabled={processing}
+              accept=".pdf,.png,.jpg,.jpeg,.gif,.webp"
+              title="Upload file or image"
+              description="Drop one file or click to browse. Accepted PDF, PNG, JPG, JPEG, GIF, and WEBP."
+              icon={<Upload className="size-5" />}
+              onFilesSelected={handleFiles}
+            />
 
-              <TabsContent value="paste" className="space-y-4">
-                <Textarea
-                  className="min-h-[280px]"
-                  placeholder="Paste email body, Teams message, or free-text request..."
-                  value={sourceText}
-                  onChange={(event) => onSourceTextChange(event.target.value)}
-                />
-              </TabsContent>
-
-              <TabsContent value="upload" className="space-y-4">
-                <label
-                  htmlFor="request-upload"
-                  className="flex min-h-[220px] cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 py-8 text-center"
-                >
-                  <Upload className="mb-2 size-4 text-muted-foreground" />
-                  <p className="text-sm font-medium">Upload request document</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Drag and drop supported (PDF, PNG, JPG, JPEG, WEBP)
-                  </p>
-                </label>
-                <Input
-                  id="request-upload"
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.webp"
-                  onChange={(event) => handleFileInputChange(event.target.files)}
-                  className="sr-only"
-                />
-                {selectedFiles.length > 0 ? (
-                  <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-                    {selectedFiles.map((file) => file.name).join(", ")}
+            {selectedFile ? (
+              <div className="rounded-[var(--layout-outer-radius)] border p-[var(--layout-inner-padding)]">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{selectedFile.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {selectedFile.type || "Unknown type"} · {formatFileSize(selectedFile.size)}
+                    </p>
                   </div>
-                ) : null}
-                <Textarea
-                  placeholder="Optional: add copied text or context note"
-                  value={sourceText}
-                  onChange={(event) => onSourceTextChange(event.target.value)}
-                />
-              </TabsContent>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => onSelectedFilesChange([])}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                </div>
 
-              <TabsContent value="manual" className="space-y-4">
-                <Alert>
-                  Start with manual completion when no source text is available.
-                </Alert>
-                <Textarea
-                  className="min-h-[220px]"
-                  placeholder="Optional: add initial context before manual completion"
-                  value={sourceText}
-                  onChange={(event) => onSourceTextChange(event.target.value)}
-                />
-              </TabsContent>
-            </Tabs>
+                {selectedFile.type.startsWith("image/") && previewUrl ? (
+                  <div className="mt-3 overflow-hidden rounded-[var(--layout-inner-radius)] border bg-background">
+                    <Image
+                      src={previewUrl}
+                      alt={selectedFile.name}
+                      width={1200}
+                      height={800}
+                      unoptimized
+                      className="max-h-[160px] w-full object-cover"
+                    />
+                  </div>
+                ) : (
+                  <div className="mt-3 flex items-center gap-2 rounded-[var(--layout-inner-radius)] border bg-background px-3 py-2.5 text-sm">
+                    {selectedFile.type === "application/pdf" ? (
+                      <FileText className="size-4 text-muted-foreground" />
+                    ) : (
+                      <FileImage className="size-4 text-muted-foreground" />
+                    )}
+                    <span className="truncate">Primary extraction asset selected</span>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            <div
+              className={cn(
+                "rounded-[var(--layout-outer-radius)] border bg-background p-[var(--layout-inner-padding)]",
+                mode === "paste" && "border-primary/50",
+              )}
+            >
+              <Textarea
+                className="min-h-[170px] resize-none rounded-[var(--layout-inner-radius)] border-0 bg-transparent px-[calc(var(--layout-inner-padding)*0.65)] py-[calc(var(--layout-inner-padding)*0.6)] shadow-none focus-visible:ring-0"
+                placeholder="Paste request text..."
+                value={sourceText}
+                onChange={(event) => handleSourceText(event.target.value)}
+                onFocus={() => onModeChange("paste")}
+              />
+            </div>
+
           </div>
 
-          <div className="flex flex-col justify-between space-y-4 rounded-lg border bg-muted/20 p-4">
-            <div className="space-y-4">
-              <div>
-                <p className="text-sm font-medium">Request metadata</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Add optional context to improve extraction quality.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  Request channel
-                </label>
-                <Select
-                  value={requestChannel}
-                  onValueChange={(value) =>
-                    onRequestChannelChange((value as RequestChannel) ?? "portal")
-                  }
-                >
-                  <SelectTrigger className="w-full">
-                    <span className="truncate">
-                      {requestChannelLabelByValue[requestChannel] ?? "Portal"}
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="portal">Portal</SelectItem>
-                    <SelectItem value="email">Email</SelectItem>
-                    <SelectItem value="teams">Teams</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                  Supporting note
-                </label>
-                <Textarea
-                  className="min-h-[120px] resize-none"
-                  placeholder="Optional context for procurement reviewers"
-                  value={note}
-                  onChange={(event) => onNoteChange(event.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-3">
-              <p className="rounded-md border bg-background/60 px-3 py-2 text-xs text-muted-foreground">
-                Tip: include quantity, budget, and required-by date in source text to
-                skip most manual edits.
+          <div className="space-y-4 rounded-[var(--layout-outer-radius)] border bg-background p-[var(--layout-inner-padding)]">
+            <div>
+              <p className="text-sm font-medium">Request metadata</p>
+              <p className="text-xs text-muted-foreground">
+                Add only the context that helps extraction. Everything else can be reviewed in the next step.
               </p>
-
-              <Button onClick={onExtract} disabled={processing} className="w-full" size="lg">
-                {processing ? "Extracting..." : extractionButtonLabel}
-              </Button>
             </div>
+
+            <div className="space-y-1">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Request channel
+              </p>
+              <Select
+                value={requestChannel}
+                onValueChange={(value) =>
+                  onRequestChannelChange((value as RequestChannel) ?? "portal")
+                }
+              >
+                <SelectTrigger className="w-full rounded-[var(--layout-inner-radius)] bg-background">
+                  <span className="truncate">
+                    {requestChannelLabelByValue[requestChannel] ?? "Portal"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="portal">Portal</SelectItem>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="teams">Teams</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Supporting note
+              </p>
+              <Textarea
+                className="min-h-[96px] resize-none rounded-[var(--layout-inner-radius)] bg-background"
+                placeholder="Optional context for procurement reviewers"
+                value={note}
+                onChange={(event) => onNoteChange(event.target.value)}
+              />
+            </div>
+
+            <Alert className="rounded-[var(--layout-inner-radius)]">
+              Tip: include quantity, budget, and required-by date in the source to skip most manual edits.
+            </Alert>
           </div>
         </div>
       </CardContent>

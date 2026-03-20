@@ -109,9 +109,16 @@ export const chainIqApi = {
     parseText(body: ParseTextRequest) {
       return requestJson<ParseResponse>("org", "/api/parse/text", jsonBody(body))
     },
-    parseFile(file: File | Blob, filename = "upload.bin") {
+    parseFile(
+      file: File | Blob,
+      filename = "upload.bin",
+      options?: { contextText?: string },
+    ) {
       const formData = new FormData()
       formData.append("file", file, filename)
+      if (options?.contextText?.trim()) {
+        formData.append("context_text", options.contextText.trim())
+      }
 
       return requestJson<ParseResponse>("org", "/api/parse/file", {
         method: "POST",

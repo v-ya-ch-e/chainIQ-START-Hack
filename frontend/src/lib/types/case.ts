@@ -352,7 +352,7 @@ export interface DashboardPageData {
 
 export type IntakeSourceType = "paste" | "upload" | "manual"
 
-export type IntakeFlowStep = "input" | "processing" | "complete" | "review" | "created"
+export type IntakeFlowStep = "input" | "complete" | "review" | "created"
 
 export type IntakeFieldStatus =
   | "confident"

@@ -3,10 +3,11 @@
 import type { ChangeEvent, ReactNode } from "react"
 
 import { FieldStatusBadge } from "@/components/case-intake/field-status-badge"
+import { SourceReferenceCard } from "@/components/case-intake/source-reference-card"
 import { Alert } from "@/components/ui/alert"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import { DateMenuInput } from "@/components/ui/date-menu-input"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -21,19 +22,21 @@ import type {
   CategoryOption,
   ExtractionWarning,
   IntakeFieldMeta,
+  IntakeSourceType,
   RequestChannel,
 } from "@/lib/types/case"
 
 interface CompletionStepProps {
   draft: CaseDraftPayload
   sourceText: string
+  mode: IntakeSourceType
+  selectedFile?: File | null
+  note?: string
   categories: CategoryOption[]
   fieldStatus: Partial<Record<keyof CaseDraftPayload, IntakeFieldMeta>>
   warnings: ExtractionWarning[]
   missingRequired: Array<keyof CaseDraftPayload>
   onDraftChange: (patch: Partial<CaseDraftPayload>) => void
-  onBack: () => void
-  onContinue: () => void
 }
 
 function parseNumber(value: string): number | null {
@@ -52,13 +55,14 @@ function statusForField(
 export function CompletionStep({
   draft,
   sourceText,
+  mode,
+  selectedFile,
+  note,
   categories,
   fieldStatus,
   warnings,
   missingRequired,
   onDraftChange,
-  onBack,
-  onContinue,
 }: CompletionStepProps) {
   const missingSet = new Set(missingRequired)
   const selectedCategoryId = draft.categoryId ? String(draft.categoryId) : ""
@@ -92,7 +96,7 @@ export function CompletionStep({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 animate-intake-stage-in">
       {warnings.map((warning, index) => (
         <Alert
           key={`${warning.code}-${index}`}
@@ -102,32 +106,20 @@ export function CompletionStep({
         </Alert>
       ))}
 
-      <Card className="border-muted bg-muted/20">
-        <CardContent className="flex flex-wrap items-center gap-2 pt-4 text-xs text-muted-foreground">
-          <span className="rounded-md border bg-background px-2 py-1">
-            Filled from extraction: {Object.keys(fieldStatus).length}
-          </span>
-          <span className="rounded-md border bg-background px-2 py-1">
-            Needs completion: {missingRequired.length}
-          </span>
-          <span className="rounded-md border bg-background px-2 py-1">
-            Warnings: {warnings.length}
-          </span>
-        </CardContent>
-      </Card>
+      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+        <span className="rounded-full border bg-background px-2.5 py-1">
+          Extracted fields {Object.keys(fieldStatus).length}
+        </span>
+        <span className="rounded-full border bg-background px-2.5 py-1">
+          Missing required {missingRequired.length}
+        </span>
+        <span className="rounded-full border bg-background px-2.5 py-1">
+          Warnings {warnings.length}
+        </span>
+      </div>
 
-      <div className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
-        <Card className="h-fit xl:sticky xl:top-4">
-          <CardHeader>
-            <CardTitle>Source input</CardTitle>
-            <CardDescription>Keep this visible while you complete fields.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Textarea value={sourceText} readOnly className="min-h-[420px]" />
-          </CardContent>
-        </Card>
-
-        <Card className="border-muted">
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.72fr)]">
+        <Card className="rounded-[var(--layout-inner-radius)] border-muted ring-0">
           <CardHeader>
             <CardTitle>Complete structured case</CardTitle>
             <CardDescription>
@@ -267,10 +259,9 @@ export function CompletionStep({
               />
 
               <FieldLabel label="Required by date" missing={missingSet.has("requiredByDate")} status={statusForField(fieldStatus, "requiredByDate")} />
-              <Input
-                type="date"
+              <DateMenuInput
                 value={draft.requiredByDate}
-                onChange={(event) => handleInput("requiredByDate", event.target.value)}
+                onChange={(value) => handleInput("requiredByDate", value)}
               />
 
               <FieldLabel label="Delivery countries (comma separated)" missing={false} status={statusForField(fieldStatus, "deliveryCountries")} />
@@ -346,13 +337,17 @@ export function CompletionStep({
             </SectionCard>
           </CardContent>
         </Card>
-      </div>
 
-      <div className="sticky bottom-0 z-10 flex items-center justify-between rounded-lg border bg-card/95 p-3 backdrop-blur-sm">
-        <Button variant="outline" onClick={onBack}>
-          Back
-        </Button>
-        <Button onClick={onContinue}>Review case</Button>
+        <SourceReferenceCard
+          mode={mode}
+          sourceText={sourceText}
+          selectedFile={selectedFile}
+          note={note}
+          sticky
+          compact
+          title="Source context"
+          description="Keep the original material nearby while you complete the draft."
+        />
       </div>
     </div>
   )
@@ -374,7 +369,7 @@ function SectionCard({
   children: ReactNode
 }) {
   return (
-    <div className="space-y-3 rounded-lg border bg-muted/15 p-3">
+    <div className="space-y-3 rounded-[var(--layout-inner-radius)] border bg-muted/15 p-[var(--layout-inner-padding)]">
       <SectionTitle title={title} />
       {children}
     </div>

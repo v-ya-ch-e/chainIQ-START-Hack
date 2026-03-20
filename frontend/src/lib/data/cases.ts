@@ -1848,7 +1848,7 @@ type ExtractionResponse = {
   extraction_strength: "strong" | "partial" | "low"
 }
 
-type ParseFileResponse = {
+type ParseResponse = {
   complete: boolean
   request: Record<string, unknown>
 }
@@ -1939,6 +1939,14 @@ async function extractViaIntakeApi(
   fallbackDraft: CaseDraftPayload,
   fallbackUsed: boolean,
 ): Promise<ExtractionResult> {
+  console.info("[extractCaseInput] calling /api/intake/extract", {
+    sourceType: payload.sourceType,
+    sourceTextLength: payload.sourceText.length,
+    noteLength: payload.note?.length ?? 0,
+    requestChannel: payload.requestChannel ?? null,
+    fileNames: payload.files?.map((file) => file.name) ?? [],
+    fallbackUsed,
+  })
   const response = await fetchMutation<ExtractionResponse>("/api/intake/extract", {
     method: "POST",
     body: JSON.stringify({
@@ -1950,13 +1958,20 @@ async function extractViaIntakeApi(
     }),
   })
 
+  console.info("[extractCaseInput] /api/intake/extract response", {
+    extractionStrength: response.extraction_strength,
+    missingRequiredCount: response.missing_required.length,
+    warningCodes: response.warnings.map((warning) => warning.code),
+    draftKeys: Object.keys(response.draft),
+  })
+
   return normalizeIntakeResponse(response, fallbackDraft, fallbackUsed)
 }
 
-function mapParsedUploadDraft(
+function mapParsedDraft(
   payload: CaseIntakeInput,
   fallbackDraft: CaseDraftPayload,
-  parseResponse: ParseFileResponse,
+  parseResponse: ParseResponse,
 ): ExtractionResult {
   const parsed = parseResponse.request ?? {}
   const categoryL1 =
@@ -2094,9 +2109,9 @@ function mapParsedUploadDraft(
       confidence: hasValue ? (hasDirectParsedValue ? 0.9 : 0.65) : 0,
       reason: hasValue
         ? hasDirectParsedValue
-          ? "Directly extracted from uploaded file."
+          ? "Directly extracted by the parser."
           : "Derived using defaults or intake metadata."
-        : "Value not found in uploaded content.",
+        : "Value not found in parser output.",
     }
   }
 
@@ -2119,19 +2134,58 @@ export async function extractCaseInput(
   payload: CaseIntakeInput,
 ): Promise<ExtractionResult> {
   const fallbackDraft = defaultDraftFromIntake(payload)
+  console.info("[extractCaseInput] started", {
+    sourceType: payload.sourceType,
+    sourceTextLength: payload.sourceText.length,
+    fileCount: payload.files?.length ?? 0,
+    requestChannel: payload.requestChannel ?? null,
+  })
   if (payload.sourceType === "upload") {
     if (!payload.files || payload.files.length === 0) {
+      console.warn("[extractCaseInput] upload branch aborted: no files")
       throw new Error("Please select a file before analyzing upload input.")
     }
     try {
+      const uploadContextText = payload.sourceText.trim() || undefined
+      console.info("[extractCaseInput] upload branch calling parseFile", {
+        fileName: payload.files[0].name,
+        fileType: payload.files[0].type,
+        fileSize: payload.files[0].size,
+        contextTextLength: uploadContextText?.length ?? 0,
+      })
       const parsed = (await chainIqApi.parse.parseFile(
         payload.files[0],
         payload.files[0].name,
-      )) as ParseFileResponse
-      return mapParsedUploadDraft(payload, fallbackDraft, parsed)
-    } catch {
+        uploadContextText ? { contextText: uploadContextText } : undefined,
+      )) as ParseResponse
+      console.info("[extractCaseInput] parseFile response", {
+        complete: parsed.complete,
+        requestKeys: Object.keys(parsed.request ?? {}),
+      })
+      const mapped = mapParsedDraft(payload, fallbackDraft, parsed)
+      console.info("[extractCaseInput] upload parse mapped", {
+        extractionStrength: mapped.extractionStrength,
+        missingRequiredCount: mapped.missingRequired.length,
+        draftPreview: {
+          title: mapped.draft.title,
+          categoryId: mapped.draft.categoryId,
+          currency: mapped.draft.currency,
+          budgetAmount: mapped.draft.budgetAmount,
+          quantity: mapped.draft.quantity,
+        },
+      })
+      return mapped
+    } catch (parseError) {
+      console.warn("[extractCaseInput] parseFile failed, falling back", {
+        error: parseError,
+      })
       try {
         const heuristicResult = await extractViaIntakeApi(payload, fallbackDraft, true)
+        console.info("[extractCaseInput] upload fallback succeeded", {
+          extractionStrength: heuristicResult.extractionStrength,
+          missingRequiredCount: heuristicResult.missingRequired.length,
+          warningCodes: heuristicResult.warnings.map((warning) => warning.code),
+        })
         return {
           ...heuristicResult,
           warnings: [
@@ -2144,7 +2198,10 @@ export async function extractCaseInput(
             ...heuristicResult.warnings,
           ],
         }
-      } catch {
+      } catch (fallbackError) {
+        console.error("[extractCaseInput] upload fallback failed", {
+          error: fallbackError,
+        })
         return {
           draft: fallbackDraft,
           fieldStatus: {
@@ -2171,28 +2228,77 @@ export async function extractCaseInput(
   }
 
   try {
-    return await extractViaIntakeApi(payload, fallbackDraft, false)
-  } catch {
-    return {
-      draft: fallbackDraft,
-      fieldStatus: {
-        requestText: {
-          status: payload.sourceText.trim() ? "inferred" : "missing",
-          confidence: payload.sourceText.trim() ? 0.7 : 0,
-          reason: "Fallback extraction used because intake API is unavailable.",
-        },
+    console.info("[extractCaseInput] text/manual branch calling parseText", {
+      sourceTextPreview: payload.sourceText.slice(0, 120),
+    })
+    const parsed = (await chainIqApi.parse.parseText({
+      text: payload.sourceText,
+    })) as ParseResponse
+    console.info("[extractCaseInput] parseText response", {
+      complete: parsed.complete,
+      requestKeys: Object.keys(parsed.request ?? {}),
+    })
+    const result = mapParsedDraft(payload, fallbackDraft, parsed)
+    console.info("[extractCaseInput] text/manual parser mapping succeeded", {
+      extractionStrength: result.extractionStrength,
+      missingRequiredCount: result.missingRequired.length,
+      draftPreview: {
+        title: result.draft.title,
+        categoryId: result.draft.categoryId,
+        currency: result.draft.currency,
+        budgetAmount: result.draft.budgetAmount,
+        quantity: result.draft.quantity,
       },
-      missingRequired: computeMissingRequiredFields(fallbackDraft),
-      warnings: [
-        {
-          code: "INTAKE_FALLBACK",
-          severity: "medium",
-          message:
-            "Extraction service is unavailable. Continue with manual completion.",
+    })
+    return result
+  } catch (error) {
+    console.warn("[extractCaseInput] parseText failed, falling back to heuristic intake route", {
+      error,
+    })
+    try {
+      const heuristicResult = await extractViaIntakeApi(payload, fallbackDraft, true)
+      console.info("[extractCaseInput] heuristic fallback after parseText succeeded", {
+        extractionStrength: heuristicResult.extractionStrength,
+        missingRequiredCount: heuristicResult.missingRequired.length,
+        warningCodes: heuristicResult.warnings.map((warning) => warning.code),
+      })
+      return {
+        ...heuristicResult,
+        warnings: [
+          {
+            code: "PARSE_TEXT_FALLBACK",
+            severity: "medium",
+            message:
+              "Anthropic extraction failed. Applied heuristic extraction fallback.",
+          },
+          ...heuristicResult.warnings,
+        ],
+      }
+    } catch (fallbackError) {
+      console.error("[extractCaseInput] text/manual heuristic fallback failed", {
+        error: fallbackError,
+      })
+      return {
+        draft: fallbackDraft,
+        fieldStatus: {
+          requestText: {
+            status: payload.sourceText.trim() ? "inferred" : "missing",
+            confidence: payload.sourceText.trim() ? 0.7 : 0,
+            reason: "Fallback extraction used because parser and intake API are unavailable.",
+          },
         },
-      ],
-      extractionStrength: "low",
-      fallbackUsed: true,
+        missingRequired: computeMissingRequiredFields(fallbackDraft),
+        warnings: [
+          {
+            code: "INTAKE_FALLBACK",
+            severity: "medium",
+            message:
+              "Extraction service is unavailable. Continue with manual completion.",
+          },
+        ],
+        extractionStrength: "low",
+        fallbackUsed: true,
+      }
     }
   }
 }

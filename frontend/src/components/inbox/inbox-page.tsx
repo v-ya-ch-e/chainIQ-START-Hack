@@ -4,6 +4,7 @@ import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import {
   memo,
+  type CSSProperties,
   useCallback,
   useDeferredValue,
   useLayoutEffect,
@@ -428,14 +429,25 @@ export function InboxPage({
   return (
     <div className="space-y-6">
       <Dialog open={newRequestOpen} onOpenChange={setNewRequestOpen}>
-        <DialogContent className="w-[min(100vw-2rem,80rem)] max-w-none p-0" showCloseButton={false}>
-          <DialogHeader className="border-b px-5 py-4">
+        <DialogContent
+          className="flex h-[min(100svh-2.5rem,44rem)] w-[min(100vw-2rem,64rem)] max-w-none flex-col overflow-hidden rounded-[var(--layout-outer-radius)] p-0 shadow-none"
+          style={
+            {
+              "--layout-inner-padding": "0.875rem",
+              "--layout-inner-radius": "1.125rem",
+              "--layout-outer-radius":
+                "calc(var(--layout-inner-radius) + var(--layout-inner-padding))",
+            } as CSSProperties
+          }
+          showCloseButton={false}
+        >
+          <DialogHeader className="border-b px-4 py-3">
             <DialogTitle>New Sourcing Case</DialogTitle>
             <DialogDescription>
               Provide messy input and progressively structure it before creation.
             </DialogDescription>
           </DialogHeader>
-          <DialogBody className="max-h-[calc(100svh-9rem)] overflow-y-auto p-5">
+          <DialogBody className="min-h-0 flex-1 overflow-hidden p-[var(--layout-inner-padding)]">
             {newRequestOpen ? <CaseIntakeWizard embedded /> : null}
           </DialogBody>
         </DialogContent>
