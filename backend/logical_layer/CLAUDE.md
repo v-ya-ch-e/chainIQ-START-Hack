@@ -64,8 +64,19 @@ The following critical bugs were identified and fixed via code review + runtime 
 | Confidence always 0 for blocking | `_compute_confidence` returned 0 immediately | Now applies -25 per blocking escalation (graded, not binary) |
 | `has_contradictions` too broad | Included `policy_conflict` type | Only checks `contradictory` type now |
 
+## Bugs Fixed (2026-03-20)
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| False positive contradictions (e.g. REQ-000001) | VAL-006 (custom_llm rule) had a vague 1-line prompt that hijacked contradiction detection, bypassing the detailed `VALIDATION_SYSTEM_PROMPT`. Generic `LLMRuleResponse` model let the LLM hallucinate issues. | Always use direct LLM path with detailed prompt + constrained `LLMValidationResult` schema. VAL-006 deactivated. |
+| Non-deterministic LLM responses across calls | No `temperature` parameter set on LLM calls — used API default which includes randomness. | Added `temperature=0` to the validation LLM call for deterministic results. |
+| Generic "LLM detected contradictions" with no details | VAL-006's `fail_message_template` was static — actual contradiction descriptions from the LLM were lost. | Direct LLM path preserves each contradiction's specific `description` and `field`, logged individually to audit trail. |
+| Missing audit trail for contradiction check outcome | No audit entry when LLM found zero contradictions (the expected case). | Added explicit audit log for both zero-contradiction and N-contradiction outcomes. |
+
 ## Key Design Decisions
 
 - **ER-009 and ER-010 are not in the challenge spec** (ER-001–008 only). They are custom rules added for additional coverage but must remain non-blocking to avoid overriding the spec's escalation semantics.
 - **Risk score threshold of 70** allows more suppliers into the compliant set while still excluding genuinely high-risk non-preferred suppliers.
 - **Confidence scoring** uses graded penalties: -25 per blocking escalation, -10 per non-blocking, -15/10/5/2 per validation issue severity. This provides meaningful differentiation even when blocking issues exist.
+- **LLM contradiction detection uses direct path only** — the `VALIDATION_SYSTEM_PROMPT` in `validate.py` is the single source of truth for contradiction detection prompt engineering. The dynamic rule `VAL-006` is deprecated/inactive. This avoids the prompt quality split between the rule engine's generic model and the purpose-built `LLMValidationResult` schema.
+- **temperature=0 for validation LLM calls** ensures deterministic contradiction detection across repeated pipeline runs on the same request. The `LLMClient.structured_call` accepts an optional `temperature` parameter.

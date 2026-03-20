@@ -147,3 +147,10 @@ The pipeline uses a dynamic rules engine (`backend/logical_layer/app/pipeline/ru
 - **Confidence scoring**: Graded (-25/blocking, -10/non-blocking) — never immediately zero.
 - **`has_contradictions`**: Only checks `contradictory` validation issues, NOT `policy_conflict`.
 - **Migration idempotency**: `migrate_dynamic_rules.py` uses `ON DUPLICATE KEY UPDATE` to update existing rules.
+
+### LLM Contradiction Detection
+
+- **Direct LLM path only**: Contradiction detection always uses the `VALIDATION_SYSTEM_PROMPT` in `validate.py` with the `LLMValidationResult` Pydantic model. The dynamic rule `VAL-006` (custom_llm) is deprecated and inactive — its vague prompt caused false positives.
+- **temperature=0**: Validation LLM calls use `temperature=0` for deterministic results across identical pipeline runs.
+- **Each contradiction preserves its description**: Individual contradictions from the LLM are logged as separate audit entries with specific field/description, visible in the frontend decision timeline.
+- **Conservative prompt**: The system prompt explicitly lists what IS NOT a contradiction (approximations, omissions, rounding, different wording for same value) to minimize false positives.

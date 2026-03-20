@@ -31,21 +31,34 @@ STEP_NAME = "validate_request"
 
 VALIDATION_SYSTEM_PROMPT = """You are a procurement validation assistant. You receive a purchase request with both free-text and structured fields. Your job is to find CONTRADICTIONS between the text and the structured data, and to extract any explicit requester instructions.
 
-RULES:
-1. Only flag two issue types: "missing_info" and "contradictory"
-2. A contradiction exists ONLY when:
-   - Quantity in text differs from the quantity field
-   - Budget in text differs from the budget_amount field
-   - Date in text differs from the required_by_date field
-   - Currency in text differs from the currency field
-   - Category in text clearly doesn't match category_l1/category_l2
-3. These are NOT contradictions:
-   - preferred_supplier_mentioned vs incumbent_supplier (intentionally different)
-   - Urgency language without a specific date
-   - Policy concerns expressed in text
-4. Be CONSERVATIVE. When in doubt, do NOT flag.
+RULES — read ALL of them before responding:
+
+1. Only flag issue type "contradictory". Do NOT flag "missing_info" — that is handled deterministically.
+
+2. A contradiction exists ONLY when a SPECIFIC VALUE in the text DIRECTLY CONFLICTS with the corresponding structured field:
+   - Quantity in text states a DIFFERENT number than the quantity field (e.g., text says "200 units" but field says 400)
+   - Budget in text states a DIFFERENT amount than budget_amount (e.g., text says "EUR 50,000" but field says 100000)
+   - Date in text states a DIFFERENT date than required_by_date
+   - Currency in text states a DIFFERENT currency than the currency field
+   - Category described in text is clearly incompatible with category_l1/category_l2
+
+3. These are EXPLICITLY NOT contradictions — do NOT flag them:
+   - "approximately X" or "around X" or "roughly X" matching the exact value X in the field (approximations are normal)
+   - preferred_supplier_mentioned vs incumbent_supplier being different (these are intentionally separate fields)
+   - Urgency language (e.g., "ASAP", "urgent") without stating a specific conflicting date
+   - Policy concerns, preferences, or conditions expressed in text (e.g., "if commercially competitive")
+   - Budget stated in text matching the budget_amount field (even if worded differently)
+   - The text not mentioning every structured field (omission is not contradiction)
+   - Rounding differences (e.g., text says "400,000" and field says 400000.00)
+   - Unit of measure described differently but meaning the same thing
+
+4. Be MAXIMALLY CONSERVATIVE. If there is ANY doubt, do NOT flag it. A false positive is far worse than a false negative.
+
 5. The request_text may be in any language (en, fr, de, es, pt, ja). Analyze it in its original language.
-6. Extract any explicit requester instruction (e.g., "no exception", "single supplier only", "must use X").
+
+6. Extract any explicit requester instruction (e.g., "no exception", "single supplier only", "must use X", "prefer X if competitive").
+
+7. If you find ZERO contradictions, return an empty contradictions list. This is the expected outcome for most well-formed requests.
 """
 
 
@@ -136,15 +149,16 @@ async def validate_request(
             issues, completeness = _deterministic_checks(fetch_result, budget, quantity, days_until)
 
         # ── Phase B: LLM contradiction detection ─────────────
+        # Always use direct LLM call with the detailed VALIDATION_SYSTEM_PROMPT.
+        # The rule engine's generic LLMRuleResponse + short prompt caused false
+        # positives (VAL-006). Direct path uses the constrained LLMValidationResult
+        # schema and temperature=0 for deterministic results.
 
         llm_used = False
         llm_fallback = False
         requester_instruction: str | None = None
 
-        llm_rules = [r for r in (dynamic_rules or []) if r.get("eval_type") == "custom_llm"]
-        use_direct_llm = not llm_rules  # Use direct LLM call if no custom_llm rules
-
-        if use_direct_llm and llm_client and req.request_text:
+        if llm_client and req.request_text:
             llm_used = True
             user_prompt = _build_validation_prompt(req, budget, quantity)
             llm_result, fallback = await llm_client.structured_call(
@@ -152,6 +166,7 @@ async def validate_request(
                 user_prompt=user_prompt,
                 response_model=LLMValidationResult,
                 max_tokens=1500,
+                temperature=0,
             )
 
             if fallback or llm_result is None:
@@ -162,6 +177,26 @@ async def validate_request(
                 )
             else:
                 requester_instruction = llm_result.requester_instruction
+                # #region agent log
+                import json as _json
+                _log_path = "/tmp/debug-ceb625.log"
+                try:
+                    with open(_log_path, "a") as _f:
+                        _f.write(_json.dumps({"sessionId": "ceb625", "location": "validate.py:phase_b", "message": "LLM contradiction result", "data": {"request_id": req.request_id, "contradictions_count": len(llm_result.contradictions), "contradictions": [c.model_dump() for c in llm_result.contradictions], "requester_instruction": requester_instruction, "path": "direct_llm"}, "timestamp": __import__("time").time()}) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                if llm_result.contradictions:
+                    pipeline_logger.audit(
+                        "validation", "info", STEP_NAME,
+                        f"LLM contradiction check: {len(llm_result.contradictions)} issue(s) found.",
+                        {"contradictions": [c.model_dump() for c in llm_result.contradictions]},
+                    )
+                else:
+                    pipeline_logger.audit(
+                        "validation", "info", STEP_NAME,
+                        "LLM contradiction check: no contradictions found between text and structured fields.",
+                    )
                 for contradiction in llm_result.contradictions:
                     issues.append(ValidationIssue(
                         severity=contradiction.severity,
@@ -170,21 +205,6 @@ async def validate_request(
                         description=contradiction.description,
                         action_required="Review and resolve the contradiction before proceeding.",
                     ))
-
-        elif llm_rules and rule_engine and req.request_text:
-            llm_used = True
-            context = _build_request_context(fetch_result)
-            llm_results = await rule_engine.evaluate_rules(llm_rules, context)
-            for rr in llm_results:
-                if rr.result == "failed":
-                    issues.append(ValidationIssue(
-                        severity=rr.severity,
-                        type="contradictory",
-                        description=rr.message,
-                        action_required="Review and resolve the contradiction before proceeding.",
-                    ))
-                elif rr.result == "error" or rr.result == "skipped":
-                    llm_fallback = True
 
         # ── Policy conflict: requester single-supplier vs AT-002 ─────
         # When requester says "no exception" / "single supplier" but tier requires 2+ quotes
