@@ -191,6 +191,12 @@ export interface RecommendationSummary {
   policyNote?: string | null
   quotesRequired: number
   complianceStatus: string
+  confidenceScore?: number | null
+  supplierCount?: number
+  excludedCount?: number
+  escalationCount?: number
+  blockingEscalationCount?: number
+  hasPipelineResult?: boolean
 }
 
 export interface AuditTimelineEvent {
@@ -352,7 +358,7 @@ export interface DashboardPageData {
 
 export type IntakeSourceType = "paste" | "upload" | "manual"
 
-export type IntakeFlowStep = "input" | "processing" | "complete" | "review" | "created"
+export type IntakeFlowStep = "input" | "complete" | "review" | "created"
 
 export type IntakeFieldStatus =
   | "confident"

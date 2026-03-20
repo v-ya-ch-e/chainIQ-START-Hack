@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from datetime import datetime, timezone
 
 import anthropic
 
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
+logger = logging.getLogger(__name__)
 
 CANONICAL_SCHEMA: dict[str, object] = {
     "request_id": None,
@@ -124,7 +126,9 @@ def _anthropic_client() -> anthropic.Anthropic:
     """Create Anthropic client with explicit key validation."""
     api_key = (os.getenv("ANTHROPIC_API_KEY") or "").strip()
     if not api_key:
+        logger.error("request_parser missing ANTHROPIC_API_KEY")
         raise ValueError("ANTHROPIC_API_KEY is missing in organisational-layer environment")
+    logger.info("request_parser creating Anthropic client model=%s", ANTHROPIC_MODEL)
     return anthropic.Anthropic(api_key=api_key)
 
 
@@ -154,6 +158,7 @@ def _extract_json(raw: str) -> dict:
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:
+        logger.error("request_parser response did not contain JSON")
         raise ValueError("No JSON object found in LLM response")
     return json.loads(raw[start:end])
 
@@ -178,7 +183,13 @@ def _fill_from_request_text(data: dict) -> dict:
 
     missing = _find_missing_fields(data)
     if not missing:
+        logger.info("request_parser fill_from_request_text skipped no missing fields")
         return data
+    logger.info(
+        "request_parser fill_from_request_text starting request_text_length=%s missing_fields=%s",
+        len(request_text),
+        missing,
+    )
 
     client = _anthropic_client()
     user_content = json.dumps({
@@ -194,6 +205,10 @@ def _fill_from_request_text(data: dict) -> dict:
     )
 
     extracted = _extract_json(response.content[0].text)
+    logger.info(
+        "request_parser fill_from_request_text extracted keys=%s",
+        list(extracted.keys()),
+    )
 
     for field in missing:
         val = extracted.get(field)
@@ -205,6 +220,10 @@ def _fill_from_request_text(data: dict) -> dict:
 
 def _convert_unstructured(content: str) -> dict:
     """Use Anthropic to convert unstructured text content to the target schema."""
+    logger.info(
+        "request_parser convert_unstructured starting content_length=%s",
+        len(content),
+    )
     client = _anthropic_client()
 
     response = client.messages.create(
@@ -214,14 +233,54 @@ def _convert_unstructured(content: str) -> dict:
         messages=[{"role": "user", "content": content}],
     )
 
-    return _extract_json(response.content[0].text)
+    parsed = _extract_json(response.content[0].text)
+    logger.info(
+        "request_parser convert_unstructured parsed keys=%s",
+        list(parsed.keys()),
+    )
+    return parsed
 
 
-def _convert_binary(file_bytes: bytes, media_type: str) -> dict:
+def _convert_binary(
+    file_bytes: bytes,
+    media_type: str,
+    context_text: str | None = None,
+) -> dict:
     """Send a binary file (PDF, image, etc.) directly to Anthropic."""
+    normalized_context_text = context_text.strip() if context_text else None
+    logger.info(
+        "request_parser convert_binary starting media_type=%s size=%s context_text_length=%s",
+        media_type,
+        len(file_bytes),
+        len(normalized_context_text) if normalized_context_text else 0,
+    )
     client = _anthropic_client()
 
     block_type = "image" if media_type.startswith("image/") else "document"
+    content_blocks = [
+        {
+            "type": block_type,
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": base64.standard_b64encode(file_bytes).decode("ascii"),
+            },
+        },
+        {
+            "type": "text",
+            "text": "Extract the purchase request from this document.",
+        },
+    ]
+    if normalized_context_text:
+        content_blocks.append(
+            {
+                "type": "text",
+                "text": (
+                    "Additional requester context that may clarify the document:\n"
+                    f"{normalized_context_text}"
+                ),
+            }
+        )
 
     response = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -229,24 +288,16 @@ def _convert_binary(file_bytes: bytes, media_type: str) -> dict:
         system=CONVERT_SYSTEM_PROMPT,
         messages=[{
             "role": "user",
-            "content": [
-                {
-                    "type": block_type,
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": base64.standard_b64encode(file_bytes).decode("ascii"),
-                    },
-                },
-                {
-                    "type": "text",
-                    "text": "Extract the purchase request from this document.",
-                },
-            ],
+            "content": content_blocks,
         }],
     )
 
-    return _extract_json(response.content[0].text)
+    parsed = _extract_json(response.content[0].text)
+    logger.info(
+        "request_parser convert_binary parsed keys=%s",
+        list(parsed.keys()),
+    )
+    return parsed
 
 
 def _is_complete(data: dict) -> bool:
@@ -267,6 +318,7 @@ def create_request(
     *,
     file_bytes: bytes | None = None,
     media_type: str | None = None,
+    context_text: str | None = None,
 ) -> dict:
     """Convert text or a binary document into a structured purchase request.
 
@@ -275,16 +327,26 @@ def create_request(
 
     Returns ``{"complete": bool, "request": dict}``.
     """
+    logger.info(
+        "request_parser create_request called has_file_content=%s has_file_bytes=%s media_type=%s has_context_text=%s",
+        file_content is not None,
+        file_bytes is not None,
+        media_type,
+        bool(context_text and context_text.strip()),
+    )
     if file_bytes is not None and media_type is not None:
-        data = _convert_binary(file_bytes, media_type)
+        data = _convert_binary(file_bytes, media_type, context_text)
     elif file_content is not None:
         try:
             data = json.loads(file_content)
             if not isinstance(data, dict):
                 raise ValueError("Top-level value is not a JSON object")
+            logger.info("request_parser detected JSON input payload")
         except (json.JSONDecodeError, ValueError):
+            logger.info("request_parser treating input as unstructured text")
             data = _convert_unstructured(file_content)
     else:
+        logger.error("request_parser called without valid input")
         raise ValueError("Provide either file_content or file_bytes + media_type")
 
     data = _ensure_schema(data)
@@ -293,7 +355,17 @@ def create_request(
     if not data.get("created_at"):
         data["created_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    complete = _is_complete(data)
+    logger.info(
+        "request_parser create_request completed complete=%s category_l1=%r category_l2=%r currency=%r budget_amount=%r quantity=%r",
+        complete,
+        data.get("category_l1"),
+        data.get("category_l2"),
+        data.get("currency"),
+        data.get("budget_amount"),
+        data.get("quantity"),
+    )
     return {
-        "complete": _is_complete(data),
+        "complete": complete,
         "request": data,
     }

@@ -129,6 +129,13 @@ function extractionStrength(missingRequiredCount: number, confidentFieldsCount: 
 export async function POST(request: Request) {
   const body = (await request.json()) as IntakeRequestBody
   const sourceText = (body.source_text ?? "").trim()
+  console.info("[/api/intake/extract] request received", {
+    sourceType: body.source_type ?? null,
+    sourceTextLength: sourceText.length,
+    requestChannel: body.request_channel ?? null,
+    noteLength: body.note?.length ?? 0,
+    fileNames: body.file_names ?? [],
+  })
   const lines = sourceText
     .split("\n")
     .map((line) => line.trim())
@@ -138,6 +145,12 @@ export async function POST(request: Request) {
   const country = extractCountry(sourceText) ?? "CH"
   const categoryPair = inferCategoryPair(sourceText)
   const categoryId = await resolveCategoryId(categoryPair, request)
+  console.info("[/api/intake/extract] inference summary", {
+    title,
+    country,
+    categoryPair,
+    categoryId,
+  })
   const draft = {
     title,
     requestText: sourceText,
@@ -263,6 +276,21 @@ export async function POST(request: Request) {
   const confidentFieldsCount = Object.values(fieldStatus).filter((entry) =>
     entry.status === "confident" || entry.status === "inferred",
   ).length
+
+  console.info("[/api/intake/extract] response summary", {
+    extractionStrength: extractionStrength(missing_required.length, confidentFieldsCount),
+    missingRequiredCount: missing_required.length,
+    missingRequired: missing_required,
+    warningCodes: warnings.map((warning) => warning.code),
+    draftPreview: {
+      title: draft.title,
+      categoryId: draft.categoryId,
+      currency: draft.currency,
+      budgetAmount: draft.budgetAmount,
+      quantity: draft.quantity,
+      requiredByDate: draft.requiredByDate,
+    },
+  })
 
   return NextResponse.json({
     draft,

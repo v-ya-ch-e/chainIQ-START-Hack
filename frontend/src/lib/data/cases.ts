@@ -1240,65 +1240,94 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     throw error
   }
 
-  const [overview, awards, escalationRows, auditLogs, auditSummary, evaluationRunsRaw] = await Promise.all([
+  const [overview, awards, escalationRows, auditLogs, auditSummary, evaluationRunsRaw, pipelineResult] = await Promise.all([
     chainIqApi.analytics.requestOverview(caseId) as Promise<RequestOverview>,
     chainIqApi.awards.byRequest(caseId) as Promise<HistoricalAward[]>,
     fetchEscalationRowsByRequest(caseId),
     fetchCaseAuditLogs(caseId),
     fetchCaseAuditSummary(caseId),
     fetchEvaluationRunsByRequest(caseId),
+    chainIqApi.pipelineResults.latest(caseId).catch((): PipelineResultOut | null => null),
   ])
 
-  const pricingBySupplier = new Map(
-    overview.pricing.map((entry) => [entry.supplier_id, entry]),
-  )
+  const pipelineOutput = pipelineResult?.output as Record<string, unknown> | null | undefined
+  const pipelineShortlistRaw = Array.isArray(pipelineOutput?.supplier_shortlist)
+    ? (pipelineOutput.supplier_shortlist as Record<string, unknown>[])
+    : null
+  const pipelineRecommendation = pipelineOutput?.recommendation as Record<string, unknown> | null | undefined
 
-  const shortlist = overview.compliant_suppliers
-    .map((supplier) => {
-      const pricing = pricingBySupplier.get(supplier.supplier_id)
-      if (!pricing) return null
+  let shortlist: SupplierRow[]
 
-      return {
-        supplierId: supplier.supplier_id,
-        supplierName: supplier.supplier_name,
-        countryHq: supplier.country_hq,
-        currency: supplier.currency,
-        preferred: supplier.preferred_supplier,
-        incumbent: supplier.supplier_name === detail.incumbent_supplier,
-        pricingTierApplied: pricing.pricing_id,
-        region: pricing.region,
-        minQuantity: pricing.min_quantity,
-        maxQuantity: pricing.max_quantity,
-        moq: pricing.moq,
-        unitPrice: toNumber(pricing.unit_price) ?? 0,
-        totalPrice: toNumber(pricing.total_price) ?? 0,
-        standardLeadTimeDays: pricing.standard_lead_time_days,
-        expeditedLeadTimeDays: pricing.expedited_lead_time_days,
-        expeditedUnitPrice: toNumber(pricing.expedited_unit_price) ?? 0,
-        expeditedTotal: toNumber(pricing.expedited_total_price) ?? 0,
-        qualityScore: supplier.quality_score,
-        riskScore: supplier.risk_score,
-        esgScore: supplier.esg_score,
-        policyCompliant: true,
-        coversDeliveryCountry: true,
-        dataResidencySupported: supplier.data_residency_supported,
-        recommendationNote:
-          "Eligible supplier after policy and region checks.",
-      }
-    })
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-    .sort((a, b) => a.totalPrice - b.totalPrice)
-    .map((entry, index) => ({ ...entry, rank: index + 1 }))
+  if (pipelineShortlistRaw && pipelineShortlistRaw.length > 0) {
+    shortlist = pipelineShortlistRaw.map((entry, i) =>
+      mapSupplierShortlistEntry(entry, i),
+    )
+  } else {
+    const pricingBySupplier = new Map(
+      overview.pricing.map((entry) => [entry.supplier_id, entry]),
+    )
 
-  const shortlistIds = new Set(shortlist.map((entry) => entry.supplierId))
-  const excludedSuppliers = awards
-    .filter((entry) => !shortlistIds.has(entry.supplier_id) && !entry.awarded)
-    .map((entry) => ({
-      supplierId: entry.supplier_id,
-      supplierName: entry.supplier_name,
-      reason: entry.decision_rationale,
-      hardExclusion: !entry.policy_compliant || entry.escalation_required,
+    shortlist = overview.compliant_suppliers
+      .map((supplier) => {
+        const pricing = pricingBySupplier.get(supplier.supplier_id)
+        if (!pricing) return null
+
+        return {
+          supplierId: supplier.supplier_id,
+          supplierName: supplier.supplier_name,
+          countryHq: supplier.country_hq,
+          currency: supplier.currency,
+          preferred: supplier.preferred_supplier,
+          incumbent: supplier.supplier_name === detail.incumbent_supplier,
+          pricingTierApplied: pricing.pricing_id,
+          region: pricing.region,
+          minQuantity: pricing.min_quantity,
+          maxQuantity: pricing.max_quantity,
+          moq: pricing.moq,
+          unitPrice: toNumber(pricing.unit_price) ?? 0,
+          totalPrice: toNumber(pricing.total_price) ?? 0,
+          standardLeadTimeDays: pricing.standard_lead_time_days,
+          expeditedLeadTimeDays: pricing.expedited_lead_time_days,
+          expeditedUnitPrice: toNumber(pricing.expedited_unit_price) ?? 0,
+          expeditedTotal: toNumber(pricing.expedited_total_price) ?? 0,
+          qualityScore: supplier.quality_score,
+          riskScore: supplier.risk_score,
+          esgScore: supplier.esg_score,
+          policyCompliant: true,
+          coversDeliveryCountry: true,
+          dataResidencySupported: supplier.data_residency_supported,
+          recommendationNote:
+            "Eligible supplier after policy and region checks.",
+        }
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+      .sort((a, b) => a.totalPrice - b.totalPrice)
+      .map((entry, index) => ({ ...entry, rank: index + 1 }))
+  }
+
+  const pipelineExcludedRaw = Array.isArray(pipelineOutput?.suppliers_excluded)
+    ? (pipelineOutput.suppliers_excluded as Array<Record<string, unknown>>)
+    : null
+
+  let excludedSuppliers: CaseDetail["excludedSuppliers"]
+  if (pipelineExcludedRaw && pipelineExcludedRaw.length > 0) {
+    excludedSuppliers = pipelineExcludedRaw.map((entry) => ({
+      supplierId: (entry.supplier_id as string) ?? "",
+      supplierName: (entry.supplier_name as string) ?? "",
+      reason: (entry.reason as string) ?? "Excluded by pipeline",
+      hardExclusion: ((entry.reason as string) ?? "").toLowerCase().includes("restricted"),
     }))
+  } else {
+    const shortlistIds = new Set(shortlist.map((entry) => entry.supplierId))
+    excludedSuppliers = awards
+      .filter((entry) => !shortlistIds.has(entry.supplier_id) && !entry.awarded)
+      .map((entry) => ({
+        supplierId: entry.supplier_id,
+        supplierName: entry.supplier_name,
+        reason: entry.decision_rationale,
+        hardExclusion: !entry.policy_compliant || entry.escalation_required,
+      }))
+  }
 
   const latestRunId = auditLogs.items.length > 0
     ? auditLogs.items.reduce((latest, entry) => {
@@ -1363,13 +1392,27 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
   )
   const hasEscalation = escalations.some((entry) => entry.status !== "resolved")
   const status = normalizeStatus(detail.status)
-  const recommendationStatus = recommendationStatusFrom(
-    hasBlockingValidation || hasBlockingEscalation || shortlist.length === 0,
-    hasEscalation,
-    status,
-  )
 
-  const winner = awards.find((entry) => entry.awarded && entry.award_rank === 1)
+  let recommendationStatus: RecommendationStatus
+  if (pipelineResult?.recommendation_status) {
+    const raw = pipelineResult.recommendation_status
+    if (raw === "proceed" || raw === "proceed_with_conditions" || raw === "cannot_proceed") {
+      recommendationStatus = raw
+    } else {
+      recommendationStatus = recommendationStatusFrom(
+        hasBlockingValidation || hasBlockingEscalation || shortlist.length === 0,
+        hasEscalation,
+        status,
+      )
+    }
+  } else {
+    recommendationStatus = recommendationStatusFrom(
+      hasBlockingValidation || hasBlockingEscalation || shortlist.length === 0,
+      hasEscalation,
+      status,
+    )
+  }
+
   const topSupplier = shortlist[0]
 
   const policyCards = [
@@ -1505,21 +1548,28 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
     recommendation: {
       status: recommendationStatus,
       reason:
-        recommendationStatus === "not_evaluated"
+        pipelineRecommendation?.reason as string ??
+        (recommendationStatus === "not_evaluated"
           ? "This request has not been processed through the pipeline yet."
           : recommendationStatus === "proceed"
             ? "Supplier shortlist satisfies the current policy checks."
-            : "Case requires additional human validation before final award.",
-      recommendedSupplier: winner?.supplier_name ?? topSupplier?.supplierName ?? null,
+            : "Case requires additional human validation before final award."),
+      recommendedSupplier:
+        topSupplier?.supplierName ??
+        (pipelineResult?.summary?.top_supplier_name as string | null) ??
+        null,
       preferredSupplierIfResolved:
+        (pipelineRecommendation?.preferred_supplier_if_resolved as string | null) ??
         overview.compliant_suppliers.find((entry) => entry.preferred_supplier)
           ?.supplier_name ?? null,
       rationale:
-        winner?.decision_rationale ??
+        (pipelineRecommendation?.preferred_supplier_rationale as string | null) ??
         topSupplier?.recommendationNote ??
         "No compliant supplier meets all constraints yet.",
-      totalPrice: winner ? toNumber(winner.total_value) : topSupplier?.totalPrice ?? null,
-      minimumBudgetRequired: topSupplier?.totalPrice ?? null,
+      totalPrice: topSupplier?.totalPrice ?? null,
+      minimumBudgetRequired:
+        toNumber(pipelineRecommendation?.minimum_budget_required as number | null) ??
+        topSupplier?.totalPrice ?? null,
       currency: detail.currency,
       approvalTier: overview.approval_tier?.threshold_id ?? "Threshold unavailable",
       minAmount: toNumber(overview.approval_tier?.min_amount),
@@ -1536,6 +1586,12 @@ export async function getCaseDetail(caseId: string): Promise<CaseDetail | null> 
             : recommendationStatus === "proceed_with_conditions"
               ? "Conditional"
               : "Compliant",
+      confidenceScore: pipelineResult?.summary?.confidence_score ?? null,
+      supplierCount: pipelineResult?.summary?.supplier_count ?? shortlist.length,
+      excludedCount: pipelineResult?.summary?.excluded_count ?? 0,
+      escalationCount: pipelineResult?.summary?.escalation_count ?? escalations.length,
+      blockingEscalationCount: pipelineResult?.summary?.blocking_escalation_count ?? 0,
+      hasPipelineResult: pipelineResult !== null,
     },
     interpretedRequirements,
     validationIssues,
@@ -1848,7 +1904,7 @@ type ExtractionResponse = {
   extraction_strength: "strong" | "partial" | "low"
 }
 
-type ParseFileResponse = {
+type ParseResponse = {
   complete: boolean
   request: Record<string, unknown>
 }
@@ -1939,6 +1995,14 @@ async function extractViaIntakeApi(
   fallbackDraft: CaseDraftPayload,
   fallbackUsed: boolean,
 ): Promise<ExtractionResult> {
+  console.info("[extractCaseInput] calling /api/intake/extract", {
+    sourceType: payload.sourceType,
+    sourceTextLength: payload.sourceText.length,
+    noteLength: payload.note?.length ?? 0,
+    requestChannel: payload.requestChannel ?? null,
+    fileNames: payload.files?.map((file) => file.name) ?? [],
+    fallbackUsed,
+  })
   const response = await fetchMutation<ExtractionResponse>("/api/intake/extract", {
     method: "POST",
     body: JSON.stringify({
@@ -1950,13 +2014,20 @@ async function extractViaIntakeApi(
     }),
   })
 
+  console.info("[extractCaseInput] /api/intake/extract response", {
+    extractionStrength: response.extraction_strength,
+    missingRequiredCount: response.missing_required.length,
+    warningCodes: response.warnings.map((warning) => warning.code),
+    draftKeys: Object.keys(response.draft),
+  })
+
   return normalizeIntakeResponse(response, fallbackDraft, fallbackUsed)
 }
 
-function mapParsedUploadDraft(
+function mapParsedDraft(
   payload: CaseIntakeInput,
   fallbackDraft: CaseDraftPayload,
-  parseResponse: ParseFileResponse,
+  parseResponse: ParseResponse,
 ): ExtractionResult {
   const parsed = parseResponse.request ?? {}
   const categoryL1 =
@@ -2094,9 +2165,9 @@ function mapParsedUploadDraft(
       confidence: hasValue ? (hasDirectParsedValue ? 0.9 : 0.65) : 0,
       reason: hasValue
         ? hasDirectParsedValue
-          ? "Directly extracted from uploaded file."
+          ? "Directly extracted by the parser."
           : "Derived using defaults or intake metadata."
-        : "Value not found in uploaded content.",
+        : "Value not found in parser output.",
     }
   }
 
@@ -2119,19 +2190,58 @@ export async function extractCaseInput(
   payload: CaseIntakeInput,
 ): Promise<ExtractionResult> {
   const fallbackDraft = defaultDraftFromIntake(payload)
+  console.info("[extractCaseInput] started", {
+    sourceType: payload.sourceType,
+    sourceTextLength: payload.sourceText.length,
+    fileCount: payload.files?.length ?? 0,
+    requestChannel: payload.requestChannel ?? null,
+  })
   if (payload.sourceType === "upload") {
     if (!payload.files || payload.files.length === 0) {
+      console.warn("[extractCaseInput] upload branch aborted: no files")
       throw new Error("Please select a file before analyzing upload input.")
     }
     try {
+      const uploadContextText = payload.sourceText.trim() || undefined
+      console.info("[extractCaseInput] upload branch calling parseFile", {
+        fileName: payload.files[0].name,
+        fileType: payload.files[0].type,
+        fileSize: payload.files[0].size,
+        contextTextLength: uploadContextText?.length ?? 0,
+      })
       const parsed = (await chainIqApi.parse.parseFile(
         payload.files[0],
         payload.files[0].name,
-      )) as ParseFileResponse
-      return mapParsedUploadDraft(payload, fallbackDraft, parsed)
-    } catch {
+        uploadContextText ? { contextText: uploadContextText } : undefined,
+      )) as ParseResponse
+      console.info("[extractCaseInput] parseFile response", {
+        complete: parsed.complete,
+        requestKeys: Object.keys(parsed.request ?? {}),
+      })
+      const mapped = mapParsedDraft(payload, fallbackDraft, parsed)
+      console.info("[extractCaseInput] upload parse mapped", {
+        extractionStrength: mapped.extractionStrength,
+        missingRequiredCount: mapped.missingRequired.length,
+        draftPreview: {
+          title: mapped.draft.title,
+          categoryId: mapped.draft.categoryId,
+          currency: mapped.draft.currency,
+          budgetAmount: mapped.draft.budgetAmount,
+          quantity: mapped.draft.quantity,
+        },
+      })
+      return mapped
+    } catch (parseError) {
+      console.warn("[extractCaseInput] parseFile failed, falling back", {
+        error: parseError,
+      })
       try {
         const heuristicResult = await extractViaIntakeApi(payload, fallbackDraft, true)
+        console.info("[extractCaseInput] upload fallback succeeded", {
+          extractionStrength: heuristicResult.extractionStrength,
+          missingRequiredCount: heuristicResult.missingRequired.length,
+          warningCodes: heuristicResult.warnings.map((warning) => warning.code),
+        })
         return {
           ...heuristicResult,
           warnings: [
@@ -2144,7 +2254,10 @@ export async function extractCaseInput(
             ...heuristicResult.warnings,
           ],
         }
-      } catch {
+      } catch (fallbackError) {
+        console.error("[extractCaseInput] upload fallback failed", {
+          error: fallbackError,
+        })
         return {
           draft: fallbackDraft,
           fieldStatus: {
@@ -2171,28 +2284,77 @@ export async function extractCaseInput(
   }
 
   try {
-    return await extractViaIntakeApi(payload, fallbackDraft, false)
-  } catch {
-    return {
-      draft: fallbackDraft,
-      fieldStatus: {
-        requestText: {
-          status: payload.sourceText.trim() ? "inferred" : "missing",
-          confidence: payload.sourceText.trim() ? 0.7 : 0,
-          reason: "Fallback extraction used because intake API is unavailable.",
-        },
+    console.info("[extractCaseInput] text/manual branch calling parseText", {
+      sourceTextPreview: payload.sourceText.slice(0, 120),
+    })
+    const parsed = (await chainIqApi.parse.parseText({
+      text: payload.sourceText,
+    })) as ParseResponse
+    console.info("[extractCaseInput] parseText response", {
+      complete: parsed.complete,
+      requestKeys: Object.keys(parsed.request ?? {}),
+    })
+    const result = mapParsedDraft(payload, fallbackDraft, parsed)
+    console.info("[extractCaseInput] text/manual parser mapping succeeded", {
+      extractionStrength: result.extractionStrength,
+      missingRequiredCount: result.missingRequired.length,
+      draftPreview: {
+        title: result.draft.title,
+        categoryId: result.draft.categoryId,
+        currency: result.draft.currency,
+        budgetAmount: result.draft.budgetAmount,
+        quantity: result.draft.quantity,
       },
-      missingRequired: computeMissingRequiredFields(fallbackDraft),
-      warnings: [
-        {
-          code: "INTAKE_FALLBACK",
-          severity: "medium",
-          message:
-            "Extraction service is unavailable. Continue with manual completion.",
+    })
+    return result
+  } catch (error) {
+    console.warn("[extractCaseInput] parseText failed, falling back to heuristic intake route", {
+      error,
+    })
+    try {
+      const heuristicResult = await extractViaIntakeApi(payload, fallbackDraft, true)
+      console.info("[extractCaseInput] heuristic fallback after parseText succeeded", {
+        extractionStrength: heuristicResult.extractionStrength,
+        missingRequiredCount: heuristicResult.missingRequired.length,
+        warningCodes: heuristicResult.warnings.map((warning) => warning.code),
+      })
+      return {
+        ...heuristicResult,
+        warnings: [
+          {
+            code: "PARSE_TEXT_FALLBACK",
+            severity: "medium",
+            message:
+              "Anthropic extraction failed. Applied heuristic extraction fallback.",
+          },
+          ...heuristicResult.warnings,
+        ],
+      }
+    } catch (fallbackError) {
+      console.error("[extractCaseInput] text/manual heuristic fallback failed", {
+        error: fallbackError,
+      })
+      return {
+        draft: fallbackDraft,
+        fieldStatus: {
+          requestText: {
+            status: payload.sourceText.trim() ? "inferred" : "missing",
+            confidence: payload.sourceText.trim() ? 0.7 : 0,
+            reason: "Fallback extraction used because parser and intake API are unavailable.",
+          },
         },
-      ],
-      extractionStrength: "low",
-      fallbackUsed: true,
+        missingRequired: computeMissingRequiredFields(fallbackDraft),
+        warnings: [
+          {
+            code: "INTAKE_FALLBACK",
+            severity: "medium",
+            message:
+              "Extraction service is unavailable. Continue with manual completion.",
+          },
+        ],
+        extractionStrength: "low",
+        fallbackUsed: true,
+      }
     }
   }
 }

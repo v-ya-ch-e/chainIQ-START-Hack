@@ -1,4 +1,5 @@
 import re
+import logging
 from datetime import date, timedelta
 
 from fastapi import APIRouter
@@ -11,6 +12,7 @@ from app.schemas.intake import (
 )
 
 router = APIRouter(prefix="/api/intake", tags=["Intake"])
+logger = logging.getLogger(__name__)
 
 
 def _today_plus_days(days: int) -> str:
@@ -94,6 +96,14 @@ def _extraction_strength(missing_required: list[str], confident_fields: int) -> 
 @router.post("/extract", response_model=IntakeExtractOut)
 def extract_intake(payload: IntakeExtractIn):
     source_text = (payload.source_text or "").strip()
+    logger.info(
+        "intake.extract request received source_type=%s source_text_length=%s request_channel=%s note_length=%s file_count=%s",
+        payload.source_type,
+        len(source_text),
+        payload.request_channel,
+        len(payload.note or ""),
+        len(payload.file_names),
+    )
     lines = [line.strip() for line in source_text.splitlines() if line.strip()]
     title = (lines[0] if lines else "New sourcing case")[:120]
     request_channel = payload.request_channel or "portal"
@@ -104,6 +114,16 @@ def extract_intake(payload: IntakeExtractIn):
     required_by_date = _extract_required_date(source_text) or _today_plus_days(14)
     country = _extract_country(source_text) or "CH"
     language = _infer_language(source_text)
+    logger.info(
+        "intake.extract heuristic summary title=%r country=%s language=%s currency=%s budget_amount=%s quantity=%s required_by_date=%s",
+        title,
+        country,
+        language,
+        currency,
+        budget_amount,
+        quantity,
+        required_by_date,
+    )
 
     draft: dict[str, object | None] = {
         "title": title,
@@ -223,11 +243,19 @@ def extract_intake(payload: IntakeExtractIn):
     confident_fields = len(
         [entry for entry in field_status.values() if entry.status in {"confident", "inferred"}]
     )
+    extraction_strength = _extraction_strength(missing_required, confident_fields)
+    logger.info(
+        "intake.extract response summary extraction_strength=%s missing_required=%s warning_codes=%s category_id=%s",
+        extraction_strength,
+        missing_required,
+        [warning.code for warning in warnings],
+        draft["categoryId"],
+    )
 
     return IntakeExtractOut(
         draft=draft,
         field_status=field_status,
         missing_required=missing_required,
         warnings=warnings,
-        extraction_strength=_extraction_strength(missing_required, confident_fields),
+        extraction_strength=extraction_strength,
     )
