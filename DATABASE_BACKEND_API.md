@@ -52,6 +52,7 @@ None. CORS is open (`*`) — all origins, methods, and headers are accepted. Sui
 | Policies | `/api/policies` | 6 |
 | Rules | `/api/rules` | 6 |
 | Escalations | `/api/escalations` | 3 |
+| Dynamic Rules | `/api/dynamic-rules` | 10 |
 | Rule Versions | `/api/rule-versions` | 25 |
 | Analytics | `/api/analytics` | 10 |
 | Pipeline Results | `/api/pipeline-results` | 6 |
@@ -2139,6 +2140,283 @@ Extract structured purchase request fields from raw text input.
   "extraction_strength": "partial"
 }
 ```
+
+---
+
+## Dynamic Rules
+
+> Data-driven procurement rules stored in MySQL. Rules are evaluated dynamically by the pipeline. CRUD plus LLM-powered natural language rule creation/modification.
+
+### `GET /api/dynamic-rules/`
+
+List all dynamic rules with optional filters.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `stage` | string | Filter by pipeline stage (`validate`, `comply`, `policy`, `escalate`) |
+| `category` | string | Filter by rule category (`hard_rule`, `policy_check`, `escalation`) |
+| `is_active` | bool | Filter by active status |
+
+**Response `200`:** `DynamicRuleOut[]`
+
+```json
+[
+  {
+    "rule_id": "HR-RISK",
+    "rule_name": "Risk score threshold",
+    "description": "Non-preferred suppliers with high risk score are excluded",
+    "rule_category": "hard_rule",
+    "eval_type": "threshold",
+    "scope": "supplier",
+    "pipeline_stage": "comply",
+    "eval_config": {
+      "field": "risk_score",
+      "min": null,
+      "max": 70,
+      "condition": {"field": "preferred_supplier", "operator": "==", "value": false}
+    },
+    "action_on_fail": "exclude",
+    "severity": "high",
+    "is_blocking": false,
+    "escalation_target": null,
+    "fail_message_template": "Non-preferred supplier risk_score={risk_score} exceeds threshold 70",
+    "is_active": true,
+    "is_skippable": false,
+    "priority": 50,
+    "version": 1,
+    "created_at": "2026-03-19T00:01:34",
+    "updated_at": "2026-03-19T00:01:34",
+    "created_by": "system_migration"
+  }
+]
+```
+
+---
+
+### `GET /api/dynamic-rules/active`
+
+List only active rules. Shorthand for `GET /api/dynamic-rules/?is_active=true`.
+
+**Query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `stage` | string | Filter by pipeline stage |
+
+**Response `200`:** `DynamicRuleOut[]`
+
+---
+
+### `POST /api/dynamic-rules/parse`
+
+**LLM-powered.** Convert a free-text rule description into a structured dynamic rule definition. The endpoint fetches all active rules from the database and passes them to the LLM so it can decide whether the user is describing a new rule or a modification to an existing one.
+
+**Request body:**
+
+```json
+{
+  "text": "Exclude suppliers with ESG score below 40 for all categories"
+}
+```
+
+**Response `200`:** `RuleParseResponse`
+
+```json
+{
+  "complete": true,
+  "rule": {
+    "rule_id": "HR-ESG",
+    "rule_name": "ESG minimum threshold",
+    "description": "Suppliers must have ESG score above 40",
+    "rule_category": "hard_rule",
+    "eval_type": "threshold",
+    "scope": "supplier",
+    "pipeline_stage": "comply",
+    "eval_config": {
+      "field": "esg_score",
+      "min": 40,
+      "max": null,
+      "condition": null
+    },
+    "action_on_fail": "exclude",
+    "severity": "high",
+    "is_blocking": false,
+    "escalation_target": null,
+    "fail_message_template": "ESG score {esg_score} is below minimum 40",
+    "is_active": true,
+    "is_skippable": false,
+    "priority": 45,
+    "created_by": null
+  },
+  "is_update": false,
+  "target_rule_id": null
+}
+```
+
+When the LLM determines the user wants to modify an existing rule:
+
+```json
+{
+  "complete": true,
+  "rule": { "rule_id": "HR-RISK", "...": "..." },
+  "is_update": true,
+  "target_rule_id": "HR-RISK"
+}
+```
+
+**Response `502`:** LLM parsing failed
+
+---
+
+### `POST /api/dynamic-rules/`
+
+Create a new dynamic rule. Auto-creates version 1 and a version snapshot.
+
+**Request body (`DynamicRuleCreate`):**
+
+```json
+{
+  "rule_id": "HR-ESG",
+  "rule_name": "ESG minimum threshold",
+  "description": "Suppliers must have ESG score above 40",
+  "rule_category": "hard_rule",
+  "eval_type": "threshold",
+  "scope": "supplier",
+  "pipeline_stage": "comply",
+  "eval_config": {
+    "field": "esg_score",
+    "min": 40,
+    "max": null,
+    "condition": null
+  },
+  "action_on_fail": "exclude",
+  "severity": "high",
+  "is_blocking": false,
+  "fail_message_template": "ESG score {esg_score} is below minimum 40",
+  "priority": 45,
+  "created_by": "user"
+}
+```
+
+**Response `201`:** `DynamicRuleOut`
+**Response `409`:** Rule ID already exists
+
+---
+
+### `GET /api/dynamic-rules/{rule_id}`
+
+Get a single rule by ID.
+
+**Response `200`:** `DynamicRuleOut`
+**Response `404`:** Rule not found
+
+---
+
+### `PUT /api/dynamic-rules/{rule_id}`
+
+Update a rule. ACID workflow: invalidates the current version (`valid_to=NOW()`), bumps `version`, creates a new version snapshot.
+
+**Request body (`DynamicRuleUpdate`, all fields optional):**
+
+```json
+{
+  "eval_config": {
+    "field": "risk_score",
+    "min": null,
+    "max": 50,
+    "condition": {"field": "preferred_supplier", "operator": "==", "value": false}
+  },
+  "changed_by": "user",
+  "change_reason": "Tighten risk threshold from 70 to 50"
+}
+```
+
+**Response `200`:** Updated `DynamicRuleOut`
+**Response `404`:** Rule not found
+
+---
+
+### `DELETE /api/dynamic-rules/{rule_id}`
+
+Soft-delete: sets `is_active=false`, bumps version, creates snapshot.
+
+**Response `204`:** No content
+**Response `404`:** Rule not found
+
+---
+
+### `GET /api/dynamic-rules/{rule_id}/versions`
+
+Version history for a rule.
+
+**Response `200`:** `DynamicRuleVersionOut[]`
+
+```json
+[
+  {
+    "id": 1,
+    "rule_id": "HR-RISK",
+    "version": 1,
+    "snapshot": { "...full rule snapshot..." },
+    "valid_from": "2026-03-19T00:01:34",
+    "valid_to": "2026-03-20T12:00:00",
+    "changed_by": "system_migration",
+    "change_reason": "Initial seed"
+  },
+  {
+    "id": 2,
+    "rule_id": "HR-RISK",
+    "version": 2,
+    "snapshot": { "...updated snapshot..." },
+    "valid_from": "2026-03-20T12:00:00",
+    "valid_to": null,
+    "changed_by": "user",
+    "change_reason": "Tighten risk threshold"
+  }
+]
+```
+
+**Response `404`:** Rule not found
+
+---
+
+### `POST /api/dynamic-rules/evaluation-results`
+
+Store rule evaluation results from a pipeline run (bulk).
+
+**Request body (`BulkEvaluationResultCreate`):**
+
+```json
+{
+  "results": [
+    {
+      "result_id": "uuid",
+      "run_id": "uuid",
+      "rule_id": "HR-RISK",
+      "rule_version": 1,
+      "supplier_id": "SUP-0001",
+      "scope": "supplier",
+      "result": "passed",
+      "actual_values": {"risk_score": 20},
+      "expected_values": {"max": 70},
+      "message": "Risk score within threshold",
+      "action_taken": "none"
+    }
+  ]
+}
+```
+
+**Response `201`:** `{"stored": N}`
+
+---
+
+### `GET /api/dynamic-rules/evaluation-results/by-run/{run_id}`
+
+Get all evaluation results for a pipeline run.
+
+**Response `200`:** `RuleEvaluationResultOut[]`
 
 ---
 

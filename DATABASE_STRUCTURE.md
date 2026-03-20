@@ -22,7 +22,7 @@ Environment variables (stored in `database_init/.env`):
 
 ## Schema Overview
 
-38 tables across 9 groups. All tables use InnoDB engine with utf8mb4 charset.
+41 tables across 10 groups. All tables use InnoDB engine with utf8mb4 charset.
 
 | Group | Tables | Row counts |
 |-------|--------|------------|
@@ -32,6 +32,7 @@ Environment variables (stored in `database_init/.env`):
 | Approval thresholds | `approval_thresholds`, `approval_threshold_managers`, `approval_threshold_deviation_approvers` | 15 + 18 + 8 |
 | Preferred/restricted | `preferred_suppliers_policy`, `preferred_supplier_region_scopes`, `restricted_suppliers_policy`, `restricted_supplier_scopes` | 61 + 102 + 5 + 9 |
 | Rules | `category_rules`, `geography_rules`, `geography_rule_countries`, `geography_rule_applies_to_categories`, `escalation_rules`, `escalation_rule_currencies` | 10 + 8 + 12 + 9 + 8 + 1 |
+| Dynamic rules | `dynamic_rules`, `dynamic_rule_versions`, `rule_evaluation_results` | 30 + 30 + dynamic |
 | Evaluation engine | `rule_definitions`, `rule_versions`, `evaluation_runs`, `hard_rule_checks`, `policy_checks`, `supplier_evaluations`, `escalations` | dynamic |
 | Pipeline results | `pipeline_results` | dynamic |
 | Audit / logging | `pipeline_runs`, `pipeline_log_entries`, `audit_logs`, `rule_change_logs`, `escalation_logs`, `policy_change_logs`, `evaluation_run_logs`, `policy_check_logs` | dynamic |
@@ -791,6 +792,112 @@ Stores the full pipeline output JSON for each processed request. Used by the fro
 
 ---
 
+## 5c. Dynamic Rules Tables
+
+Data-driven procurement rules evaluated by the pipeline at runtime. Rules are stored in MySQL, managed via the `/api/dynamic-rules/` REST API, and can be created or modified via natural language (LLM-powered). Seeded by `database_init/migrate_dynamic_rules.py`.
+
+### 5c.1 `dynamic_rules`
+
+Primary table storing all rule definitions. 30 seeded rules covering validate, comply, policy, and escalate pipeline stages.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `rule_id` | VARCHAR(20) | No | **PK**. Format: `VAL-NNN`, `HR-NNN`, `PC-NNN`, `ER-NNN`, or `HR-RISK` |
+| `rule_name` | VARCHAR(200) | No | Human-readable name |
+| `description` | TEXT | Yes | Detailed description |
+| `rule_category` | VARCHAR(20) | No | `hard_rule`, `policy_check`, or `escalation` |
+| `eval_type` | VARCHAR(20) | No | `compare`, `required`, `threshold`, `set_membership`, `custom_llm` |
+| `scope` | VARCHAR(10) | No | `request` or `supplier` (default `request`) |
+| `pipeline_stage` | VARCHAR(20) | No | `validate`, `comply`, `policy`, `escalate` |
+| `eval_config` | JSON | No | Rule parameters — structure depends on `eval_type` |
+| `action_on_fail` | VARCHAR(20) | No | `exclude`, `warn`, `escalate`, `info` (default `warn`) |
+| `severity` | VARCHAR(10) | No | `critical`, `high`, `medium`, `low` (default `medium`) |
+| `is_blocking` | BOOLEAN | No | Whether failure blocks the pipeline (default `FALSE`) |
+| `escalation_target` | VARCHAR(200) | Yes | Who to escalate to (for escalation rules) |
+| `fail_message_template` | TEXT | Yes | Message template with `{field}` interpolation |
+| `is_active` | BOOLEAN | No | Soft-delete flag (default `TRUE`) |
+| `is_skippable` | BOOLEAN | No | Whether the rule can be skipped (default `FALSE`) |
+| `priority` | INT | No | Evaluation order, lower = first (default 100) |
+| `version` | INT | No | Auto-incremented on update (default 1) |
+| `created_at` | DATETIME | No | UTC timestamp |
+| `updated_at` | DATETIME | No | UTC timestamp (auto-updated) |
+| `created_by` | VARCHAR(100) | Yes | Who created the rule |
+
+**Indexes:** `idx_dr_stage(pipeline_stage)`, `idx_dr_active(is_active)`, `idx_dr_category(rule_category)`
+
+### 5c.2 `dynamic_rule_versions`
+
+Audit trail of every rule change. Each update creates a new version row and invalidates the previous one.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `id` | INT AUTO_INCREMENT | No | **PK** |
+| `rule_id` | VARCHAR(20) | No | **FK** -> `dynamic_rules.rule_id` (CASCADE) |
+| `version` | INT | No | Version number |
+| `snapshot` | JSON | No | Full rule snapshot at this version |
+| `valid_from` | DATETIME | No | When this version became active |
+| `valid_to` | DATETIME | Yes | NULL = currently active version |
+| `changed_by` | VARCHAR(100) | Yes | Who made the change |
+| `change_reason` | TEXT | Yes | Why the change was made |
+
+**Constraints:** UNIQUE(`rule_id`, `version`)
+
+### 5c.3 `rule_evaluation_results`
+
+Stores the outcome of evaluating each dynamic rule during a pipeline run.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `result_id` | CHAR(36) | No | **PK**. UUIDv4 |
+| `run_id` | CHAR(36) | No | Pipeline run ID |
+| `rule_id` | VARCHAR(20) | No | **FK** -> `dynamic_rules.rule_id` |
+| `rule_version` | INT | No | Rule version at evaluation time |
+| `supplier_id` | VARCHAR(10) | Yes | Supplier ID (for supplier-scoped rules) |
+| `scope` | VARCHAR(10) | No | `request` or `supplier` |
+| `result` | VARCHAR(10) | No | `passed`, `failed`, `warned`, `skipped`, `error` |
+| `actual_values` | JSON | Yes | Actual values used in evaluation |
+| `expected_values` | JSON | Yes | Expected values / thresholds |
+| `message` | TEXT | Yes | Human-readable result message |
+| `action_taken` | VARCHAR(20) | Yes | Action taken on failure |
+| `evaluated_at` | DATETIME | No | UTC timestamp |
+
+**Indexes:** `idx_rer_run(run_id)`, `idx_rer_rule(rule_id)`, `idx_rer_run_rule(run_id, rule_id)`
+
+#### Seeded Rules Summary
+
+| ID | Name | eval_type | Stage | Scope |
+|----|------|-----------|-------|-------|
+| VAL-001 | Required fields check | required | validate | request |
+| VAL-002 | Recommended fields check | required | validate | request |
+| VAL-003 | Past delivery date check | compare | validate | request |
+| VAL-004 | Budget sufficiency check | compare | validate | request |
+| VAL-005 | Lead time feasibility check | compare | validate | request |
+| VAL-006 | Text/field contradiction detection | custom_llm | validate | request |
+| HR-001 | Budget ceiling check | compare | comply | supplier |
+| HR-002 | Delivery deadline feasibility | compare | comply | supplier |
+| HR-003 | Supplier monthly capacity | compare | comply | supplier |
+| HR-004 | Minimum order quantity | compare | comply | supplier |
+| PC-008 | Data residency constraint | compare | comply | supplier |
+| HR-RISK | Risk score threshold | threshold | comply | supplier |
+| PC-004 | Restricted supplier check | compare | comply | supplier |
+| ER-001 | Missing required info escalation | required | escalate | request |
+| ER-002 | Preferred supplier restricted | compare | escalate | request |
+| ER-003 | Contract value exceeds tier | compare | escalate | request |
+| ER-004 | No compliant supplier found | compare | escalate | request |
+| ER-005 | Data residency unsatisfiable | compare | escalate | request |
+| ER-006 | Single supplier capacity risk | compare | escalate | request |
+| ER-007 | Brand safety concern | compare | escalate | request |
+| ER-008 | Supplier not registered/sanctioned | compare | escalate | request |
+| ER-009 | Contradictory request content | compare | escalate | request |
+| ER-010 | Lead time infeasible escalation | compare | escalate | request |
+| PC-001 | Approval tier determination | threshold | policy | request |
+| PC-002 | Quote count requirement | compare | policy | request |
+| PC-003 | Preferred supplier check | compare | policy | request |
+| PC-007 | Category sourcing rules | set_membership | policy | request |
+| PC-009 | Geography/delivery compliance | set_membership | policy | request |
+
+---
+
 ## 6. Audit & Logging Tables
 
 Tables for pipeline execution tracking, audit trails, and change history. All populated by the Organisational Layer API.
@@ -1050,5 +1157,15 @@ python migrate.py
 ```
 
 The script is **idempotent** -- it drops and recreates the original 22 data tables on each run (reference, request, historical, and policy tables). It prints a summary with row counts for verification.
+
+The dynamic rules tables (section 5c) are created and seeded by a separate script:
+
+```bash
+cd database_init
+source .venv/bin/activate
+python migrate_dynamic_rules.py
+```
+
+This creates `dynamic_rules`, `dynamic_rule_versions`, and `rule_evaluation_results` tables and seeds 30 procurement rules with version snapshots. Idempotent — uses `CREATE TABLE IF NOT EXISTS` and `ON DUPLICATE KEY UPDATE`.
 
 The additional 15 evaluation and audit tables (sections 5-6) are managed by the Organisational Layer API via SQLAlchemy ORM and are created automatically when the backend service starts.
