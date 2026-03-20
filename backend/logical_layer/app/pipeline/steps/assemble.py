@@ -39,19 +39,18 @@ logger = logging.getLogger(__name__)
 
 STEP_NAME = "assemble_output"
 
-ENRICHMENT_SYSTEM_PROMPT = """You are a procurement audit analyst. You enrich pipeline output with detailed, actionable descriptions.
+ENRICHMENT_SYSTEM_PROMPT = """You are a procurement audit analyst. Enrich pipeline output concisely.
 
-For validation issues:
-- severity: critical / high / medium / low
-- description: Include specific numbers (prices, quantities, dates, lead times)
-- action_required: What the requester or procurement team must do
+STRICT LENGTH RULES — violations will be rejected:
+- Validation issue description: 1-2 sentences MAX. Include key numbers only.
+- Validation issue action_required: 1 sentence MAX. State the single most important action.
+- Supplier recommendation_note: 2-3 sentences MAX. State rank justification, one key strength, one key concern.
 
-For supplier recommendation notes:
-- Reference exact figures (price, lead time, quality score)
-- Compare with other suppliers in the shortlist
-- Note any concerns (lead time infeasible, budget exceeded, etc.)
-
-Use professional, audit-ready language.
+CONTENT RULES:
+- Use specific figures (prices, scores, lead times) — no vague language.
+- Do NOT repeat the supplier name or rank in the note (already shown in structured data).
+- Do NOT list every metric — pick the 2-3 most decision-relevant ones.
+- Professional, audit-ready language. No filler or preambles.
 """
 
 
@@ -310,16 +309,15 @@ async def _enrich_with_llm(
             )
 
     parts.append(
-        "\nFor each issue, provide severity, detailed description with specific numbers, "
-        "and action_required. For each supplier, provide a recommendation_note comparing "
-        "them with alternatives."
+        "\nFor each issue: severity + 1-2 sentence description + 1 sentence action. "
+        "For each supplier: 2-3 sentence recommendation note with key differentiators only."
     )
 
     result, fallback = await llm_client.structured_call(
         system_prompt=ENRICHMENT_SYSTEM_PROMPT,
         user_prompt="\n".join(parts),
         response_model=LLMEnrichmentResult,
-        max_tokens=3000,
+        max_tokens=1500,
     )
 
     if fallback:

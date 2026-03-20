@@ -123,7 +123,6 @@ async def validate_request(
             for rr in rule_results:
                 if rr.result == "failed":
                     sev = rr.severity
-                    issue_type = "missing_info" if rr.eval_type == "required" else "validation_rule_failed"
 
                     if rr.eval_type == "required":
                         for field_name in rr.actual_values.get("missing", []):
@@ -138,6 +137,7 @@ async def validate_request(
                             if field_sev == "critical":
                                 completeness = False
                     else:
+                        issue_type = _classify_issue_type(rr)
                         issues.append(ValidationIssue(
                             severity=sev,
                             type=issue_type,
@@ -177,15 +177,6 @@ async def validate_request(
                 )
             else:
                 requester_instruction = llm_result.requester_instruction
-                # #region agent log
-                import json as _json
-                _log_path = "/tmp/debug-ceb625.log"
-                try:
-                    with open(_log_path, "a") as _f:
-                        _f.write(_json.dumps({"sessionId": "ceb625", "location": "validate.py:phase_b", "message": "LLM contradiction result", "data": {"request_id": req.request_id, "contradictions_count": len(llm_result.contradictions), "contradictions": [c.model_dump() for c in llm_result.contradictions], "requester_instruction": requester_instruction, "path": "direct_llm"}, "timestamp": __import__("time").time()}) + "\n")
-                except Exception:
-                    pass
-                # #endregion
                 if llm_result.contradictions:
                     pipeline_logger.audit(
                         "validation", "info", STEP_NAME,
@@ -258,6 +249,15 @@ async def validate_request(
             requester_instruction=requester_instruction,
         )
 
+        # #region agent log
+        import json as _json5a, time as _time5a
+        try:
+            with open("/Users/vyach/projects/chain-iq-project/chainIQ-START-Hack/.cursor/debug-5a2860.log", "a") as _f5a:
+                _f5a.write(_json5a.dumps({"sessionId":"5a2860","location":"validate.py:issues_summary","message":"Validation issues after all checks","data":{"request_id":req.request_id,"issue_count":len(issues),"issues":[{"type":i.type,"severity":i.severity,"desc":i.description[:100]} for i in issues]},"timestamp":_time5a.time()}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+
         # Order: budget_insufficient, policy_conflict, lead_time_infeasible, then others
         _ORDER = {"budget_insufficient": 0, "policy_conflict": 1, "lead_time_infeasible": 2}
         issues.sort(key=lambda i: (_ORDER.get(i.type, 99), i.type))
@@ -299,6 +299,19 @@ async def validate_request(
         }
 
         return result
+
+
+def _classify_issue_type(rr) -> str:
+    """Map a dynamic rule result to a specific issue type for downstream matching."""
+    rule_id = getattr(rr, "rule_id", "")
+    msg_lower = (getattr(rr, "message", "") or "").lower()
+    if rule_id == "VAL-004" or "budget" in msg_lower:
+        return "budget_insufficient"
+    if rule_id == "VAL-005" or "lead time" in msg_lower:
+        return "lead_time_infeasible"
+    if rule_id == "VAL-003" or "past" in msg_lower:
+        return "lead_time_infeasible"
+    return "validation_rule_failed"
 
 
 def _deterministic_checks(
