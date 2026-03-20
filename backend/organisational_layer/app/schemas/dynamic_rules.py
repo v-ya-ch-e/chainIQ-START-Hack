@@ -125,3 +125,14 @@ class RuleEvaluationResultOut(BaseModel):
 
 class BulkEvaluationResultCreate(BaseModel):
     results: list[RuleEvaluationResultCreate]
+
+
+class RuleParseRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="Free-text rule description or change request")
+
+
+class RuleParseResponse(BaseModel):
+    complete: bool
+    rule: DynamicRuleCreate
+    is_update: bool = False
+    target_rule_id: str | None = None

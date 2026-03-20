@@ -147,3 +147,7 @@ The pipeline uses a dynamic rules engine (`backend/logical_layer/app/pipeline/ru
 - **Confidence scoring**: Graded (-25/blocking, -10/non-blocking) — never immediately zero.
 - **`has_contradictions`**: Only checks `contradictory` validation issues, NOT `policy_conflict`.
 - **Migration idempotency**: `migrate_dynamic_rules.py` uses `ON DUPLICATE KEY UPDATE` to update existing rules.
+
+## LLM-Powered Rule Management
+
+The Escalations page has a "New Rule" button that opens a dialog with a single textarea. The user describes what they want in plain text (new rule or change to existing). The backend (`POST /api/dynamic-rules/parse`) fetches all active rules from the DB, passes them to the LLM alongside the user text, and the LLM decides whether to create a new rule or update an existing one. The user reviews the generated rule and approves it. Backend service: `backend/organisational_layer/app/services/rule_parser.py`.
